@@ -147,7 +147,7 @@ class RotaryEmbedding(CustomOp):
         key_pass = key[..., self.rotary_dim:]
         key_rot = _apply_rotary_emb(key_rot, cos, sin, self.is_neox_style)
         key = torch.cat((key_rot, key_pass), dim=-1).reshape(key_shape)
-        return query, key
+        return query, key, self.cos_sin_cache, self.rotary_dim  # passing cos_sin_cache and rotary_dim for DynamicPagedAttention
 
     def forward_cuda(
         self,
@@ -170,7 +170,8 @@ class RotaryEmbedding(CustomOp):
         else:
             ops.rotary_embedding(positions, query, key, self.head_size,
                                  self.cos_sin_cache, self.is_neox_style)
-        return query, key
+        return query, key, self.cos_sin_cache, self.rotary_dim     # passing cos_sin_cache and rotary_dim for DynamicPagedAttention
+
 
     def forward_xpu(
         self,
@@ -193,7 +194,7 @@ class RotaryEmbedding(CustomOp):
         else:
             ops.rotary_embedding(positions, query, key, self.head_size,
                                  self.cos_sin_cache, self.is_neox_style)
-        return query, key
+        return query, key, self.cos_sin_cache, self.rotary_dim    # passing cos_sin_cache and rotary_dim for DynamicPagedAttention
 
     def extra_repr(self) -> str:
         s = f"head_size={self.head_size}, rotary_dim={self.rotary_dim}"
@@ -935,6 +936,7 @@ def get_rope(
                                                scaling_factor, low_freq_factor,
                                                high_freq_factor,
                                                original_max_position)
+
         elif scaling_type == "default":
             if "mrope_section" in rope_scaling:
                 rotary_emb = MRotaryEmbedding(

@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.26)
 #
 # Example:
 # mkdir build && cd build
-# cmake -G Ninja -DVLLM_PYTHON_EXECUTABLE=`which python3` -DCMAKE_INSTALL_PREFIX=.. ..
+# cmake .. -G Ninja -DVLLM_PYTHON_EXECUTABLE=`which python3` -DCMAKE_INSTALL_PREFIX=.. ..
 # cmake --build . --target install
 #
 # If you want to only build one target, make sure to install it manually:

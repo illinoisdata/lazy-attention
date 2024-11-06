@@ -12,7 +12,6 @@ if HAS_TRITON:
 # Should be the same as PARTITION_SIZE in `paged_attention_v2_launcher`.
 _PARTITION_SIZE = 512
 
-
 @dataclass
 class PagedAttentionMetadata:
     """Metadata for PagedAttention."""
@@ -102,6 +101,8 @@ class PagedAttention:
         blocksparse_vert_stride: int = 0,
         blocksparse_block_size: int = 64,
         blocksparse_head_sliding_step: int = 0,
+        cos_sin_cache: Optional[torch.Tensor] = None,     #passing cos_sin_cache and rotary_dim for DynamicPagedAttention
+        rotary_dim: Optional[int] = None,
     ) -> torch.Tensor:
         if blocksparse_vert_stride is not None and blocksparse_vert_stride > 1:
             # use blocksparse paged attention
@@ -125,6 +126,34 @@ class PagedAttention:
         # For context len > 8192, use V2 kernel to avoid shared memory shortage.
         use_v1 = (max_seq_len <= 8192
                   and (max_num_partitions == 1 or num_seqs * num_heads > 512))
+        
+        #---DynmaicRAG begins------
+        use_dynamic = True #hard set flag 
+        if use_v1 and use_dynamic:
+            ops.dynamic_paged_attention(
+                output,
+                query,
+                key_cache,
+                value_cache,
+                cos_sin_cache, #new dynamic_pos parameter compared to paged_attention_v1
+                rotary_dim, #new dynamic_pos parameter compared to paged_attention_v1
+                num_kv_heads,
+                scale,
+                block_tables,
+                seq_lens,
+                block_size,
+                max_seq_len,
+                alibi_slopes,
+                kv_cache_dtype,
+                k_scale,
+                v_scale,
+                tp_rank,
+                blocksparse_local_blocks,
+                blocksparse_vert_stride,
+                blocksparse_block_size,
+                blocksparse_head_sliding_step,)
+
+        #----DynamicRAG ends------
 
         if use_v1:
             # Run PagedAttention V1.

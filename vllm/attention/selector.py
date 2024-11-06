@@ -105,8 +105,11 @@ def get_attn_backend(
             BlocksparseFlashAttentionBackend)
         return BlocksparseFlashAttentionBackend
 
-    backend = which_attn_to_use(head_size, dtype, kv_cache_dtype, block_size,
-                                is_attention_free)
+    #----DynamicRAG begins-----
+    # backend = which_attn_to_use(head_size, dtype, kv_cache_dtype, block_size,
+    #                             is_attention_free)
+    backend = _Backend.XFORMERS   # hard setting for DynamicRAG test
+    #----DynamicRAG ends-----
     if backend == _Backend.FLASH_ATTN:
         from vllm.attention.backends.flash_attn import (  # noqa: F401
             FlashAttentionBackend)

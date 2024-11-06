@@ -462,6 +462,9 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
         k_scale: float = 1.0,
         v_scale: float = 1.0,
         attn_type: AttentionType = AttentionType.DECODER,
+        cos_sin_cache: Optional[torch.Tensor] = None,     #passing cos_sin_cache and rotary_dim for DynamicPagedAttention
+        rotary_dim: Optional[int] = None,
+        unrotated_key: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Forward pass with xFormers and PagedAttention.
 
@@ -536,6 +539,9 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
         else:
             assert value is None
 
+        if unrotated_key is not None:
+            unrotated_key = unrotated_key.view(-1, self.num_kv_heads, self.head_size)
+
         # Self-attention vs. cross-attention will impact
         # which KV cache memory-mapping & which
         # seqlen datastructures we utilize
@@ -566,11 +572,21 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                 # If kv_cache is not provided, the new key and value tensors are
                 # not cached. This happens during the initial memory
                 # profiling run.
-                PagedAttention.write_to_paged_cache(key, value, key_cache,
-                                                    value_cache,
-                                                    updated_slot_mapping,
-                                                    self.kv_cache_dtype,
-                                                    k_scale, v_scale)
+
+                if unrotated_key is not None:
+                    logger.debug("DRAG: write unrotated key to the cache")
+                    PagedAttention.write_to_paged_cache(unrotated_key, value, key_cache,
+                                                        value_cache,
+                                                        updated_slot_mapping,
+                                                        self.kv_cache_dtype,
+                                                        k_scale, v_scale) # DynamicRAG: change it to make the storage is only the unrotated keys
+                else:
+                    logger.debug("DRAG: write rotated key to the cache")
+                    PagedAttention.write_to_paged_cache(key, value, key_cache,
+                                                        value_cache,
+                                                        updated_slot_mapping,
+                                                        self.kv_cache_dtype,
+                                                        k_scale, v_scale)
 
         if attn_type == AttentionType.ENCODER:
             # Encoder attention - chunked prefill is not applicable;
@@ -675,6 +691,8 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                 self.alibi_slopes,
                 k_scale,
                 v_scale,
+                cos_sin_cache=cos_sin_cache, #passing cos_sin_cache and rotary_dim for DynamicPagedAttention
+                rotary_dim=rotary_dim,
             )
 
         # Reshape the output tensor.

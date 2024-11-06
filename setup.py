@@ -15,6 +15,7 @@ from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext
 from setuptools_scm import get_version
 from torch.utils.cpp_extension import CUDA_HOME
+import distutils.log
 
 
 def load_module_from_path(module_name, path):
@@ -182,6 +183,8 @@ class cmake_build_ext(build_ext):
         else:
             # Default build tool to whatever cmake picks.
             build_tool = []
+        print("Print configure command:", " ".join(['cmake', ext.cmake_lists_dir, *build_tool, *cmake_args]))
+        distutils.log.error("DRAG - Print configure command:", " ".join(['cmake', ext.cmake_lists_dir, *build_tool, *cmake_args]))
         subprocess.check_call(
             ['cmake', ext.cmake_lists_dir, *build_tool, *cmake_args],
             cwd=self.build_temp)
@@ -199,7 +202,7 @@ class cmake_build_ext(build_ext):
 
         targets = []
         target_name = lambda s: remove_prefix(remove_prefix(s, "vllm."),
-                                              "vllm_flash_attn.")
+                                              "vllm_flash_attn.") # e.g., only _C is left
         # Build all the extensions
         for ext in self.extensions:
             self.configure(ext)
@@ -214,6 +217,8 @@ class cmake_build_ext(build_ext):
             *[f"--target={name}" for name in targets],
         ]
 
+        print("Print build command:", " ".join(["cmake", *build_args]))
+        distutils.log.error("DRAG - Print build command:", " ".join(["cmake", *build_args]))
         subprocess.check_call(["cmake", *build_args], cwd=self.build_temp)
 
         # Install the libraries
@@ -236,6 +241,14 @@ class cmake_build_ext(build_ext):
                 "cmake", "--install", ".", "--prefix", prefix, "--component",
                 target_name(ext.name)
             ]
+            print("Print install command:", " ".join([
+                "cmake", "--install", ".", "--prefix", prefix, "--component",
+                target_name(ext.name)
+            ]))
+            distutils.log.error("DRAG - Print install command:", " ".join([
+                "cmake", "--install", ".", "--prefix", prefix, "--component",
+                target_name(ext.name)
+            ]))
             subprocess.check_call(install_args, cwd=self.build_temp)
 
     def run(self):
@@ -460,17 +473,17 @@ def get_requirements() -> List[str]:
 
 ext_modules = []
 
-if _is_cuda() or _is_hip():
-    ext_modules.append(CMakeExtension(name="vllm._moe_C"))
+# if _is_cuda() or _is_hip():
+#     ext_modules.append(CMakeExtension(name="vllm._moe_C"))
+#
+# if _is_hip():
+#     ext_modules.append(CMakeExtension(name="vllm._rocm_C"))
+#
+# if _is_cuda():
+#     ext_modules.append(
+#         CMakeExtension(name="vllm.vllm_flash_attn.vllm_flash_attn_c"))
 
-if _is_hip():
-    ext_modules.append(CMakeExtension(name="vllm._rocm_C"))
-
-if _is_cuda():
-    ext_modules.append(
-        CMakeExtension(name="vllm.vllm_flash_attn.vllm_flash_attn_c"))
-
-if _build_custom_ops():
+if _build_custom_ops() and not os.getenv("NO_C"):
     ext_modules.append(CMakeExtension(name="vllm._C"))
 
 package_data = {

@@ -98,6 +98,46 @@ def gelu_quick(out: torch.Tensor, x: torch.Tensor) -> None:
 
 
 # page attention ops
+def dynamic_paged_attention(
+    out: torch.Tensor,
+    query: torch.Tensor,
+    key_cache: torch.Tensor,
+    value_cache: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+    rot_dim: int,
+    num_kv_heads: int,
+    scale: float,
+    block_tables: torch.Tensor,
+    seq_lens: torch.Tensor,
+    block_size: int,
+    max_seq_len: int,
+    alibi_slopes: Optional[torch.Tensor],
+    kv_cache_dtype: str,
+    k_scale: float,
+    v_scale: float,
+    tp_rank: int = 0,
+    blocksparse_local_blocks: int = 0,
+    blocksparse_vert_stride: int = 0,
+    blocksparse_block_size: int = 64,
+    blocksparse_head_sliding_step: int = 0,
+) -> None:
+    print("DRAG!!! - call dynamic_paged_attention")
+    print("out dtype:", out.dtype, "shape:", out.shape)
+    print("query dtype:", query.dtype, "shape:", query.shape)
+    print("key_cache dtype:", key_cache.dtype, "shape:", key_cache.shape)
+    print("value_cache dtype:", value_cache.dtype, "shape:", value_cache.shape)
+    print("cos_sin_cache dtype:", cos_sin_cache.dtype, "shape:", cos_sin_cache.shape)
+    print("rot_dim type:", type(rot_dim))
+    print("block_tables dtype:", block_tables.dtype, "shape:", block_tables.shape)
+    print("seq_lens dtype:", seq_lens.dtype, "shape:", seq_lens.shape)
+
+    torch.ops._C.dynamic_paged_attention(
+        out, query, key_cache, value_cache, cos_sin_cache, rot_dim, num_kv_heads, scale, block_tables,
+        seq_lens, block_size, max_seq_len, alibi_slopes, kv_cache_dtype,
+        k_scale, v_scale, tp_rank, blocksparse_local_blocks,
+        blocksparse_vert_stride, blocksparse_block_size,
+        blocksparse_head_sliding_step)
+
 def paged_attention_v1(
     out: torch.Tensor,
     query: torch.Tensor,

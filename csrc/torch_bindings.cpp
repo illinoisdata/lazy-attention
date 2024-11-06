@@ -24,6 +24,21 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
   // Attention ops
   // Compute the attention between an input query and the cached
   // keys/values using PagedAttention.
+  // "Tensor! out" means out is mutable
+  ops.def(
+      "dynamic_paged_attention("
+      "    Tensor! out, Tensor query, Tensor key_cache,"
+      "    Tensor value_cache, "
+      "    Tensor cos_sin_cache, int rot_dim, "
+      "    int num_kv_heads, float scale,"
+      "    Tensor block_tables, Tensor seq_lens, int block_size,"
+      "    int max_seq_len, Tensor? alibi_slopes,"
+      "    str kv_cache_dtype, float k_scale, float v_scale,"
+      "    int tp_rank, int blocksparse_local_blocks,"
+      "    int blocksparse_vert_stride, int blocksparse_block_size,"
+      "    int blocksparse_head_sliding_step) -> ()");
+  ops.impl("dynamic_paged_attention", torch::kCUDA, &dynamic_paged_attention);
+
   ops.def(
       "paged_attention_v1("
       "    Tensor! out, Tensor query, Tensor key_cache,"

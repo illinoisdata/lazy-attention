@@ -1,7 +1,10 @@
 import enum
 from abc import ABC, abstractmethod
-from typing import OrderedDict, Tuple
+from typing import OrderedDict, Tuple, Set
 
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
 
 class EvictionPolicy(enum.Enum):
     """Enum for eviction policy used by make_evictor to instantiate the correct
@@ -77,6 +80,21 @@ class LRUEvictor(Evictor):
 
     def __init__(self):
         self.free_table: OrderedDict[int, BlockMetaData] = OrderedDict()
+    
+    # DynamicRAG begins
+        self.special_block_ids = set()
+
+    def add_special(self, special_block_ids: Set):
+        logger.debug(f"DRAG: set {special_block_ids} as special\n"
+                     f"all speical blocks: {self.special_block_ids}")
+        # TODO: DynamicRAG - if multi ref
+        self.special_block_ids.update(special_block_ids)
+
+    def remove_special(self, special_block_ids: Set):
+        logger.debug(f"DRAG: unset {special_block_ids} as special\n"
+                     f"all speical blocks: {self.special_block_ids}")
+        self.special_block_ids.difference_update(special_block_ids)
+    # DynamicRAG ends
 
     def __contains__(self, block_id: int) -> bool:
         return block_id in self.free_table
@@ -90,6 +108,8 @@ class LRUEvictor(Evictor):
         # at the start of OrderedDict. Loop through all these blocks to
         # find the one with maximum number of hashed tokens.
         for _id, block in self.free_table.items():
+            if _id in self.special_block_ids:
+                continue
             if evicted_block is None:
                 evicted_block, evicted_block_id = block, _id
                 continue

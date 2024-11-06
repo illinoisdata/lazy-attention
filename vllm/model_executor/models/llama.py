@@ -185,8 +185,12 @@ class LlamaAttention(nn.Module):
     ) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        q, k = self.rotary_emb(positions, q, k)
-        attn_output = self.attn(q, k, v, kv_cache, attn_metadata)
+        unrotated_k = torch.clone(k)
+        q, k, cos_sin_cache, rotary_dim = self.rotary_emb(positions, q, k) 
+        attn_output = self.attn(q, k, v, kv_cache, attn_metadata, 
+                                cos_sin_cache=cos_sin_cache, 
+                                rotary_dim=rotary_dim, 
+                                unrotated_key=unrotated_k) #passing cos_sin_cache and rotary_emb for DynamicPagedAttention
         output, _ = self.o_proj(attn_output)
         return output
 
@@ -549,8 +553,17 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         attn_metadata: AttentionMetadata,
         intermediate_tensors: Optional[IntermediateTensors] = None,
     ) -> Union[torch.Tensor, IntermediateTensors]:
+        # DynamicRAG - dump
+        print(f"DRAG - Input ids shape {input_ids.shape} value {input_ids}")
+        print(f"DRAG - Positions shape {positions.shape} value {positions}")
+        print(f"DRAG - KV - 0 shape {kv_caches[0].shape} value {kv_caches[0]}")
+        print(f"DRAG - KV - 1 shape {kv_caches[1].shape} value {kv_caches[1]}")
+        print(f"DRAG - attn_metadata {attn_metadata}")
+        print(f"DRAG - intermediate_tensors {intermediate_tensors}")
+
         model_output = self.model(input_ids, positions, kv_caches,
                                   attn_metadata, intermediate_tensors)
+        print(f"DRAG - forward output {model_output.shape}")
         return model_output
 
     def compute_logits(
@@ -558,13 +571,19 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> Optional[torch.Tensor]:
+        print(f"DRAG - compute_logits - hidden_states shape {hidden_states.shape} value {hidden_states}")
+        print(f"DRAG - compute_logits - sampling_metadata {sampling_metadata}")
         logits = self.logits_processor(self.lm_head, hidden_states,
                                        sampling_metadata)
+        print(f"DRAG - sample - logits shape {logits.shape} value {logits}")
         return logits
 
     def sample(self, logits: torch.Tensor,
                sampling_metadata: SamplingMetadata) -> Optional[SamplerOutput]:
+        print(f"DRAG - sample - logits shape {logits.shape} value {logits}")
+        print(f"DRAG - sample - sampling_metadata {sampling_metadata}")
         next_tokens = self.sampler(logits, sampling_metadata)
+        print(f"DRAG - sample - next_tokens {next_tokens}")
         return next_tokens
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):

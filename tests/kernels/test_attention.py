@@ -113,6 +113,100 @@ def ref_single_query_cached_kv_attention(
         output[i].copy_(out, non_blocking=True)
 
 
+
+@pytest.mark.parametrize("num_seqs", NUM_GEN_SEQS)
+@pytest.mark.parametrize("num_heads", NUM_HEADS)
+@pytest.mark.parametrize("head_size", HEAD_SIZES)
+@pytest.mark.parametrize("block_size", BLOCK_SIZES)
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("kv_cache_dtype", KV_CACHE_DTYPE)
+@pytest.mark.parametrize("seed", SEEDS)
+@pytest.mark.parametrize("device", CUDA_DEVICES)
+def test_dynamic_paged_attention(
+        kv_cache_factory,
+        cos_sin_cache_factory,
+        num_seqs: int,
+        num_heads: Tuple[int, int],
+        head_size: int,
+        block_size: int,
+        dtype: torch.dtype,
+        kv_cache_dtype: str,
+        seed: int,
+        device: str,
+) -> None:
+    if (kv_cache_dtype == "fp8" and head_size % 16):
+        pytest.skip()
+
+    seed_everything(seed)
+    torch.set_default_device(device)
+    scale = float(1.0 / (head_size**0.5))
+    num_query_heads, num_kv_heads = num_heads
+    query = torch.empty(num_seqs, num_query_heads, head_size, dtype=dtype)
+    query.uniform_(-scale, scale)
+
+    assert num_query_heads % num_kv_heads == 0
+    num_queries_per_kv = num_query_heads // num_kv_heads
+    alibi_slopes = None
+
+    seq_lens = [random.randint(1, MAX_SEQ_LEN) for _ in range(num_seqs)]
+    seq_lens[-1] = MAX_SEQ_LEN
+    max_seq_len = max(seq_lens)
+    seq_lens = torch.tensor(seq_lens, dtype=torch.int)
+
+    # Create the block tables.
+    max_num_blocks_per_seq = (max_seq_len + block_size - 1) // block_size
+    block_tables_lst: List[List[int]] = []
+    for _ in range(num_seqs):
+        block_table = [
+            random.randint(0, NUM_BLOCKS - 1)
+            for _ in range(max_num_blocks_per_seq)
+        ]
+        block_tables_lst.append(block_table)
+
+    block_tables = torch.tensor(block_tables_lst, dtype=torch.int)
+
+    # Create the KV caches.
+    key_caches, value_caches = kv_cache_factory(NUM_BLOCKS, block_size, 1,
+                                                num_kv_heads, head_size,
+                                                kv_cache_dtype, dtype, seed,
+                                                device)
+    key_cache, value_cache = key_caches[0], value_caches[0]
+
+    # Using default kv_scale
+    k_scale = v_scale = 1.0
+
+    # Call the paged attention kernel.
+    output = torch.empty_like(query)
+
+    cos_sin_cache = cos_sin_cache_factory(10000, head_size, max_seq_len)
+
+    ops.dynamic_paged_attention(
+        output,
+        query,
+        key_cache,
+        value_cache,
+        cos_sin_cache,
+        head_size,
+        num_kv_heads,
+        scale,
+        block_tables,
+        seq_lens,
+        block_size,
+        max_seq_len,
+        alibi_slopes,
+        kv_cache_dtype,
+        k_scale,
+        v_scale,
+    )
+
+    opcheck(torch.ops._C.dynamic_paged_attention,
+            (output, query, key_cache, value_cache, cos_sin_cache, head_size, num_kv_heads, scale,
+             block_tables, seq_lens, block_size, max_seq_len, alibi_slopes,
+             kv_cache_dtype, k_scale, v_scale, 0, 0, 0, 64, 0),
+            cond=(head_size == HEAD_SIZES[0]
+                  and block_size == BLOCK_SIZES[0]))
+
+
 @pytest.mark.parametrize(
     "version", ["v1", "v2"] if not is_hip() else ["v1", "v2", "rocm"])
 @pytest.mark.parametrize("num_seqs", NUM_GEN_SEQS)

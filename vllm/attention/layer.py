@@ -94,17 +94,27 @@ class Attention(nn.Module):
         kv_cache: torch.Tensor,
         attn_metadata: AttentionMetadata,
         attn_type: AttentionType = AttentionType.DECODER,
+        cos_sin_cache: Optional[torch.Tensor] = None, #passing cos_sin_cache and rotary_dim for DynamicPagedAttention
+        rotary_dim: Optional[int] = None,
+        unrotated_key: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-
-        return self.impl.forward(query,
-                                 key,
-                                 value,
-                                 kv_cache,
-                                 attn_metadata,
-                                 self._k_scale,
-                                 self._v_scale,
-                                 attn_type=attn_type)
-
+        
+        #-----DynamicRAG begins------
+        if cos_sin_cache is not None and rotary_dim is not None: 
+            return self.impl.forward(query, key, value, kv_cache, attn_metadata,
+                                     self._k_scale, self._v_scale,
+                                     cos_sin_cache=cos_sin_cache,
+                                     rotary_dim=rotary_dim,
+                                     attn_type=attn_type,
+                                     unrotated_key=unrotated_key
+                                     )
+        #-----DynmaicRAG ends------
+        else:
+            # If they are not provided, fall back to the default behavior
+            return self.impl.forward(query, key, value, kv_cache, attn_metadata,
+                                     self._k_scale, self._v_scale,
+                                     attn_type=attn_type)
+    
     def extra_repr(self) -> str:
         s = f"head_size={self.impl.head_size}"  # type: ignore
         s += f", num_heads={self.impl.num_heads}"  # type: ignore
