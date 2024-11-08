@@ -193,7 +193,7 @@ class EngineArgs:
         load_general_plugins()
 
     @staticmethod
-    def add_cli_args(parser: FlexibleArgumentParser) -> FlexibleArgumentParser:
+    def add_cli_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         """Shared CLI arguments for vLLM engine."""
 
         # Model arguments

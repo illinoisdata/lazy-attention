@@ -11,6 +11,7 @@ from drag.logging import logger
 from drag.utils import get_gpu_cache, get_model_runner
 from vllm import LLM
 from vllm.attention.backends.xformers import XFormersMetadata
+from vllm.engine.arg_utils import EngineArgs
 from vllm.model_executor.sampling_metadata import SamplingMetadata, SequenceGroupToSample
 from vllm.sampling_params import SamplingParams, SamplingType
 from vllm.sequence import SequenceData
@@ -23,11 +24,12 @@ class RAG:
     def add_cache(self, docs: List[str]) -> List[DocumentId]:
         raise NotImplementedError("Abstract method")
 
+    # TODO: Make this method async to stream output.
     def iter_generate(
         self,
         doc_ids: List[DocumentId],
         query: str,
-        sample_params: SamplingParams,
+        sampling_params: SamplingParams,
         position_ids: Optional[List[int]] = None,
         max_tokens=3,
     ) -> Generator[str, None, None]:
@@ -37,7 +39,7 @@ class RAG:
         self,
         doc_ids: List[DocumentId],
         query: str,
-        sample_params: SamplingParams,
+        sampling_params: SamplingParams,
         position_ids: Optional[List[int]] = None,
         max_tokens=3,
     ) -> List[str]:
@@ -45,7 +47,7 @@ class RAG:
             self.iter_generate(
                 doc_ids=doc_ids,
                 query=query,
-                sample_params=sample_params,
+                sampling_params=sampling_params,
                 position_ids=position_ids,
                 max_tokens=max_tokens,
             )
@@ -72,11 +74,50 @@ class ParrotRAG(RAG):
         self,
         doc_ids: List[DocumentId],
         query: str,
-        sample_params: SamplingParams,
+        sampling_params: SamplingParams,
         position_ids: Optional[List[int]] = None,
         max_tokens=3,
     ) -> Generator[str, None, None]:
         yield query
+
+    def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
+        pass
+
+
+class LLMRAG(RAG):
+
+    def __init__(self, llm: LLM) -> None:
+        RAG.__init__(self)
+        self._llm = llm
+        self._docs: Dict[DocumentId, str] = {}
+
+    def add_cache(self, docs: List[str]) -> List[int]:
+        doc_ids = []
+        for doc in docs:
+            doc_id = len(self._docs)
+            self._docs[doc_id] = doc
+            doc_ids.append(doc_id)
+        return doc_ids
+
+    def iter_generate(
+        self,
+        doc_ids: List[DocumentId],
+        query: str,
+        sampling_params: SamplingParams,
+        position_ids: Optional[List[int]] = None,
+        max_tokens=3,
+    ) -> Generator[str, None, None]:
+        # TODO: Use AsyncLLMEngine to stream output.
+        context = "\n\n".join([self._docs[doc_id] for doc_id in doc_ids])
+        prompt = context + "\n\n" + query
+        generate_outputs = self._llm.generate(
+            prompt,
+            sampling_params=sampling_params,
+            use_tqdm=False,
+        )
+        for generate_output in generate_outputs:
+            for output in generate_output.outputs:
+                yield output.text
 
     def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
         pass
@@ -111,7 +152,7 @@ class DynamicRAG(RAG):
         self,
         doc_ids: List[DocumentId],
         query: str,
-        sample_params: SamplingParams,
+        sampling_params: SamplingParams,
         position_ids: Optional[List[int]] = None,
         max_tokens=3,
     ) -> Generator[str, None, None]:
@@ -186,7 +227,7 @@ class DynamicRAG(RAG):
             seq_groups=[
                 SequenceGroupToSample(
                     seq_ids=[seq_id],
-                    sampling_params=sample_params,
+                    sampling_params=sampling_params,
                     seq_data={seq_id: seq_data},
                     seq_len=seq_lens[0],
                     query_len=len(query_token_ids),
@@ -271,7 +312,7 @@ class DynamicRAG(RAG):
                 seq_groups=[
                     SequenceGroupToSample(
                         seq_ids=[seq_id],
-                        sampling_params=sample_params,
+                        sampling_params=sampling_params,
                         seq_data={seq_id: seq_data},
                         seq_len=None,
                         query_len=1,
@@ -322,22 +363,14 @@ class DynamicRAG(RAG):
 @dataclasses.dataclass
 class RAGArgs:
     rag_type: str = "parrot"  # RAG model name.
-    llm_model: str = "meta-llama/Llama-3.1-8B-Instruct"  # LLM model for RAG.
 
 
-def make_llm(args: RAGArgs) -> LLM:
-    return LLM(
-        model="meta-llama/Llama-3.1-8B-Instruct",
-        gpu_memory_utilization=0.9,
-        enforce_eager=True,
-        enable_prefix_caching=True,
-    )
-
-
-def make_rag(args: RAGArgs) -> RAG:
+def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
     if args.rag_type == "parrot":
         return ParrotRAG()
+    elif args.rag_type == "llmrag":
+        return LLMRAG(llm=LLM(**dataclasses.asdict(engine_args)))
     elif args.rag_type == "drag":
-        return DynamicRAG(llm=make_llm(args))
+        return DynamicRAG(llm=LLM(**dataclasses.asdict(engine_args)))
     logger.error(f"Invalid RAG type {args.rag_type}")
     sys.exit(1)

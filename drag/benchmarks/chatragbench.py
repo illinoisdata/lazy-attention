@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import numpy as np
 from simple_parsing import ArgumentParser
 from transformers import AutoTokenizer
 
@@ -115,6 +116,8 @@ def get_inputs(
 
     prompt_list = []
     prompt_without_context_list = []
+    len_context_tokens: List[int] = []
+    len_doc_tokens: List[int] = []
     for item in data_list:
         turn_list = item["messages"]
         question_formatted = reformat_question(turn_list, dataset_name)
@@ -125,6 +128,15 @@ def get_inputs(
         context_tokens = tokenizer.encode(context)
         question_tokens = tokenizer.encode(question_formatted)
         system_tokens = tokenizer.encode(system)
+        len_context_tokens.append(len(context_tokens))
+        for doc in ctx_list:
+            doc_tokens = tokenizer.encode(doc)
+            len_doc_tokens.append(len(doc_tokens))
+        # logger.info(
+        #     f"{len(context_tokens)} context_tokens + "
+        #     f"{len(question_tokens)} question_tokens + "
+        #     f"{len(system_tokens)} system_tokens"
+        # )
 
         if len(context_tokens) + len(question_tokens) + len(system_tokens) + max_output_len >= max_seq_length:
             context_tokens = context_tokens[: max_seq_length - max_output_len - len(question_tokens) - len(system_tokens)]
@@ -135,6 +147,18 @@ def get_inputs(
 
         prompt_list.append(model_input)
         prompt_without_context_list.append(model_input_without_context)
+    logger.info(
+        f"Context tokens, avg= {np.mean(len_context_tokens):.0f}, "
+        f"stddev= {np.std(len_context_tokens):.0f}, "
+        f"max= {np.max(len_context_tokens)}, "
+        f"count= {len(len_context_tokens)}"
+    )
+    logger.info(
+        f"Document tokens, avg= {np.mean(len_doc_tokens):.0f}, "
+        f"stddev= {np.std(len_doc_tokens):.0f}, "
+        f"max= {np.max(len_doc_tokens)}, "
+        f"count= {len(len_doc_tokens)}"
+    )
 
     return prompt_list, prompt_without_context_list
 
@@ -169,9 +193,8 @@ def get_prompt_list(args: ChatRAGBenchArgs) -> Tuple[List[str], dict, List[str]]
         input_datapath = args.data_folder / args.inscit_path
     elif args.eval_dataset == "hybridial":
         input_datapath = args.data_folder / args.hybridial_path
-
     else:
-        raise Exception("please input a correct eval_dataset name!")
+        raise Exception(f"Invalid eval_dataset name ({args.eval_dataset})!")
 
     data_list = load_data(input_datapath)
     logger.info(f"number of samples in the dataset: {len(data_list)}")
@@ -210,7 +233,7 @@ def main() -> None:
     prompt_doc_ids: List[List[DocumentId]] = []
     for item in data_list:
         doc_ids: List[DocumentId] = []
-        for ctx in item["ctxs"]:
+        for ctx in item["ctxs"][: args.chatragbench.num_ctx]:
             document = ctx["text"]
             doc_hash = hash(document)
             if doc_hash not in doc_hash_to_id:
@@ -219,6 +242,7 @@ def main() -> None:
                 doc_hash_to_id[doc_hash] = doc_ids[0]
             doc_ids.append(doc_hash_to_id[doc_hash])
         prompt_doc_ids.append(doc_ids)
+    logger.info(f"{len(doc_hash_to_id)} unique documents")
 
     # Generate output texts
     output_list = []

@@ -238,15 +238,15 @@ class cmake_build_ext(build_ext):
 
             # prefix here should actually be the same for all components
             install_args = [
-                "cmake", "--install", ".", "--prefix", prefix, "--component",
+                "cmake", "--install", ".", "--prefix", str(prefix), "--component",
                 target_name(ext.name)
             ]
             print("Print install command:", " ".join([
-                "cmake", "--install", ".", "--prefix", prefix, "--component",
+                "cmake", "--install", ".", "--prefix", str(prefix), "--component",
                 target_name(ext.name)
             ]))
             distutils.log.error("DRAG - Print install command:", " ".join([
-                "cmake", "--install", ".", "--prefix", prefix, "--component",
+                "cmake", "--install", ".", "--prefix", str(prefix), "--component",
                 target_name(ext.name)
             ]))
             subprocess.check_call(install_args, cwd=self.build_temp)

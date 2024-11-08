@@ -1,11 +1,9 @@
 # Dynamic RAG
 
 TODO
-- [x] Move existing `drag.py` into `drag/`
-- [ ] Measure timing (latency, throughput, TTFT, etc.)
+- [ ] Asynchronously stream output to measure TTFT
 - [ ] Measure memory usage (RAM, GPU memory, pressure etc.)
 - [ ] Quick plot script
-- [ ] Parallel requests
 - [ ] Onboard `RAGBench`
 
 ## Benchmarks
