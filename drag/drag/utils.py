@@ -7,6 +7,22 @@ from vllm import LLM, SamplingParams
 from vllm.utils import Device
 
 
+def get_block_size(llm: LLM) -> int:
+    return llm.llm_engine.cache_config.block_size
+
+
+def get_tokenizer_grp(llm: LLM):
+    return llm.llm_engine.tokenizer
+
+
+def get_tokenizer(llm: LLM):
+    return llm.llm_engine.tokenizer.tokenizer
+
+
+def get_ctx(llm: LLM):
+    return llm.llm_engine.scheduler_contexts[0]
+
+
 def get_llm_engine(llm: LLM):
     """
     Get the llm engine.
@@ -101,11 +117,17 @@ def slot_id_to_block_id(slot_id, block_size: int = 16):
     return block_id
 
 
-def get_sampling_param(stage: str = "prefill", max_tokens=20) -> SamplingParams:
+def get_sampling_param(stage: str = "prefill", 
+                       max_tokens: int =20) -> SamplingParams:
     if stage == "prefill":
-        sampling_param = SamplingParams(max_tokens=1, seed=2024)  # max_tokens=1 for prefilling, 0 is illegal for vllm
+        # max_tokens=1 for prefilling, 0 is illegal for vllm
+        sampling_param = SamplingParams(max_tokens=1, 
+                                        seed=2024,
+                                        stop_token_ids = [128008, 128001])
     elif stage == "decode":
-        sampling_param = SamplingParams(max_tokens=max_tokens, seed=2024)
+        sampling_param = SamplingParams(max_tokens=max_tokens,
+                                        seed=2024,
+                                        stop_token_ids = [128008, 128001])
     else:
         raise ValueError("Invalid stage")
     return sampling_param
