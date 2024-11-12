@@ -3,6 +3,7 @@
 TODO
 - [ ] Asynchronously stream output to measure TTFT
 - [ ] Measure memory usage (RAM, GPU memory, pressure etc.)
+- [ ] Measure accuracy
 - [ ] Quick plot script
 - [ ] Onboard `RAGBench`
 

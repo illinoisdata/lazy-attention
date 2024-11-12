@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 import chatragbench
+import longbench
 import numpy as np
 from simple_parsing import ArgumentParser
 from tqdm.asyncio import tqdm
@@ -176,7 +177,7 @@ def sample_chatragbench_requests(
     doc_hash_to_id: Dict[int, DocumentId] = {}
     doc_ids_by_prompt: List[List[DocumentId]] = []
     for item in data_list:
-        doc_ids: List[DocumentId] = []
+        prompt_doc_ids: List[DocumentId] = []
         for ctx in item["ctxs"][: args.num_ctx]:
             document = ctx["text"]
             doc_hash = hash(document)
@@ -184,8 +185,8 @@ def sample_chatragbench_requests(
                 doc_ids = rag.add_cache([document])
                 assert len(doc_ids) == 1
                 doc_hash_to_id[doc_hash] = doc_ids[0]
-            doc_ids.append(doc_hash_to_id[doc_hash])
-        doc_ids_by_prompt.append(doc_ids)
+            prompt_doc_ids.append(doc_hash_to_id[doc_hash])
+        doc_ids_by_prompt.append(prompt_doc_ids)
     logger.info(f"{len(doc_hash_to_id)} unique documents")
 
     # Generate input requests.
@@ -193,6 +194,46 @@ def sample_chatragbench_requests(
     for prompt, prompt_doc_ids in zip(prompt_without_context_list, doc_ids_by_prompt):
         prompt_len = len(tokenizer.encode(prompt))
         output_len = args.out_seq_len
+        input_requests.append(
+            RAGRequest(
+                prompt=prompt,
+                prompt_len=prompt_len,
+                output_len=output_len,
+                documents=prompt_doc_ids,
+                sampling_params=SamplingParams(max_tokens=output_len),
+            )
+        )
+    return input_requests
+
+
+def sample_longbench_requests(
+    args: longbench.LongBenchArgs,
+    rag: RAG,
+    tokenizer: PreTrainedTokenizerBase,
+) -> List[RAGRequest]:
+    # Get prompt_list
+    longbench_dataset = longbench.load_dataset(args.longbench_dataset_name)
+    logger.info(f"Loaded {len(longbench_dataset.rows)} LongBench prompts")
+
+    # Fill document cache and collect prompt document IDs.
+    doc_hash_to_id: Dict[int, DocumentId] = {}
+    doc_ids_by_prompt: List[List[DocumentId]] = []
+    for row in longbench_dataset.rows:
+        document = row.context  # One document per LongBench prompt.
+        doc_hash = hash(document)
+        if doc_hash not in doc_hash_to_id:
+            doc_ids = rag.add_cache([document])
+            assert len(doc_ids) == 1
+            doc_hash_to_id[doc_hash] = doc_ids[0]
+        doc_ids_by_prompt.append([doc_hash_to_id[doc_hash]])
+    logger.info(f"{len(doc_hash_to_id)} unique documents")
+
+    # Generate input requests.
+    input_requests = []
+    for row, prompt_doc_ids in zip(longbench_dataset.rows, doc_ids_by_prompt):
+        prompt = row.input
+        prompt_len = len(tokenizer.encode(prompt))
+        output_len = args.longbench_out_seq_len
         input_requests.append(
             RAGRequest(
                 prompt=prompt,
@@ -565,6 +606,12 @@ def load_dataset(
             rag=rag,
             tokenizer=tokenizer,
         )
+    elif args.dataset_name == "longbench":
+        return sample_longbench_requests(
+            args=args.longbench,
+            rag=rag,
+            tokenizer=tokenizer,
+        )
     else:
         raise ValueError(f"Unknown dataset: {args.dataset_name}")
 
@@ -652,7 +699,7 @@ if __name__ == "__main__":
         "--dataset-name",
         type=str,
         default="random",
-        choices=["random", "chatragbench"],
+        choices=["random", "chatragbench", "longbench"],
         help="Name of the dataset to benchmark on.",
     )
     parser.add_argument(
@@ -797,6 +844,7 @@ if __name__ == "__main__":
     EngineArgs.add_cli_args(parser)
     parser.add_arguments(RAGArgs, "rag")
     parser.add_arguments(chatragbench.ChatRAGBenchArgs, "chatragbench")
+    parser.add_arguments(longbench.LongBenchArgs, "longbench")
 
     args = parser.parse_args()
     main(args)
