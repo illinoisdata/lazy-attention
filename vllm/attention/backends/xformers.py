@@ -677,8 +677,9 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                 max_seq_len_arg,
                 block_tables_arg,
             ) = _get_seq_len_block_table_args(decode_meta, False, attn_type)
+            
 
-            output[num_prefill_tokens:] = PagedAttention.forward_decode(
+            res = PagedAttention.forward_decode(
                 decode_query,
                 key_cache,
                 value_cache,
@@ -694,6 +695,13 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                 cos_sin_cache=cos_sin_cache, #passing cos_sin_cache and rotary_dim for DynamicPagedAttention
                 rotary_dim=rotary_dim,
             )
+            print(f"Xformer backend num_prefill_tokens {num_prefill_tokens}")
+            print(f"Xformer backend res shape {res.shape} dtype {res.dtype}")
+            print(f"Xformer backend output shape {output.shape} dtype {output.dtype}")
+            if output.device != res.device:
+                print("Xformer backend device error")
+
+            output[num_prefill_tokens:] = res
 
         # Reshape the output tensor.
         return output.view(-1, self.num_heads * self.head_size)
