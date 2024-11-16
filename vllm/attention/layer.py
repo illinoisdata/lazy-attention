@@ -100,8 +100,8 @@ class Attention(nn.Module):
     ) -> torch.Tensor:
         
         #-----DynamicRAG begins------
-        if cos_sin_cache is not None and rotary_dim is not None: 
-            return self.impl.forward(query, key, value, kv_cache, attn_metadata,
+       
+        return self.impl.forward(query, key, value, kv_cache, attn_metadata,
                                      self._k_scale, self._v_scale,
                                      cos_sin_cache=cos_sin_cache,
                                      rotary_dim=rotary_dim,
@@ -109,11 +109,10 @@ class Attention(nn.Module):
                                      unrotated_key=unrotated_key
                                      )
         #-----DynmaicRAG ends------
-        else:
-            # If they are not provided, fall back to the default behavior
-            return self.impl.forward(query, key, value, kv_cache, attn_metadata,
-                                     self._k_scale, self._v_scale,
-                                     attn_type=attn_type)
+        # original
+        #return self.impl.forward(query, key, value, kv_cache, attn_metadata,
+        #                              self._k_scale, self._v_scale,
+        #                              attn_type=attn_type)
     
     def extra_repr(self) -> str:
         s = f"head_size={self.impl.head_size}"  # type: ignore

@@ -580,13 +580,13 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                                                         updated_slot_mapping,
                                                         self.kv_cache_dtype,
                                                         k_scale, v_scale) # DynamicRAG: change it to make the storage is only the unrotated keys
-                else:
-                    logger.debug("DRAG: write rotated key to the cache")
-                    PagedAttention.write_to_paged_cache(key, value, key_cache,
-                                                        value_cache,
-                                                        updated_slot_mapping,
-                                                        self.kv_cache_dtype,
-                                                        k_scale, v_scale)
+                # else:
+                #     logger.debug("DRAG: write rotated key to the cache")
+                #     PagedAttention.write_to_paged_cache(key, value, key_cache,
+                #                                         value_cache,
+                #                                         updated_slot_mapping,
+                #                                         self.kv_cache_dtype,
+                #                                         k_scale, v_scale)
 
         if attn_type == AttentionType.ENCODER:
             # Encoder attention - chunked prefill is not applicable;
@@ -648,6 +648,8 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                 # TODO(Hai) this triton kernel has regression issue (broke) to
                 # deal with different data types between KV and FP8 KV cache,
                 # to be addressed separately.
+                
+                logger.debug("DRAG: send unrotated key to the forward_prefix")
                 out = PagedAttention.forward_prefix(
                     query,
                     key,
@@ -664,7 +666,11 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                     self.sliding_window,
                     k_scale,
                     v_scale,
-                )
+                    cos_sin_cache=cos_sin_cache, #passing cos_sin_cache and rotary_dim for DynamicPagedAttention
+                    rotary_dim=rotary_dim,
+                    unrotated_key=unrotated_key,
+                 )
+            
                 assert output[:num_prefill_tokens].shape == out.shape
                 output[:num_prefill_tokens] = out
 

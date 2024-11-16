@@ -221,7 +221,7 @@ class PagedAttention:
     @staticmethod
     def forward_prefix(
         query: torch.Tensor,
-        key: torch.Tensor,
+        key: torch.Tensor, 
         value: torch.Tensor,
         kv_cache_dtype: str,
         key_cache: torch.Tensor,
@@ -235,26 +235,32 @@ class PagedAttention:
         sliding_window: Optional[int],
         k_scale: float,
         v_scale: float,
+        cos_sin_cache: Optional[torch.Tensor] = None,     #passing cos_sin_cache and rotary_dim for DynamicPagedAttention
+        rotary_dim: Optional[int] = None,
+        unrotated_key : Optional[int] = None,
     ) -> torch.Tensor:
         output = torch.empty_like(query)
         context_attention_fwd(
-            query,
-            key,
-            value,
-            output,
-            kv_cache_dtype,
-            key_cache,
-            value_cache,
-            block_tables,
+            q=query,
+            k=unrotated_key,  # Use 'k' instead of 'key' for consistency
+            v=value,
+            o=output,
+            kv_cache_dtype=kv_cache_dtype,
+            k_cache=key_cache,
+            v_cache=value_cache,
+            b_loc=block_tables,
             # query_start_loc is (batch_size + 1,)
-            query_start_loc[:-1],
-            seq_lens_tensor,
-            context_lens,
-            max_query_len,
-            k_scale,
-            v_scale,
-            alibi_slopes,
-            sliding_window,
+            b_start_loc=query_start_loc[:-1],
+            b_seq_len=seq_lens_tensor,
+            b_ctx_len=context_lens,
+            max_input_len=max_query_len,
+            k_scale=k_scale,
+            v_scale=v_scale,
+            alibi_slopes=alibi_slopes,
+            sliding_window=sliding_window,
+            cos_sin_cache=cos_sin_cache,
+            rotary_dim=rotary_dim,
+            rotated_key=key,
         )
         return output
 

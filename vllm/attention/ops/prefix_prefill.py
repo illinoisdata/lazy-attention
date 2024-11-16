@@ -9,6 +9,25 @@ from vllm.platforms import current_platform
 
 if triton.__version__ >= "2.1.0":
 
+    #DynamicRAG Rotary Encoding begins--------
+    @triton.jit
+    def apply_rotary_embedding(K, cos_sin_cache, rotary_dim, BLOCK_DMODEL, stride_kd):
+        for i in range(0, BLOCK_DMODEL, 2):
+            x = tl.load(K + i * stride_kd)
+            y = tl.load(K + (i + 1) * stride_kd)
+            
+            cos_val = tl.load(cos_sin_cache + i // 2)
+            sin_val = tl.load(cos_sin_cache + rotary_dim // 2 + i // 2)
+            
+            K_rot_0 = x * cos_val - y * sin_val
+            K_rot_1 = y * cos_val + x * sin_val
+            
+            tl.store(K + i * stride_kd, K_rot_0)
+            tl.store(K + (i + 1) * stride_kd, K_rot_1)
+    
+        return K
+    #DynamicRAG Rotary Encoding ends--------
+
     @triton.jit
     def _fwd_kernel(
         Q,
@@ -55,6 +74,9 @@ if triton.__version__ >= "2.1.0":
         BLOCK_DMODEL_PADDED: tl.constexpr,  # head size padded to a power of 2
         BLOCK_N: tl.constexpr,
         SLIDING_WINDOW: tl.constexpr,
+        cos_sin_cache,
+        rotary_dim,
+        rotated_key
     ):
         cur_batch = tl.program_id(0)
         cur_head = tl.program_id(1)
@@ -98,6 +120,13 @@ if triton.__version__ >= "2.1.0":
         acc = tl.zeros([BLOCK_M, BLOCK_DMODEL_PADDED],
                        dtype=tl.float32)  # [M,D]
 
+        #---------DynamicRAG begins-------------
+        tl.device_print("DRAG ------------ Hi from Triton!")
+        #(TODO): add comparison tests
+        K = apply_rotary_embedding(K, cos_sin_cache, rotary_dim, BLOCK_DMODEL, stride_kd)
+        #---------DynamicRAG ends-------------
+       
+            
         # compute query against context (no causal mask here)
         for start_n in range(0, cur_batch_ctx_len, BLOCK_N):
             start_n = tl.multiple_of(start_n, BLOCK_N)
@@ -187,6 +216,8 @@ if triton.__version__ >= "2.1.0":
                  offs_d[:, None] * stride_kd)
         off_v = (offs_n[:, None] * stride_vbs + cur_kv_head * stride_vh +
                  offs_d[None, :] * stride_vd)
+
+       
         k_ptrs = K + off_k
         v_ptrs = V + off_v
 
@@ -693,7 +724,7 @@ if triton.__version__ >= "2.1.0":
 
     @torch.inference_mode()
     def context_attention_fwd(q,
-                              k,
+                              k, #unrotated_key
                               v,
                               o,
                               kv_cache_dtype: str,
@@ -707,7 +738,10 @@ if triton.__version__ >= "2.1.0":
                               k_scale: float = 1.0,
                               v_scale: float = 1.0,
                               alibi_slopes=None,
-                              sliding_window=None):
+                              sliding_window=None,
+                              cos_sin_cache=None,     #passing unrotated_key, cos_sin_cache and rotary_dim for DynamicPagedAttention
+                              rotary_dim=None,
+                              rotated_key=None):
 
         BLOCK = 128 if current_platform.has_device_capability(80) else 64
         NUM_WARPS = 8
@@ -843,7 +877,7 @@ if triton.__version__ >= "2.1.0":
             k_cache.stride(2),
             k_cache.stride(3),
             k_cache.stride(
-                4),  #[num_blocks, num_kv_heads, head_size/x, block_size, x]
+                4),  #[num_blocks, num_kv_heads, head_size/x, block_size, x] #what is x?
             v_cache.stride(0),
             v_cache.stride(1),
             v_cache.stride(2),
@@ -857,5 +891,8 @@ if triton.__version__ >= "2.1.0":
             SLIDING_WINDOW=sliding_window,
             num_warps=NUM_WARPS,
             num_stages=1,
+            cos_sin_cache=cos_sin_cache,
+            rotary_dim=rotary_dim,
+            rotated_key=rotated_key,
         )
         return
