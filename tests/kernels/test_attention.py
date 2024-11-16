@@ -6,6 +6,7 @@ import torch
 
 from tests.kernels.utils import opcheck
 from vllm import _custom_ops as ops
+from vllm.model_executor.layers.rotary_embedding import _apply_rotary_emb
 from vllm.utils import get_max_shared_memory_bytes, is_hip, seed_everything
 
 from .allclose_default import get_default_atol, get_default_rtol
@@ -113,13 +114,77 @@ def ref_single_query_cached_kv_attention(
         output[i].copy_(out, non_blocking=True)
 
 
+def ref_single_query_cached_kv_dynamic_attention(
+    output: torch.Tensor,
+    query: torch.Tensor,
+    num_queries_per_kv: int,
+    key_cache: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+    value_cache: torch.Tensor,
+    block_tables: torch.Tensor,
+    seq_lens: torch.Tensor,
+    scale: float,
+    alibi_slopes: Optional[torch.Tensor],
+) -> None:
+    num_query_heads = query.shape[1]
+    num_kv_heads = value_cache.shape[1]
+    head_size = value_cache.shape[2]
+    block_size = value_cache.shape[3]
+    num_seqs = query.shape[0]
 
+    block_tables_lst = block_tables.cpu().tolist()
+    seq_lens_lst = seq_lens.cpu().tolist()
+    for i in range(num_seqs):
+        # get the cpu k-v list from block cache
+        q = query[i].unsqueeze(0)
+        block_table = block_tables_lst[i]
+        seq_len = int(seq_lens_lst[i])
+
+        keys_lst: List[torch.Tensor] = []
+        values_lst: List[torch.Tensor] = []
+        for j in range(seq_len):
+            block_number = int(block_table[j // block_size])
+            block_offset = j % block_size
+
+            k = key_cache[block_number, :, :, block_offset, :]
+            k = k.reshape(num_kv_heads, head_size)
+            keys_lst.append(k)
+
+            v = value_cache[block_number, :, :, block_offset]
+            values_lst.append(v)
+        keys = torch.stack(keys_lst, dim=0)
+        values = torch.stack(values_lst, dim=0)
+        if num_queries_per_kv > 1:
+            # Handle MQA and GQA
+            keys = torch.repeat_interleave(keys, num_queries_per_kv, dim=1)
+            values = torch.repeat_interleave(values, num_queries_per_kv, dim=1)
+
+        # add position embedding to keys.
+        num_tokens = keys.shape[0]
+        positions = torch.arange(num_tokens)
+        cos_sin = cos_sin_cache.index_select(0, positions)
+        cos, sin = cos_sin.chunk(2, dim=-1)
+        keys = _apply_rotary_emb(keys, cos, sin, False)
+
+        alibi_bias = None
+        if alibi_slopes is not None:
+            # Create the ALiBi bias used in the paged attention kernel.
+            position_ids = torch.arange(seq_len).int()
+            alibi_bias = (position_ids - seq_len + 1).float()
+            alibi_bias = alibi_slopes.view(-1, 1, 1) * alibi_bias.view(
+                1, 1, -1)
+
+        out = ref_masked_attention(q, keys, values, scale, alibi_bias)
+        out = out.view(num_query_heads, head_size)
+        output[i].copy_(out, non_blocking=True)
+
+# TODO: Support more dtype and kv_cache_dtype, Add more test cases. Now it's only for our dynamic RAG experiment.
 @pytest.mark.parametrize("num_seqs", NUM_GEN_SEQS)
 @pytest.mark.parametrize("num_heads", NUM_HEADS)
-@pytest.mark.parametrize("head_size", HEAD_SIZES)
+@pytest.mark.parametrize("head_size",HEAD_SIZES)
 @pytest.mark.parametrize("block_size", BLOCK_SIZES)
-@pytest.mark.parametrize("dtype", DTYPES)
-@pytest.mark.parametrize("kv_cache_dtype", KV_CACHE_DTYPE)
+@pytest.mark.parametrize("dtype", [torch.bfloat16])
+@pytest.mark.parametrize("kv_cache_dtype", ["auto"])
 @pytest.mark.parametrize("seed", SEEDS)
 @pytest.mark.parametrize("device", CUDA_DEVICES)
 def test_dynamic_paged_attention(
@@ -178,7 +243,14 @@ def test_dynamic_paged_attention(
     # Call the paged attention kernel.
     output = torch.empty_like(query)
 
-    cos_sin_cache = cos_sin_cache_factory(10000, head_size, max_seq_len)
+    cos_sin_cache = cos_sin_cache_factory(10000, head_size, max_seq_len, dtype)
+
+    opcheck(torch.ops._C.dynamic_paged_attention,
+            (output, query, key_cache, value_cache, cos_sin_cache, head_size, num_kv_heads, scale,
+             block_tables, seq_lens, block_size, max_seq_len, alibi_slopes,
+             kv_cache_dtype, k_scale, v_scale, 0, 0, 0, 64, 0),
+            cond=(head_size == HEAD_SIZES[0]
+                  and block_size == BLOCK_SIZES[0]))
 
     ops.dynamic_paged_attention(
         output,
@@ -199,12 +271,50 @@ def test_dynamic_paged_attention(
         v_scale,
     )
 
-    opcheck(torch.ops._C.dynamic_paged_attention,
-            (output, query, key_cache, value_cache, cos_sin_cache, head_size, num_kv_heads, scale,
-             block_tables, seq_lens, block_size, max_seq_len, alibi_slopes,
-             kv_cache_dtype, k_scale, v_scale, 0, 0, 0, 64, 0),
-            cond=(head_size == HEAD_SIZES[0]
-                  and block_size == BLOCK_SIZES[0]))
+    # Run the reference implementation.
+    if kv_cache_dtype == "fp8":
+        # Convert cache data back to dtype.
+        x = 16 // torch.tensor([], dtype=dtype).element_size()
+        key_cache_shape = (NUM_BLOCKS, num_kv_heads, head_size // x,
+                           block_size, x)
+        dequantized_key_cache = torch.empty(size=key_cache_shape,
+                                            dtype=dtype,
+                                            device=device)
+        ops.convert_fp8(dequantized_key_cache, key_cache)
+        key_cache = dequantized_key_cache
+
+        value_cache_shape = value_cache.shape
+        dequantized_value_cache = torch.empty(size=value_cache_shape,
+                                              dtype=dtype,
+                                              device=device)
+        ops.convert_fp8(dequantized_value_cache, value_cache)
+        value_cache = dequantized_value_cache
+
+    ref_output = torch.empty_like(query)
+    ref_single_query_cached_kv_dynamic_attention(
+        ref_output,
+        query,
+        num_queries_per_kv,
+        key_cache,
+        cos_sin_cache,
+        value_cache,
+        block_tables,
+        seq_lens,
+        scale,
+        alibi_slopes,
+    )
+    # NOTE(woosuk): Due to the kernel-level differences in the two
+    # implementations, there is a small numerical difference in the two
+    # outputs. Thus, we use a relaxed tolerance for the test.
+    atol = get_default_atol(output) if is_hip() else 1e-3
+    rtol = get_default_rtol(output) if is_hip() else 1e-5
+
+    # NOTE(zhaoyang): FP8 KV Cache will introduce quantization error,
+    # so we use a relaxed tolerance for the test.
+    atol, rtol = 1e-3, 1e-5
+    if kv_cache_dtype == "fp8":
+        atol, rtol = 1e-2, 1e-5
+    torch.testing.assert_close(output, ref_output, atol=atol, rtol=rtol)
 
 
 @pytest.mark.parametrize(

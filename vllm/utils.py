@@ -1508,10 +1508,10 @@ def weak_ref_tensor(tensor: torch.Tensor) -> torch.Tensor:
     """
     return torch.ops._C.weak_ref_tensor(tensor)
 
-def create_cos_sin_cache(base: Union[int, float], rotary_dim: int, max_possible_position: int) -> torch.Tensor:
+def create_cos_sin_cache(base: Union[int, float], rotary_dim: int, max_possible_position: int, dtype) -> torch.Tensor:
     inv_freq = 1.0 / (base**(torch.arange(
-        0, rotary_dim, 2, dtype=torch.float) / rotary_dim))
-    t = torch.arange(max_possible_position, dtype=torch.float)
+        0, rotary_dim, 2, dtype=dtype) / rotary_dim))
+    t = torch.arange(max_possible_position, dtype=dtype)
     freqs = torch.einsum("i,j -> ij", t, inv_freq)
     cos = freqs.cos()
     sin = freqs.sin()

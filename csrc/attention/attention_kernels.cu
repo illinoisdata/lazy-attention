@@ -90,8 +90,8 @@ inline __device__ void apply_local_token_rotary_embedding(
   for (int i = 0; i < vetor_size; i += 2){
     x = arr[i];
     y = arr[i + 1];
-    arr[i] = x * cos_ptr[i] - y * sin_ptr[i + 1];
-    arr[i + 1] = y * cos_ptr[i] + x * sin_ptr[i + 1];
+    arr[i] = x * cos_ptr[i / 2] - y * sin_ptr[i / 2];
+    arr[i + 1] = y * cos_ptr[i / 2] + x * sin_ptr[i / 2];
   }
 }
 
@@ -307,15 +307,15 @@ __device__ void dynamic_paged_attention_kernel(
         //loop 3: locate the vecs this thread group is dealing with.
         //loop for each thread to load the vec one by one
         const int vec_idx = thread_group_offset + j * THREAD_GROUP_SIZE; //vec_idx in the current token.
-        const int offset1 = (vec_idx * VEC_SIZE) / x;
-        const int offset2 = (vec_idx * VEC_SIZE) % x;
+        const int offset1 = (vec_idx * VEC_SIZE) / x;//offset should be equal to j
+        const int offset2 = (vec_idx * VEC_SIZE) % x;//element offset of the current group
         scalar_t current_k_vec[VEC_SIZE];
         scalar_t current_sin_vec[VEC_SIZE / 2];
         scalar_t current_cos_vec[VEC_SIZE / 2];
         if constexpr (KV_DTYPE == Fp8KVCacheDataType::kAuto) {
           std::memcpy(current_k_vec, k_ptr + offset1 * BLOCK_SIZE * x + offset2, VEC_SIZE * sizeof(scalar_t));
-          std::memcpy(current_sin_vec, r_sin_ptr + (offset1 * x + offset2 * VEC_SIZE)/2, VEC_SIZE / 2 * sizeof(scalar_t));
-          std::memcpy(current_cos_vec, r_cos_ptr + (offset1 * x + offset2 * VEC_SIZE)/2, VEC_SIZE / 2 * sizeof(scalar_t));
+          std::memcpy(current_sin_vec, r_sin_ptr + (offset1 * x + offset2)/2, VEC_SIZE / 2 * sizeof(scalar_t));
+          std::memcpy(current_cos_vec, r_cos_ptr + (offset1 * x + offset2)/2, VEC_SIZE / 2 * sizeof(scalar_t));
           apply_local_token_rotary_embedding(current_k_vec, current_cos_vec, current_sin_vec, VEC_SIZE);
           k_vecs[j] = *reinterpret_cast<const K_vec*>(
               current_k_vec); //TODO: study a way to avoid memory copy twice here
