@@ -6,7 +6,7 @@ logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)s - %(name)s '
                            '- %(levelname)s - %(message)s')
 import os
-# os.environ['VLLM_LOGGING_LEVEL'] = 'DEBUG'
+os.environ['VLLM_LOGGING_LEVEL'] = 'DEBUG'
 from vllm import LLM, SamplingParams
 
 # vllm ------------------------------------------------------------------------
@@ -14,7 +14,7 @@ llm = LLM(model="meta-llama/Llama-3.1-8B-Instruct",
           gpu_memory_utilization=0.9,
           enforce_eager=True,
           enable_prefix_caching=True)
-sampling_param = SamplingParams(max_tokens=20,
+sampling_param = SamplingParams(max_tokens=10,
                                 seed=2024,
                                 temperature=0.0,
                                 stop_token_ids=[128008, 128001])

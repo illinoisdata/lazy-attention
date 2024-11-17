@@ -123,7 +123,7 @@ if triton.__version__ >= "2.1.0":
         #---------DynamicRAG begins-------------
         tl.device_print("DRAG ------------ Hi from Triton!")
         #(TODO): add comparison tests
-        K = apply_rotary_embedding(K, cos_sin_cache, rotary_dim, BLOCK_DMODEL, stride_kd)
+        # K = apply_rotary_embedding(K, cos_sin_cache, rotary_dim, BLOCK_DMODEL, stride_kd)
         #---------DynamicRAG ends-------------
        
             

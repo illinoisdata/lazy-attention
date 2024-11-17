@@ -580,13 +580,13 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                                                         updated_slot_mapping,
                                                         self.kv_cache_dtype,
                                                         k_scale, v_scale) # DynamicRAG: change it to make the storage is only the unrotated keys
-                # else:
-                #     logger.debug("DRAG: write rotated key to the cache")
-                #     PagedAttention.write_to_paged_cache(key, value, key_cache,
-                #                                         value_cache,
-                #                                         updated_slot_mapping,
-                #                                         self.kv_cache_dtype,
-                #                                         k_scale, v_scale)
+                else:
+                    logger.debug("DRAG: write rotated key to the cache")
+                    PagedAttention.write_to_paged_cache(key, value, key_cache,
+                                                        value_cache,
+                                                        updated_slot_mapping,
+                                                        self.kv_cache_dtype,
+                                                        k_scale, v_scale)
 
         if attn_type == AttentionType.ENCODER:
             # Encoder attention - chunked prefill is not applicable;

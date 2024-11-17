@@ -237,12 +237,12 @@ class PagedAttention:
         v_scale: float,
         cos_sin_cache: Optional[torch.Tensor] = None,     #passing cos_sin_cache and rotary_dim for DynamicPagedAttention
         rotary_dim: Optional[int] = None,
-        unrotated_key : Optional[int] = None,
+        unrotated_key : Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         output = torch.empty_like(query)
         context_attention_fwd(
             q=query,
-            k=unrotated_key,  # Use 'k' instead of 'key' for consistency
+            k=key,  # Use 'k' instead of 'key' for consistency
             v=value,
             o=output,
             kv_cache_dtype=kv_cache_dtype,
