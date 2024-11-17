@@ -10,7 +10,9 @@ from vllm.config import CacheConfig
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)
 from vllm.model_executor.layers.quantization.kv_cache import BaseKVCacheMethod
+from vllm.logger import init_logger, logger
 
+logger = init_logger(__name__)
 
 class Attention(nn.Module):
     """Attention layer.
@@ -25,17 +27,17 @@ class Attention(nn.Module):
     """
 
     def __init__(
-        self,
-        num_heads: int,
-        head_size: int,
-        scale: float,
-        num_kv_heads: Optional[int] = None,
-        alibi_slopes: Optional[List[float]] = None,
-        cache_config: Optional[CacheConfig] = None,
-        quant_config: Optional[QuantizationConfig] = None,
-        blocksparse_params: Optional[Dict[str, Any]] = None,
-        logits_soft_cap: Optional[float] = None,
-        prefix: str = "",
+            self,
+            num_heads: int,
+            head_size: int,
+            scale: float,
+            num_kv_heads: Optional[int] = None,
+            alibi_slopes: Optional[List[float]] = None,
+            cache_config: Optional[CacheConfig] = None,
+            quant_config: Optional[QuantizationConfig] = None,
+            blocksparse_params: Optional[Dict[str, Any]] = None,
+            logits_soft_cap: Optional[float] = None,
+            prefix: str = "",
     ) -> None:
         super().__init__()
         if cache_config is not None:
@@ -87,33 +89,35 @@ class Attention(nn.Module):
                              blocksparse_params, logits_soft_cap)
 
     def forward(
-        self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
-        kv_cache: torch.Tensor,
-        attn_metadata: AttentionMetadata,
-        attn_type: AttentionType = AttentionType.DECODER,
-        cos_sin_cache: Optional[torch.Tensor] = None, #passing cos_sin_cache and rotary_dim for DynamicPagedAttention
-        rotary_dim: Optional[int] = None,
-        unrotated_key: Optional[torch.Tensor] = None
+            self,
+            query: torch.Tensor,
+            key: torch.Tensor,
+            value: torch.Tensor,
+            kv_cache: torch.Tensor,
+            attn_metadata: AttentionMetadata,
+            attn_type: AttentionType = AttentionType.DECODER,
+            cos_sin_cache: Optional[torch.Tensor] = None,
+            # passing cos_sin_cache and rotary_dim for DynamicPagedAttention
+            rotary_dim: Optional[int] = None,
+            unrotated_key: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        
-        #-----DynamicRAG begins------
-       
+
+        # -----DynamicRAG begins------
+        assert torch.any(query != 0), "Query is all zeros!"
+        # logger.debug(f"q {query}\nk {key}\nv {value}")
         return self.impl.forward(query, key, value, kv_cache, attn_metadata,
-                                     self._k_scale, self._v_scale,
-                                     cos_sin_cache=cos_sin_cache,
-                                     rotary_dim=rotary_dim,
-                                     attn_type=attn_type,
-                                     unrotated_key=unrotated_key
-                                     )
-        #-----DynmaicRAG ends------
+                                 self._k_scale, self._v_scale,
+                                 cos_sin_cache=cos_sin_cache,
+                                 rotary_dim=rotary_dim,
+                                 attn_type=attn_type,
+                                 unrotated_key=unrotated_key
+                                 )
+        # -----DynmaicRAG ends------
         # original
-        #return self.impl.forward(query, key, value, kv_cache, attn_metadata,
+        # return self.impl.forward(query, key, value, kv_cache, attn_metadata,
         #                              self._k_scale, self._v_scale,
         #                              attn_type=attn_type)
-    
+
     def extra_repr(self) -> str:
         s = f"head_size={self.impl.head_size}"  # type: ignore
         s += f", num_heads={self.impl.num_heads}"  # type: ignore

@@ -121,16 +121,6 @@ def dynamic_paged_attention(
     blocksparse_block_size: int = 64,
     blocksparse_head_sliding_step: int = 0,
 ) -> None:
-    print("DRAG!!! - call dynamic_paged_attention")
-    print("out dtype:", out.dtype, "shape:", out.shape)
-    print("query dtype:", query.dtype, "shape:", query.shape)
-    print("key_cache dtype:", key_cache.dtype, "shape:", key_cache.shape)
-    print("value_cache dtype:", value_cache.dtype, "shape:", value_cache.shape)
-    print("cos_sin_cache dtype:", cos_sin_cache.dtype, "shape:", cos_sin_cache.shape)
-    print("rot_dim type:", type(rot_dim))
-    print("block_tables dtype:", block_tables.dtype, "shape:", block_tables.shape)
-    print("seq_lens dtype:", seq_lens.dtype, "shape:", seq_lens.shape)
-
     torch.ops._C.dynamic_paged_attention(
         out, query, key_cache, value_cache, cos_sin_cache, rot_dim, num_kv_heads, scale, block_tables,
         seq_lens, block_size, max_seq_len, alibi_slopes, kv_cache_dtype,

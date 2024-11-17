@@ -701,9 +701,6 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                 cos_sin_cache=cos_sin_cache, #passing cos_sin_cache and rotary_dim for DynamicPagedAttention
                 rotary_dim=rotary_dim,
             )
-            print(f"Xformer backend num_prefill_tokens {num_prefill_tokens}")
-            print(f"Xformer backend res shape {res.shape} dtype {res.dtype}")
-            print(f"Xformer backend output shape {output.shape} dtype {output.dtype}")
             if output.device != res.device:
                 print("Xformer backend device error")
 

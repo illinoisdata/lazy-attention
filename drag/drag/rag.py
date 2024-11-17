@@ -547,14 +547,17 @@ class DynamicRAG(RAG):
         seq_len = context_len + query_len
 
         # allocate new blocks for query tokens
-        query_block_ids, slot_mapping = DynamicRAG._allocate_block_and_slot(query_len, self.set_used_blocks, self.block_size)
-
+        query_block_ids, slot_mapping = self._allocate_block_and_slot(
+            query_len, 
+            self.set_used_blocks,
+            self.block_size
+        )
+                
         input_ids = torch.tensor(query_token_ids).cuda()  # dtype=torch.int32).cuda()
         position_ids = (torch.arange(query_len) + context_len).cuda()
 
         seq_lens = [seq_len]
         ctx_lens = [context_len]
-
         # get hidden status (complete prefill)
         attn_metadata = DynamicRAG._build_attn_metadata(
             num_prefill_tokens=query_len,
@@ -613,7 +616,7 @@ class DynamicRAG(RAG):
         # check if we need new block
         if int(np.ceil(seq_len / self.block_size)) > len(block_table):
             # allocate new block table
-            new_block_ids, slot_mapping = DynamicRAG._allocate_block_and_slot(
+            new_block_ids, slot_mapping = self._allocate_block_and_slot(
                 1, self.set_used_blocks, self.block_size  # query is the last token
             )
         else:
@@ -621,6 +624,10 @@ class DynamicRAG(RAG):
             tail_block = block_table[-1]
             slot_mapping = [tail_block * self.block_size + ((seq_len - 1) % self.block_size)]
 
+        if new_block_ids is not None:
+            block_table.extend(new_block_ids)
+            self.set_used_blocks.update(new_block_ids)
+            
         input_ids = torch.tensor(output_token_ids[-1:]).cuda()
         position_ids = torch.tensor([seq_len - 1]).cuda()
 
@@ -660,9 +667,9 @@ class DynamicRAG(RAG):
         logprobs = torch.log_softmax(logits, dim=-1, dtype=torch.float)
         next_token_id = int(torch.argmax(logprobs, dim=-1).cpu())
 
-        if new_block_ids is not None:
-            block_table.extend(new_block_ids)
-            self.set_used_blocks.update(new_block_ids)
+        # if new_block_ids is not None:
+        #     block_table.extend(new_block_ids)
+        #     self.set_used_blocks.update(new_block_ids)
 
         return DynamicOutput(prompt_token_ids=prompt_token_ids, block_table=block_table, next_token_id=next_token_id)
 
@@ -746,12 +753,14 @@ class DynamicRAG(RAG):
         cls._count += 1
         return cls._count + 1
 
-    @staticmethod
-    def _allocate_block_and_slot(num_tokens: int, set_used_blocks: set, block_size: int = 16) -> Tuple[List[int], List[int]]:
+    def _allocate_block_and_slot(self, num_tokens: int,
+                        set_used_blocks: set, 
+                        block_size: int = 16) -> Tuple[List[int], List[int]]:
         num_needed_blocks = int(np.ceil(num_tokens / block_size))
         num_tail_tokens = num_tokens % block_size if num_tokens % block_size != 0 else block_size
         num_used_blocks = len(set_used_blocks)
         set_candidate_blocks = set(np.arange(num_needed_blocks + num_used_blocks, dtype=np.int32))
+        set_candidate_blocks = {int(x) for x in set_candidate_blocks}
         logger.debug(f"original candidate blocks {set_candidate_blocks}")
         set_candidate_blocks.difference_update(set_used_blocks)
         logger.debug(f"filtered candidate blocks {set_candidate_blocks}")
@@ -764,7 +773,6 @@ class DynamicRAG(RAG):
                 slot_mapping.extend(list(np.arange(start_slot_idx, start_slot_idx + block_size)))
             else:  # reach tail
                 slot_mapping.extend(list(np.arange(start_slot_idx, start_slot_idx + num_tail_tokens)))
-
         return allocated_block_ids, slot_mapping
 
     @staticmethod
@@ -777,10 +785,9 @@ class DynamicRAG(RAG):
         block_table: List[int],
     ):
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.int64).cuda()
-        logger.debug(f"Slot mapping is {slot_mapping}")
-        seq_lens_tensor = torch.tensor(seq_lens, dtype=torch.int32).cuda()
-        ctx_lens_tensor = torch.tensor(ctx_lens, dtype=torch.int32).cuda()
-        block_tables = torch.tensor([block_table], dtype=torch.int32).cuda()
+        seq_lens_tensor=torch.tensor(seq_lens, dtype=torch.int32).cuda()
+        ctx_lens_tensor=torch.tensor(ctx_lens, dtype=torch.int32).cuda()
+        block_tables=torch.tensor([block_table], dtype=torch.int32).cuda()
 
         if num_prefill_tokens > 0:
             attn_metadata = XFormersMetadata(
@@ -839,8 +846,6 @@ class DynamicRAG(RAG):
         generator: torch.Generator,
         is_prompt: bool,
     ):
-
-        logger.debug(f"query len is {query_len}")
         return SamplingMetadata(
             seq_groups=[
                 SequenceGroupToSample(
