@@ -1,39 +1,49 @@
 """RAGs"""
 
+import asyncio
 import dataclasses
 import sys
-from typing import Dict, Generator, List, Optional, Tuple
+from abc import ABC, abstractmethod
+from typing import AsyncGenerator, Dict, FrozenSet, List, Optional, Tuple
 
 import numpy as np
+import promptcache
+import promptcache.model
 import torch
 
 from drag.document import Document
 from drag.logging import logger
 from drag.utils import get_block_size, get_gpu_cache, get_model_runner, get_tokenizer
 from vllm import LLM
-from vllm.attention.backends.xformers import XFormersMetadata
-from vllm.engine.arg_utils import EngineArgs
+from vllm.engine.arg_utils import AsyncEngineArgs, EngineArgs
+from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.model_executor.sampling_metadata import SamplingMetadata, SequenceGroupToSample
 from vllm.sampling_params import SamplingParams, SamplingType
 from vllm.sequence import SequenceData
 
+try:
+    from vllm.attention.backends.xformers import XFormersMetadata
+except Exception as e:
+    logger.error(f"Failed to import XFormersMetadata: {e}")
+
 DocumentId = int
 
 
-class RAG:
+class RAG(ABC):
 
+    @abstractmethod
     def add_cache(self, docs: List[str]) -> List[DocumentId]:
-        raise NotImplementedError("Abstract method")
+        pass
 
-    # TODO: Make this method async to stream output.
-    def iter_generate(
+    @abstractmethod
+    async def iter_generate(
         self,
         doc_ids: List[DocumentId],
         query: str,
         sampling_params: SamplingParams,
         position_ids: Optional[List[int]] = None,
-    ) -> Generator[str, None, None]:
-        raise NotImplementedError("Abstract method")
+    ) -> AsyncGenerator[str, None]:
+        yield ""
 
     def generate(
         self,
@@ -42,17 +52,23 @@ class RAG:
         sampling_params: SamplingParams,
         position_ids: Optional[List[int]] = None,
     ) -> List[str]:
-        return list(
-            self.iter_generate(
+
+        async def collect_generate():
+            outputs = []
+            async for output in self.iter_generate(
                 doc_ids=doc_ids,
                 query=query,
                 sampling_params=sampling_params,
                 position_ids=position_ids,
-            )
-        )
+            ):
+                outputs.append(output)
+            return outputs
 
+        return asyncio.run(collect_generate())
+
+    @abstractmethod
     def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
-        raise NotImplementedError("Abstract method")
+        pass
 
 
 class ParrotRAG(RAG):
@@ -68,13 +84,13 @@ class ParrotRAG(RAG):
             self._doc_counter += 1
         return doc_ids
 
-    def iter_generate(
+    async def iter_generate(
         self,
         doc_ids: List[DocumentId],
         query: str,
         sampling_params: SamplingParams,
         position_ids: Optional[List[int]] = None,
-    ) -> Generator[str, None, None]:
+    ) -> AsyncGenerator[str, None]:
         yield query
 
     def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
@@ -83,10 +99,11 @@ class ParrotRAG(RAG):
 
 class LLMRAG(RAG):
 
-    def __init__(self, llm: LLM) -> None:
+    def __init__(self, llm: AsyncLLMEngine) -> None:
         RAG.__init__(self)
         self._llm = llm
         self._docs: Dict[DocumentId, str] = {}
+        self._last_request_id: int = 0
 
     def add_cache(self, docs: List[str]) -> List[int]:
         doc_ids = []
@@ -96,27 +113,188 @@ class LLMRAG(RAG):
             doc_ids.append(doc_id)
         return doc_ids
 
-    def iter_generate(
+    async def iter_generate(
         self,
         doc_ids: List[DocumentId],
         query: str,
         sampling_params: SamplingParams,
         position_ids: Optional[List[int]] = None,
-    ) -> Generator[str, None, None]:
-        # TODO: Use AsyncLLMEngine to stream output.
+    ) -> AsyncGenerator[str, None]:
         context = "\n\n".join([self._docs[doc_id] for doc_id in doc_ids])
         prompt = context + "\n\n" + query
-        generate_outputs = self._llm.generate(
-            prompt,
+        request_id = self._next_request_id()
+        async for generate_output in self._llm.generate(
+            prompt=prompt,
             sampling_params=sampling_params,
-            use_tqdm=False,
-        )
-        for generate_output in generate_outputs:
+            request_id=request_id,
+        ):
             for output in generate_output.outputs:
                 yield output.text
 
     def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
         pass
+
+    def _next_request_id(self) -> str:
+        request_id = str(self._last_request_id)
+        self._last_request_id += 1
+        return request_id
+
+
+PROMPT_CACHE_SCHEMA_TEMPLATE = r"""
+<schema name="{schema_name}">
+<system/>
+<user>
+{documents}
+</user>
+</schema>
+"""
+
+PROMPT_CACHE_SCHEMA_DOCUMENT_TEMPLATE = r"""
+<module name="{document_name}">
+{document_text}
+</module>
+"""
+
+PROMPT_CACHE_PROMPT_TEMPLATE = r"""
+<prompt schema="{schema_name}">
+{document_tags}
+<user>
+{prompt_text}
+</user>
+</prompt>
+"""
+
+PROMPT_CACHE_DOCUMENT_TAG_TEMPLATE = r"""<{document_name}/>"""
+
+
+class PromptCacheRAG(RAG):
+
+    def __init__(self, lm_name: str, max_ctx_length: int, enable_cpu_inference: bool, cache_max_token: int) -> None:
+        RAG.__init__(self)
+
+        self._lm = PromptCacheRAG._load_lm(lm_name)
+        self._cache_engine = promptcache.CacheEngine(
+            max_ctx_length=max_ctx_length,
+            lm=self._lm,
+            target_device="cpu" if enable_cpu_inference else None,
+        )
+        self._gen_engine = promptcache.GenerationEngine(self._lm)
+        self._cache_max_token = cache_max_token
+        self._parameter = promptcache.GenerationParameters(
+            temperature=1.0,
+            repetition_penalty=1.0,
+            top_p=0.95,
+            top_k=-1,
+            max_new_tokens=512,
+            stop_token_ids=self._lm.stop_token_ids,
+            stop_str=self._lm.stop_str,
+        )
+        self._docs: Dict[DocumentId, str] = {}
+        self._cached_schemas: Dict[frozenset[DocumentId], str] = {}
+        self._sync_lock = asyncio.Lock()
+
+    @staticmethod
+    def _load_lm(lm_name: str) -> promptcache.model.LanguageModel:
+        if lm_name == "CodeLlama-7b-Instruct-hf":
+            return promptcache.model.CodeLlama("codellama/CodeLlama-7b-Instruct-hf", load_in_8bit=True, device_map="auto")
+        else:
+            raise ValueError(f"Invalid language model name {lm_name}")
+
+    # From promptcache::benchmark/longbench.py
+    @staticmethod
+    def _escape_tags(input_str):
+        # pattern = r'<(?P<content>.*?)>'
+
+        # # The lambda function ensures only the first letter is capitalized
+        # def repl(match):
+        #     return '(' + match.group("content").capitalize() + ')'
+        #
+        # return re.sub(pattern, repl, input_str)
+        return input_str.replace("<", "(").replace(">", ")")
+
+    def add_cache(self, docs: List[str]) -> List[int]:
+        doc_ids = []
+        for doc in docs:
+            doc_id = len(self._docs)
+            self._docs[doc_id] = PromptCacheRAG._escape_tags(doc)
+            doc_ids.append(doc_id)
+        return doc_ids
+
+    async def _load_schema_if_not_cached(self, doc_set: FrozenSet[DocumentId]) -> str:
+        # Synchronously check cache and allocate new schema if needed.
+        async with self._sync_lock:
+            if doc_set in self._cached_schemas:
+                return self._cached_schemas[doc_set]
+            schema_name = f"schema_{len(self._cached_schemas)}"
+            self._cached_schemas[doc_set] = schema_name
+
+        # Compile all documents into XML schema.
+        documents: List[str] = []
+        for doc_id in doc_set:
+            doc = self._docs[doc_id]
+            documents.append(PROMPT_CACHE_SCHEMA_DOCUMENT_TEMPLATE.format(document_name=f"doc_{doc_id}", document_text=doc))
+        schema_text = PROMPT_CACHE_SCHEMA_TEMPLATE.format(schema_name=schema_name, documents="\n".join(documents))
+        preprocessed_schema_text = self._lm.get_formatter()(schema_text)
+        schema = promptcache.Schema(
+            preprocessed_schema_text,
+            lm=self._lm,
+            max_tokens=self._cache_max_token,
+        )
+
+        # Add to cache engine.
+        self._cache_engine.add_schema(schema, max_tokens=self._cache_max_token)
+        self._cached_schemas[doc_set] = schema_name
+        logger.info(f"Generated and added PromptCache schema {schema_name} of length {len(schema)}")
+        return schema_name
+
+    async def iter_generate(
+        self,
+        doc_ids: List[DocumentId],
+        query: str,
+        sampling_params: SamplingParams,
+        position_ids: Optional[List[int]] = None,
+    ) -> AsyncGenerator[str, None]:
+        schema_name = await self._load_schema_if_not_cached(frozenset(doc_ids))
+
+        # Compile XML prompt.
+        document_tags = [PROMPT_CACHE_DOCUMENT_TAG_TEMPLATE.format(document_name=f"doc_{doc_id}") for doc_id in doc_ids]
+        prompt_text = PROMPT_CACHE_PROMPT_TEMPLATE.format(
+            schema_name=schema_name, document_tags="\n".join(document_tags), prompt_text=query
+        )
+        prompt = promptcache.Prompt(spec=prompt_text, preproc=[self._lm.get_formatter()])  # type: ignore
+
+        # Process cache.
+        token_ids, position_ids, cache_time, cache = self._cache_engine.process(
+            prompt=prompt,
+            return_full_position_ids=self._lm.use_full_position_ids,
+        )
+
+        # Generate response.
+        output_stream = self._gen_engine.generate(
+            token_ids=token_ids,
+            position_ids=position_ids,
+            params=self._parameter,
+            cache=cache,
+            stream_interval=2,
+            use_full_position_ids=self._lm.use_full_position_ids,
+        )
+
+        # Parse response from output stream. Copied from promptcache::eval.py.
+        pre = 0
+        for outputs in output_stream:
+            output_text = outputs.new_text.strip().split(" ")
+            now = len(output_text) - 1
+            if now > pre:
+                tt = " ".join(output_text[pre:now])
+                yield tt
+                pre = now
+        tt = " ".join(output_text[pre:])
+        yield tt
+
+    def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
+        for _, schema_name in self._cached_schemas:
+            if self._cache_engine.get_schema(schema_name) is not None:
+                self._cache_engine.remove_schema(schema_name)
 
 
 @dataclasses.dataclass
@@ -174,12 +352,8 @@ class DynamicRAG(RAG):
         seq_len = context_len + query_len
 
         # allocate new blocks for query tokens
-        query_block_ids, slot_mapping = DynamicRAG._allocate_block_and_slot(
-            query_len, 
-            self.set_used_blocks,
-            self.block_size
-        )
-                
+        query_block_ids, slot_mapping = DynamicRAG._allocate_block_and_slot(query_len, self.set_used_blocks, self.block_size)
+
         input_ids = torch.tensor(query_token_ids).cuda()  # dtype=torch.int32).cuda()
         position_ids = (torch.arange(query_len) + context_len).cuda()
 
@@ -225,9 +399,7 @@ class DynamicRAG(RAG):
         block_table.extend(query_block_ids)
         self.set_used_blocks.update(query_block_ids)
         logger.debug(f"Block table after prefill {block_table}")
-        return DynamicOutput(prompt_token_ids=prompt_token_ids,
-                             block_table=block_table,
-                             next_token_id=next_token_id)
+        return DynamicOutput(prompt_token_ids=prompt_token_ids, block_table=block_table, next_token_id=next_token_id)
 
     def decode(
         self,
@@ -253,7 +425,7 @@ class DynamicRAG(RAG):
             # do not need new block
             tail_block = block_table[-1]
             slot_mapping = [tail_block * self.block_size + ((seq_len - 1) % self.block_size)]
-            
+
         input_ids = torch.tensor(output_token_ids[-1:]).cuda()
         position_ids = torch.tensor([seq_len - 1]).cuda()
 
@@ -321,13 +493,13 @@ class DynamicRAG(RAG):
             raise ValueError("Invalid generate stage.")
         return outputs
 
-    def iter_generate(
+    async def iter_generate(
         self,
         doc_ids: List[DocumentId],
         query: str,
         sampling_params: Optional[SamplingParams] = None,
         position_ids: Optional[List[int]] = None,  # not used
-    ) -> Generator[str, None, None]:
+    ) -> AsyncGenerator[str, None]:
         """
         Perform inference with the given documents and query.
         :param doc_ids: context documents
@@ -380,13 +552,9 @@ class DynamicRAG(RAG):
         return cls._count + 1
 
     @staticmethod
-    def _allocate_block_and_slot(num_tokens: int, 
-                        set_used_blocks: set, 
-                        block_size: int = 16) -> Tuple[List[int], List[int]]:
+    def _allocate_block_and_slot(num_tokens: int, set_used_blocks: set, block_size: int = 16) -> Tuple[List[int], List[int]]:
         num_needed_blocks = int(np.ceil(num_tokens / block_size))
-        num_tail_tokens = (num_tokens % block_size 
-                           if num_tokens % block_size != 0 
-                           else block_size)
+        num_tail_tokens = num_tokens % block_size if num_tokens % block_size != 0 else block_size
         num_used_blocks = len(set_used_blocks)
         set_candidate_blocks = set(np.arange(num_needed_blocks + num_used_blocks, dtype=np.int32))
         logger.debug(f"original candidate blocks {set_candidate_blocks}")
@@ -405,17 +573,19 @@ class DynamicRAG(RAG):
         return allocated_block_ids, slot_mapping
 
     @staticmethod
-    def _build_attn_metadata(num_prefill_tokens: int,
-                             num_decode_tokens: int,
-                             slot_mapping: List[int],
-                             ctx_lens: List[int],
-                             seq_lens: List[int],
-                             block_table: List[int],):
+    def _build_attn_metadata(
+        num_prefill_tokens: int,
+        num_decode_tokens: int,
+        slot_mapping: List[int],
+        ctx_lens: List[int],
+        seq_lens: List[int],
+        block_table: List[int],
+    ):
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.int64).cuda()
         logger.debug(f"Slot mapping is {slot_mapping}")
-        seq_lens_tensor=torch.tensor(seq_lens, dtype=torch.int32).cuda()
-        ctx_lens_tensor=torch.tensor(ctx_lens, dtype=torch.int32).cuda()
-        block_tables=torch.tensor([block_table], dtype=torch.int32).cuda()
+        seq_lens_tensor = torch.tensor(seq_lens, dtype=torch.int32).cuda()
+        ctx_lens_tensor = torch.tensor(ctx_lens, dtype=torch.int32).cuda()
+        block_tables = torch.tensor([block_table], dtype=torch.int32).cuda()
 
         if num_prefill_tokens > 0:
             attn_metadata = XFormersMetadata(
@@ -504,12 +674,25 @@ class DynamicRAG(RAG):
 class RAGArgs:
     rag_type: str = "parrot"  # RAG model name.
 
+    pc_lm_name: str = "CodeLlama-7b-Instruct-hf"  # [PromptCacheRAG] Language model name.
+    pc_max_ctx_length: int = 5000  # [PromptCacheRAG] Max context length.
+    pc_enable_cpu_inference: bool = False  # [PromptCacheRAG] Inference on CPU.
+    pc_cache_max_token: int = 800  # [PromptCacheRAG] Max tokens for document cache.
+
 
 def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
     if args.rag_type == "parrot":
         return ParrotRAG()
     elif args.rag_type == "llmrag":
-        return LLMRAG(llm=LLM(**dataclasses.asdict(engine_args)))
+        async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
+        return LLMRAG(llm=AsyncLLMEngine.from_engine_args(async_engine_args))
+    elif args.rag_type == "pcrag":
+        return PromptCacheRAG(
+            lm_name=args.pc_lm_name,
+            max_ctx_length=args.pc_max_ctx_length,
+            enable_cpu_inference=args.pc_enable_cpu_inference,
+            cache_max_token=args.pc_cache_max_token,
+        )
     elif args.rag_type == "drag":
         return DynamicRAG(llm=LLM(**dataclasses.asdict(engine_args)))
     logger.error(f"Invalid RAG type {args.rag_type}")

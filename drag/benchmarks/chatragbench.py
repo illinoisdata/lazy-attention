@@ -19,7 +19,9 @@ class ChatRAGBenchArgs:
     """ChatRAG-Bench arguments"""
 
     # Dataset path
-    data_folder: Path = dataclasses.field(default_factory=lambda: Path("."))  # path to the data folder of ChatRAG Bench
+    data_folder: Path = dataclasses.field(
+        default_factory=lambda: Path("./ChatRAG-Bench/data")
+    )  # path to the data folder of ChatRAG Bench
     output_folder: Path = dataclasses.field(default_factory=lambda: Path("."))  # path to the output folder of ChatRAG Bench
     eval_dataset: str = ""
     doc2dial_path: Path = dataclasses.field(default_factory=lambda: Path("doc2dial/test.json"))

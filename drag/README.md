@@ -1,11 +1,16 @@
 # Dynamic RAG
 
 TODO
-- [ ] Asynchronously stream output to measure TTFT
-- [ ] Measure memory usage (RAM, GPU memory, pressure etc.)
 - [ ] Measure accuracy
+- [ ] Measure memory usage (RAM, GPU memory, pressure etc.)
 - [ ] Quick plot script
 - [ ] Onboard `RAGBench`
+    - [ ] RAGCache: MMLU (MCQ) and Natural Questions (Short Answers)
+    - [ ] Raptor: QuALITY, QASPER
+- [ ] Baselines
+    - [ ] Raptor (https://github.com/parthsarthi03/raptor)
+    - [ ] Superposition Prompting (https://github.com/apple/ml-superposition-prompting)
+    - [ ] RAGCache
 
 ## Benchmarks
 
@@ -30,9 +35,13 @@ bash scripts/download_dataset.sh
 For example:
 
 ```bash
-python benchmarks/chatragbench.py --eval_dataset doc2dial \
-            --data_folder ChatRAG-Bench/data --output_folder results/chatragbench \
-            --rag_type=parrot
+bash scripts/bench_exp1.sh parrot,llmrag,pcrag narrativeqa
+```
+
+### Running on Slurm
+
+```bash
+sbatch --mail-user=${USER}@illinois.edu --mail-type="BEGIN,END" scripts/job_exp1.slurm
 ```
 
 ## Acknowledgement

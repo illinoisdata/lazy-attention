@@ -109,34 +109,38 @@ def sample_random_requests(
     document_len: int,
     num_prompts: int,
     num_documents: int,
+    num_documents_per_prompt: int,
     range_ratio: float,
     tokenizer: PreTrainedTokenizerBase,
+    seed: int = 1111,
 ) -> List[RAGRequest]:
-    prefix_token_ids = np.random.randint(0, tokenizer.vocab_size, size=prefix_len).tolist()
+    assert num_documents_per_prompt <= num_documents
 
-    input_lens = np.random.randint(
+    rng = np.random.default_rng(seed=seed)
+    prefix_token_ids = rng.integers(0, tokenizer.vocab_size, size=prefix_len).tolist()
+    input_lens = rng.integers(
         int(input_len * range_ratio),
         input_len + 1,
         size=num_prompts,
     )
-    output_lens = np.random.randint(
+    output_lens = rng.integers(
         int(output_len * range_ratio),
         output_len + 1,
         size=num_prompts,
     )
-    document_lens = np.random.randint(
+    document_lens = rng.integers(
         int(document_len * range_ratio),
         document_len + 1,
         size=num_documents,
     )
-    document_offsets = np.random.randint(0, tokenizer.vocab_size, size=num_documents)
-    prompt_document_lens = np.random.randint(
-        int(num_documents * range_ratio),
-        num_documents + 1,
+    document_offsets = rng.integers(0, tokenizer.vocab_size, size=num_documents)
+    prompt_document_lens = rng.integers(
+        int(num_documents_per_prompt * range_ratio),
+        num_documents_per_prompt + 1,
         size=num_prompts,
     )
-    prompt_document_offsets = np.random.randint(0, num_documents, size=num_prompts)
-    offsets = np.random.randint(0, tokenizer.vocab_size, size=num_prompts)
+    prompt_document_offsets = rng.integers(0, num_documents, size=num_prompts)
+    offsets = rng.integers(0, tokenizer.vocab_size, size=num_prompts)
     documents: List[str] = []
     for i in range(num_documents):
         document = tokenizer.decode([(document_offsets[i] + i + j) % tokenizer.vocab_size for j in range(document_lens[i])])
@@ -249,9 +253,16 @@ def sample_longbench_requests(
 async def get_request(
     input_requests: List[RAGRequest],
     request_rate: float,
-) -> AsyncGenerator[RAGRequest, None]:
-    for request in iter(input_requests):
-        yield request
+    sample_requests: Optional[int],
+    seed: int = 1111,
+) -> AsyncGenerator[Tuple[int, RAGRequest], None]:
+    request_ids = list(range(len(input_requests)))
+    if sample_requests is not None:
+        rng = np.random.default_rng(seed=seed)
+        request_ids = list(rng.integers(0, high=len(input_requests), size=sample_requests))
+    for request_id in request_ids:
+        request = input_requests[request_id]
+        yield int(request_id), request
 
         if request_rate == float("inf"):
             # If the request rate is infinity, then we don't need to wait.
@@ -275,12 +286,11 @@ async def rag_request_func(
     st = time.perf_counter()
     most_recent_timestamp = st
     try:
-        responses = request_func_input.rag.iter_generate(
+        async for response in request_func_input.rag.iter_generate(
             doc_ids=request_func_input.request.documents,
             query=request_func_input.request.prompt,
             sampling_params=request_func_input.request.sampling_params,
-        )
-        for response in responses:
+        ):
             timestamp = time.perf_counter()
             if ttft == 0.0:
                 # First token.
@@ -313,6 +323,7 @@ ASYNC_REQUEST_FUNCS = {
 
 def calculate_metrics(
     input_requests: List[RAGRequest],
+    input_request_ids: List[int],
     outputs: List[RAGRequestFuncOutput],
     dur_s: float,
     tokenizer: PreTrainedTokenizerBase,
@@ -337,7 +348,7 @@ def calculate_metrics(
             # Note : this may inflate the output token count slightly
             output_len = len(tokenizer(outputs[i].generated_text, add_special_tokens=False).input_ids)
             actual_output_lens.append(output_len)
-            total_input += input_requests[i].prompt_len
+            total_input += input_requests[input_request_ids[i]].prompt_len
             tpot = 0.0
             if output_len > 1:
                 tpot = (outputs[i].latency - outputs[i].ttft) / (output_len - 1)
@@ -408,6 +419,7 @@ async def benchmark(
     rag: RAG,
     input_requests: List[RAGRequest],
     tokenizer: PreTrainedTokenizerBase,
+    sample_requests: Optional[int],
     request_rate: float,
     disable_tqdm: bool,
     selected_percentile_metrics: List[str],
@@ -438,7 +450,7 @@ async def benchmark(
     logger.info(f"Traffic request rate: {request_rate}")
     logger.info(f"Maximum request concurrency: {max_concurrency}")
 
-    pbar = None if disable_tqdm else tqdm(total=len(input_requests))
+    pbar = None if disable_tqdm else tqdm(total=sample_requests if sample_requests is not None else len(input_requests))
 
     # This can be used once the minimum Python version is 3.10 or higher,
     # and it will simplify the code in limited_request_func.
@@ -453,12 +465,14 @@ async def benchmark(
             return await request_func(request_func_input=request_func_input, pbar=pbar)
 
     benchmark_start_time = time.perf_counter()
+    input_request_ids: List[int] = []
     tasks: List[asyncio.Task] = []
-    async for request in get_request(input_requests, request_rate):
+    async for request_id, request in get_request(input_requests, request_rate, sample_requests=sample_requests):
         request_func_input = RAGRequestFuncInput(
             rag=rag,
             request=request,
         )
+        input_request_ids.append(request_id)
         tasks.append(asyncio.create_task(limited_request_func(request_func_input=request_func_input, pbar=pbar)))
     outputs: List[RAGRequestFuncOutput] = await asyncio.gather(*tasks)
 
@@ -469,6 +483,7 @@ async def benchmark(
 
     metrics, actual_output_lens = calculate_metrics(
         input_requests=input_requests,
+        input_request_ids=input_request_ids,
         outputs=outputs,
         dur_s=benchmark_duration,
         tokenizer=tokenizer,
@@ -499,6 +514,7 @@ async def benchmark(
         "request_goodput:": metrics.request_goodput if gootput_config_dict else None,
         "output_throughput": metrics.output_throughput,
         "total_token_throughput": metrics.total_token_throughput,
+        "input_request_ids": input_request_ids,
         "input_lens": [output.prompt_len for output in outputs],
         "output_lens": actual_output_lens,
         "ttfts": [output.ttft for output in outputs],
@@ -595,8 +611,9 @@ def load_dataset(
             input_len=args.random_input_len,
             output_len=args.random_output_len,
             document_len=args.random_document_len,
-            num_prompts=args.num_prompts,
+            num_prompts=args.random_num_prompts,
             num_documents=args.random_num_documents,
+            num_documents_per_prompt=args.random_num_documents_per_prompt,
             range_ratio=args.random_range_ratio,
             tokenizer=tokenizer,
         )
@@ -638,6 +655,7 @@ def main(args: argparse.Namespace):
             rag=rag,
             input_requests=input_requests,
             tokenizer=tokenizer,
+            sample_requests=args.sample_requests,
             request_rate=args.request_rate,
             disable_tqdm=args.disable_tqdm,
             selected_percentile_metrics=args.percentile_metrics.split(","),
@@ -656,7 +674,7 @@ def main(args: argparse.Namespace):
     result_json["backend"] = backend
     result_json["exp"] = exp
     result_json["tokenizer_id"] = tokenizer_id
-    result_json["num_prompts"] = args.num_prompts
+    result_json["sample_requests"] = args.sample_requests
 
     # Metadata
     if args.metadata:
@@ -729,10 +747,10 @@ if __name__ == "__main__":
     # )
     parser.add_argument("--use-beam-search", action="store_true")
     parser.add_argument(
-        "--num-prompts",
+        "--sample-requests",
         type=int,
-        default=1000,
-        help="Number of prompts to process.",
+        default=None,
+        help="IF set, randomly sample this many requests with replacement to test.",
     )
     parser.add_argument(
         "--request-rate",
@@ -772,11 +790,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--percentile-metrics",
         type=str,
-        default="ttft,tpot,itl",
+        default="ttft,tpot,itl,e2el",
         help="Comma-seperated list of selected metrics to report percentils. "
         "This argument specifies the metrics to report percentiles. "
         'Allowed metric names are "ttft", "tpot", "itl", "e2el". '
-        'Default value is "ttft,tpot,itl".',
+        'Default value is "ttft,tpot,itl,e2el".',
     )
     parser.add_argument(
         "--metric-percentiles",
@@ -801,6 +819,12 @@ if __name__ == "__main__":
     )
 
     random_group = parser.add_argument_group("random dataset options")
+    parser.add_argument(
+        "--random-num-prompts",
+        type=int,
+        default=1000,
+        help="Number of prompts to generate.",
+    )
     random_group.add_argument(
         "--random-input-len",
         type=int,
@@ -824,6 +848,12 @@ if __name__ == "__main__":
         type=int,
         default=4,
         help="Number of documents to generate, used only for random sampling.",
+    )
+    random_group.add_argument(
+        "--random-num-documents-per-prompt",
+        type=int,
+        default=4,
+        help="Number of documents included in each prompt, used only for random sampling.",
     )
     random_group.add_argument(
         "--random-range-ratio",

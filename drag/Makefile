@@ -34,6 +34,7 @@ virtualenv:       ## Create a virtual environment.
 install:          ## Install the project in dev mode.
 	@if [ "$(USING_POETRY)" ]; then poetry install && exit; fi
 	$(ENV_PREFIX)pip install -e .[dev]
+	(cd promptcache/ && pip install -e .)
 
 
 .PHONY: fmt
@@ -46,7 +47,7 @@ lint:             ## Run pep8, black, mypy linters.
 	$(ENV_PREFIX)flake8 --select=E9,F63,F7,F82 --show-source ${SOURCE_DIRS}
 	$(ENV_PREFIX)flake8 --max-complexity=100 --max-line-length=${MAX_LINE_LENGTH} --extend-ignore=W503,E203,E701 ${SOURCE_DIRS}
 	$(ENV_PREFIX)black -l ${MAX_LINE_LENGTH} --check ${SOURCE_DIRS}
-	$(ENV_PREFIX)mypy --ignore-missing-imports ${SOURCE_DIRS}
+	$(ENV_PREFIX)mypy --config-file pyproject.toml --ignore-missing-imports ${SOURCE_DIRS}
 
 .PHONY: test
 test: lint        ## Run tests and generate coverage report.

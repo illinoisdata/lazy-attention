@@ -23,25 +23,39 @@ classifiers = [
 ]
 version = "0.0.0"
 dependencies = [
-    "xformers",
+    # Requirement
+    "huggingface_hub",
     "loguru",
+    "numpy",
+    "simple_parsing",
+    "xformers",
+
+    # Baseline requirements
+    "accelerate",
+    "astor",
+    "bitsandbytes",
+    "datasets",
+    "fire",
+    "fuzzywuzzy",
+    "jieba",
+    "lxml",
+    "Requests",
+    "rouge",
+    "termcolor",
+    "torch",
+    "tqdm",
+    "transformers",
 ]
 
 [project.optional-dependencies]
 dev = [
-    # Development tools.
+    # Development
     "black",
     "flake8",
     "isort",
     "mypy",
     "pytest",
     "pytest-cov",
-
-    # Benchmarks.
-    "huggingface_hub",
-    "simple_parsing",
-    "numpy",
-    "transformers",
 ]
 
 

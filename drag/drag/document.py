@@ -17,10 +17,10 @@ class Document:
         # prepare padding
         self.block_size = get_block_size(self.llm)
         self.tokenizer = get_tokenizer(self.llm)
-        self.pad_token_id = (self.tokenizer.pad_token_id 
-                             if self.tokenizer.pad_token_id is not None 
-                             else self.tokenizer.eos_token_id)
-        
+        self.pad_token_id = (
+            self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
+        )
+
         # store tokens after padding
         self.token_str = None
         self.token_ids = None
@@ -42,10 +42,8 @@ class Document:
 
         if len(self.token_ids) % self.block_size != 0:
             # padding
-            num_pad_tokens = (self.block_size - 
-                              len(self.token_ids) % self.block_size)
-            logger.debug(f"Doc id {self.doc_id} pad {num_pad_tokens} tokens\n"
-                         f"Pad token id {self.pad_token_id}")
+            num_pad_tokens = self.block_size - len(self.token_ids) % self.block_size
+            logger.debug(f"Doc id {self.doc_id} pad {num_pad_tokens} tokens\n" f"Pad token id {self.pad_token_id}")
             self.token_ids.extend([self.pad_token_id] * num_pad_tokens)
         assert len(self.token_ids) % self.block_size == 0
 
@@ -62,19 +60,18 @@ class Document:
         # since token_ids not always equal to encode(decode(token_ids))
         outputs = self.llm.generate(["".join(self.token_str)], get_sampling_param("prefill"))
 
-        logger.debug(f"Doc id {self.doc_id}\n"
-                     f"Prefilling output - {outputs[0].outputs[0].text}")
+        logger.debug(f"Doc id {self.doc_id}\n" f"Prefilling output - {outputs[0].outputs[0].text}")
         ctx = get_ctx(self.llm)
-        self.block_table = list(ctx.seq_group_metadata_list[0]
-                                   .block_tables
-                                   .values())[0]
+        self.block_table = list(ctx.seq_group_metadata_list[0].block_tables.values())[0]
         # TODO(haocheng): avoid any decoding when add cache
         self.block_table = self.block_table[:-1]
         self.num_blocks = len(self.block_table)
 
-        logger.debug(f"Block table {self.block_table}\n"
-                     f"Number of allocated blocks {self.num_blocks},\n"
-                     f"Number of tokens {len(self.token_ids)}")
+        logger.debug(
+            f"Block table {self.block_table}\n"
+            f"Number of allocated blocks {self.num_blocks},\n"
+            f"Number of tokens {len(self.token_ids)}"
+        )
         assert self.num_blocks == len(self.token_ids) // self.block_size
 
         # mark the blocks as special

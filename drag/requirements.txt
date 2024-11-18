@@ -1,1 +1,30 @@
+# Requirement
+huggingface_hub
 loguru
+numpy
+simple_parsing
+xformers
+
+# Baseline requirements
+accelerate
+astor
+bitsandbytes
+datasets
+fire
+fuzzywuzzy
+jieba
+lxml
+Requests
+rouge
+termcolor
+torch
+tqdm
+transformers
+
+# Development
+black
+flake8
+isort
+mypy
+pytest
+pytest-cov
