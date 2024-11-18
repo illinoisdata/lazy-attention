@@ -630,7 +630,7 @@ class DynamicRAG(RAG):
             
         input_ids = torch.tensor(output_token_ids[-1:]).cuda()
         position_ids = torch.tensor([seq_len - 1]).cuda()
-
+        logger.debug(f"decode slot_mapping {slot_mapping}")
         # get hidden status (complete prefill)
         attn_metadata = DynamicRAG._build_attn_metadata(
             num_prefill_tokens=0,
@@ -740,6 +740,7 @@ class DynamicRAG(RAG):
             output_token_ids.append(next_token_id)
 
             next_token = self.tokenizer.batch_decode([next_token_id])
+            logger.debug(f"next token {next_token}")
             yield next_token
 
     def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:

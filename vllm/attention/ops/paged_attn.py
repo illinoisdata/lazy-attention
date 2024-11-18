@@ -221,7 +221,7 @@ class PagedAttention:
     @staticmethod
     def forward_prefix(
         query: torch.Tensor,
-        key: torch.Tensor, 
+        key: torch.Tensor,
         value: torch.Tensor,
         kv_cache_dtype: str,
         key_cache: torch.Tensor,
@@ -242,7 +242,7 @@ class PagedAttention:
         output = torch.empty_like(query)
         context_attention_fwd(
             q=query,
-            k=key,  # Use 'k' instead of 'key' for consistency
+            k=key, # TODO: only pass unrotated_key
             v=value,
             o=output,
             kv_cache_dtype=kv_cache_dtype,
@@ -260,7 +260,7 @@ class PagedAttention:
             sliding_window=sliding_window,
             cos_sin_cache=cos_sin_cache,
             rotary_dim=rotary_dim,
-            rotated_key=key,
+            unrotated_key=unrotated_key,
         )
         return output
 

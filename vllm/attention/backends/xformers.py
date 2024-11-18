@@ -649,7 +649,12 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                 # deal with different data types between KV and FP8 KV cache,
                 # to be addressed separately.
                 
-                logger.debug("DRAG: send unrotated key to the forward_prefix")
+                logger.debug(f"DRAG: send unrotated key to the forward_prefix\n"
+                             f"rotary_dim is {rotary_dim}\n"
+                             f"cos_sin_cache shape is {cos_sin_cache.shape}\n"
+                             f"key token {key.shape[0]}\n"
+                             f"num head {key.shape[0]}\n"
+                             f"head size is {key.shape[-1]}")
                 out = PagedAttention.forward_prefix(
                     query,
                     key,

@@ -7,6 +7,7 @@ logging.basicConfig(level=logging.DEBUG,
                            '- %(levelname)s - %(message)s')
 import os
 os.environ['VLLM_LOGGING_LEVEL'] = 'DEBUG'
+os.environ['TRITON_DEBUG'] = '1'
 from vllm import LLM, SamplingParams
 
 # vllm ------------------------------------------------------------------------
@@ -36,5 +37,4 @@ rag = DynamicRAG(llm)
 doc_ids = rag.add_cache(docs)  # validated
 outputs = rag.generate([doc_ids[1], doc_ids[0]], query, sampling_param)
 rag.destroy_cache(doc_ids)
-
-print(f"Dynamic RAG's infernce output: {outputs}")
+print(f"Dynamic RAG's inference output: {''.join([o[0] for o in outputs])}")

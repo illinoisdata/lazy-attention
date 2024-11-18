@@ -11,22 +11,66 @@ if triton.__version__ >= "2.1.0":
 
     #DynamicRAG Rotary Encoding begins--------
     @triton.jit
-    def apply_rotary_embedding(K, cos_sin_cache, rotary_dim, BLOCK_DMODEL, stride_kd):
-        for i in range(0, BLOCK_DMODEL, 2):
-            x = tl.load(K + i * stride_kd)
-            y = tl.load(K + (i + 1) * stride_kd)
-            
-            cos_val = tl.load(cos_sin_cache + i // 2)
-            sin_val = tl.load(cos_sin_cache + rotary_dim // 2 + i // 2)
-            
-            K_rot_0 = x * cos_val - y * sin_val
-            K_rot_1 = y * cos_val + x * sin_val
-            
-            tl.store(K + i * stride_kd, K_rot_0)
-            tl.store(K + (i + 1) * stride_kd, K_rot_1)
-    
-        return K
-    #DynamicRAG Rotary Encoding ends--------
+    def apply_rotary_embedding(k, start_n, BLOCK_N, cos_sin_cache, rotary_dim, half_dim, stride_cs0, stride_cs1, N, D, stride_kbs):
+        """
+        Apply rotary embedding to the key tensor `k`.
+
+        Args:
+            k: [D, N] Tensor, where D is the head size, and N is BLOCK_N.
+            start_n: The starting position index of the current block in the sequence.
+            BLOCK_N: The number of keys in the current block.
+            cos_sin_cache: Precomputed cos and sin values, shape [seq_len, rotary_dim].
+            rotary_dim: Number of dimensions in `k` to which rotary embedding will be applied.
+            stride_cs0, stride_cs1: Strides for `cos_sin_cache` in the 0th and 1st dimension.
+
+        Returns:
+            k: The rotated key tensor with the same shape as input [D, N].
+        """
+        # TODO: impl for DynamicRAG
+        tl.device_assert(N == BLOCK_N, "The number of keys (N) must match BLOCK_N.")
+        tl.device_assert(rotary_dim <= D, "Rotary embedding dim must not exceed key dim.")
+
+        offs_d = tl.arange(0, half_dim)  # Indices for rotary embedding dimensions
+        offs_n = tl.arange(0, BLOCK_N)  # Indices for keys
+        positions = offs_n + start_n  # Absolute positions in the sequence
+
+        # 128 token
+        for pos in range(start_n, start_n + BLOCK_N, 1):
+            tl.device_print("in tirton loop", pos)
+
+        # # Compute pointers for cos and sin
+        # cos_ptrs = cos_sin_cache + positions[None, :] * stride_cs0 + offs_d[:, None] * stride_cs1
+        # sin_ptrs = cos_sin_cache + positions[None, :] * stride_cs0 + (offs_d[:, None] + half_dim) * stride_cs1
+        #
+        # cos = tl.load(cos_ptrs)  # [half_dim, BLOCK_N]
+        # sin = tl.load(sin_ptrs)  # [half_dim, BLOCK_N]
+        #
+        # # Compute indices for k
+        # real_indices = offs_d * 2  # Even indices
+        # imag_indices = offs_d * 2 + 1  # Odd indices
+        #
+        # stride_k0 = N  # Stride for the 0th dimension of k
+        # stride_k1 = 1  # Stride for the 1st dimension of k
+        #
+        # # Compute pointers for k
+        # real_ptrs = k + real_indices[:, None] * stride_k0 + offs_n[None, :] * stride_k1
+        # imag_ptrs = k + imag_indices[:, None] * stride_k0 + offs_n[None, :] * stride_k1
+        #
+        # # Load real and imaginary parts of k
+        # rotary_mask = real_indices[:, None] < rotary_dim  # Mask for rotary dimensions
+        # k_real = tl.load(real_ptrs, mask=rotary_mask, other=0.0)  # Even dimensions
+        # k_imag = tl.load(imag_ptrs, mask=rotary_mask, other=0.0)  # Odd dimensions
+        #
+        # # Apply rotation embedding
+        # k_rotated_real = k_real * cos - k_imag * sin
+        # k_rotated_imag = k_real * sin + k_imag * cos
+        #
+        # # Store back into k
+        # tl.store(real_ptrs, k_rotated_real, mask=rotary_mask)
+        # tl.store(imag_ptrs, k_rotated_imag, mask=rotary_mask)
+
+        return k
+        #DynamicRAG Rotary Encoding ends--------
 
     @triton.jit
     def _fwd_kernel(
@@ -75,8 +119,8 @@ if triton.__version__ >= "2.1.0":
         BLOCK_N: tl.constexpr,
         SLIDING_WINDOW: tl.constexpr,
         cos_sin_cache,
-        rotary_dim,
-        rotated_key
+        rotary_dim: tl.constexpr,
+        unrotated_key
     ):
         cur_batch = tl.program_id(0)
         cur_head = tl.program_id(1)
@@ -119,13 +163,6 @@ if triton.__version__ >= "2.1.0":
         l_i = tl.zeros([BLOCK_M], dtype=tl.float32)  # [M]
         acc = tl.zeros([BLOCK_M, BLOCK_DMODEL_PADDED],
                        dtype=tl.float32)  # [M,D]
-
-        #---------DynamicRAG begins-------------
-        tl.device_print("DRAG ------------ Hi from Triton!")
-        #(TODO): add comparison tests
-        # K = apply_rotary_embedding(K, cos_sin_cache, rotary_dim, BLOCK_DMODEL, stride_kd)
-        #---------DynamicRAG ends-------------
-       
             
         # compute query against context (no causal mask here)
         for start_n in range(0, cur_batch_ctx_len, BLOCK_N):
@@ -157,6 +194,10 @@ if triton.__version__ >= "2.1.0":
                 k = (k_load.to(tl.float32) * k_scale).to(q.dtype)
             else:
                 k = k_load
+
+            # ---------DynamicRAG begins-------------
+            # k = apply_rotary_embedding(k, start_n, BLOCK_N, cos_sin_cache, rotary_dim, cur_batch_ctx_len)
+            # ---------DynamicRAG ends-------------
 
             qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)  # [M,N]
             qk += tl.dot(q, k)
@@ -233,6 +274,10 @@ if triton.__version__ >= "2.1.0":
                         mask=dim_mask[:, None] &
                         ((start_n + offs_n[None, :]) < cur_batch_query_len),
                         other=0.0)
+
+            # ---------DynamicRAG begins-------------
+            # k = apply_rotary_embedding(k, ...)
+            # ---------DynamicRAG ends-------------
 
             qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
             qk += tl.dot(q, k)
@@ -724,7 +769,7 @@ if triton.__version__ >= "2.1.0":
 
     @torch.inference_mode()
     def context_attention_fwd(q,
-                              k, #unrotated_key
+                              k, # rotated key
                               v,
                               o,
                               kv_cache_dtype: str,
@@ -741,7 +786,7 @@ if triton.__version__ >= "2.1.0":
                               sliding_window=None,
                               cos_sin_cache=None,     #passing unrotated_key, cos_sin_cache and rotary_dim for DynamicPagedAttention
                               rotary_dim=None,
-                              rotated_key=None):
+                              unrotated_key=None):
 
         BLOCK = 128 if current_platform.has_device_capability(80) else 64
         NUM_WARPS = 8
@@ -893,6 +938,6 @@ if triton.__version__ >= "2.1.0":
             num_stages=1,
             cos_sin_cache=cos_sin_cache,
             rotary_dim=rotary_dim,
-            rotated_key=rotated_key,
+            unrotated_key=unrotated_key, # can be used for testing
         )
         return
