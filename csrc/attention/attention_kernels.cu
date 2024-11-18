@@ -309,7 +309,7 @@ __device__ void dynamic_paged_attention_kernel(
         const int vec_idx = thread_group_offset + j * THREAD_GROUP_SIZE; //vec_idx in the current token.
         const int offset1 = (vec_idx * VEC_SIZE) / x;//offset should be equal to j
         const int offset2 = (vec_idx * VEC_SIZE) % x;//element offset of the current group
-        scalar_t current_k_vec[VEC_SIZE];
+        scalar_t* current_k_vec = reinterpret_cast<scalar_t*>(&k_vecs[j]);
         scalar_t current_sin_vec[VEC_SIZE / 2];
         scalar_t current_cos_vec[VEC_SIZE / 2];
         if constexpr (KV_DTYPE == Fp8KVCacheDataType::kAuto) {
@@ -317,13 +317,7 @@ __device__ void dynamic_paged_attention_kernel(
           std::memcpy(current_sin_vec, r_sin_ptr + (offset1 * x + offset2)/2, VEC_SIZE / 2 * sizeof(scalar_t));
           std::memcpy(current_cos_vec, r_cos_ptr + (offset1 * x + offset2)/2, VEC_SIZE / 2 * sizeof(scalar_t));
           apply_local_token_rotary_embedding(current_k_vec, current_cos_vec, current_sin_vec, VEC_SIZE);
-          k_vecs[j] = *reinterpret_cast<const K_vec*>(
-              current_k_vec); //TODO: study a way to avoid memory copy twice here
           // TODO: when embed dim is not full size, how to make sure it.
-          // Perform the computation in-place, this is for position embedding.
-          // method 1: add a loop here to do position embedding. (current method)
-          // method 2: for future if we can come up with a method that applies position embedding to the q*k result directly.
-          // when multiplication, which is also an unfolded loop, try to do position embedding. (much more complicated to figure out how to due to generic type)
         } else {
           //TODO: also add position embedding for this scenerio
           // Vector conversion from Quant_vec to K_vec.
