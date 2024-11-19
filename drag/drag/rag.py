@@ -195,8 +195,8 @@ class PromptCacheRAG(RAG):
 
     @staticmethod
     def _load_lm(lm_name: str) -> promptcache.model.LanguageModel:
-        if lm_name == "CodeLlama-7b-Instruct-hf":
-            return promptcache.model.CodeLlama("codellama/CodeLlama-7b-Instruct-hf", load_in_8bit=True, device_map="auto")
+        if "llama" in lm_name.lower():
+            return promptcache.model.CodeLlama(lm_name, load_in_8bit=True, device_map="auto")
         else:
             raise ValueError(f"Invalid language model name {lm_name}")
 
@@ -275,7 +275,7 @@ class PromptCacheRAG(RAG):
             position_ids=position_ids,
             params=self._parameter,
             cache=cache,
-            stream_interval=2,
+            stream_interval=1,
             use_full_position_ids=self._lm.use_full_position_ids,
         )
 
@@ -674,7 +674,7 @@ class DynamicRAG(RAG):
 class RAGArgs:
     rag_type: str = "parrot"  # RAG model name.
 
-    pc_lm_name: str = "CodeLlama-7b-Instruct-hf"  # [PromptCacheRAG] Language model name.
+    pc_lm_name: str = "codellama/CodeLlama-7b-Instruct-hf"  # [PromptCacheRAG] Language model name.
     pc_max_ctx_length: int = 5000  # [PromptCacheRAG] Max context length.
     pc_enable_cpu_inference: bool = False  # [PromptCacheRAG] Inference on CPU.
     pc_cache_max_token: int = 800  # [PromptCacheRAG] Max tokens for document cache.

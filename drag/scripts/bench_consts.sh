@@ -103,16 +103,16 @@ function make_sut_args() {
     local retVal=$2
     if [[ $_SUT == "parrot" ]]
     then
-        sut_args="--rag_type=parrot --tokenizer facebook/opt-125m"
+        sut_args="--rag_type=parrot --tokenizer meta-llama/Llama-2-7b-chat-hf"
     elif [[ $_SUT == "llmrag" ]]
     then
-        sut_args="--rag_type=llmrag --tokenizer facebook/opt-125m --model facebook/opt-125m"
+        sut_args="--rag_type=llmrag --tokenizer meta-llama/Llama-2-7b-chat-hf --model meta-llama/Llama-2-7b-chat-hf"
     elif [[ $_SUT == "pcrag" ]]
     then
-        sut_args="--rag_type=pcrag --tokenizer facebook/opt-125m --pc_lm_name CodeLlama-7b-Instruct-hf"
+        sut_args="--rag_type=pcrag --tokenizer meta-llama/Llama-2-7b-chat-hf --pc_lm_name meta-llama/Llama-2-7b-chat-hf"
     elif [[ $_SUT == "drag" ]]
     then
-        sut_args="--rag_type=drag --tokenizer facebook/opt-125m --model meta-llama/Llama-3.1-8B-Instruct --gpu-memory-utilization 0.9 --enforce-eager --enable-prefix-caching"
+        sut_args="--rag_type=drag --tokenizer meta-llama/Llama-2-7b-chat-hf --model meta-llama/Llama-2-7b-chat-hf --gpu-memory-utilization 0.9 --enforce-eager --enable-prefix-caching"
     else
         echo "ERROR (get_sut_args): Invalid SUT $_SUT, standard SUTS: [ ${SUTS[*]} ]"
         exit 1
