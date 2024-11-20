@@ -281,7 +281,7 @@ async def rag_request_func(
     output = RAGRequestFuncOutput()
     output.prompt_len = request_func_input.request.prompt_len
 
-    generated_text = ""
+    generated_texts: List[str] = []
     ttft = 0.0
     st = time.perf_counter()
     most_recent_timestamp = st
@@ -300,12 +300,15 @@ async def rag_request_func(
                 output.itl.append(timestamp - most_recent_timestamp)
 
             most_recent_timestamp = timestamp
-            generated_text += response
+            generated_texts.append(response)
 
         latency = time.perf_counter() - st
-        output.generated_text = generated_text
+        output.generated_text = "".join(generated_texts)
         output.success = True
         output.latency = latency
+        if len(output.generated_text) <= 0:
+            output.success = False
+            logger.error(f"Found empty response for {request_func_input}")
     except Exception:
         output.success = False
         exc_info = sys.exc_info()

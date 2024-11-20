@@ -98,21 +98,23 @@ SUTS=(
     "drag"
 )
 
+SUTS_MODEL="meta-llama/Llama-3.1-8B-Instruct"
+
 function make_sut_args() {
     local _SUT=$1
     local retVal=$2
     if [[ $_SUT == "parrot" ]]
     then
-        sut_args="--rag_type=parrot --tokenizer meta-llama/Llama-2-7b-chat-hf"
+        sut_args="--rag_type=parrot --tokenizer ${SUTS_MODEL}"
     elif [[ $_SUT == "llmrag" ]]
     then
-        sut_args="--rag_type=llmrag --tokenizer meta-llama/Llama-2-7b-chat-hf --model meta-llama/Llama-2-7b-chat-hf"
+        sut_args="--rag_type=llmrag --tokenizer ${SUTS_MODEL} --model ${SUTS_MODEL}"
     elif [[ $_SUT == "pcrag" ]]
     then
-        sut_args="--rag_type=pcrag --tokenizer meta-llama/Llama-2-7b-chat-hf --pc_lm_name meta-llama/Llama-2-7b-chat-hf"
+        sut_args="--rag_type=pcrag --tokenizer ${SUTS_MODEL} --pc_lm_name ${SUTS_MODEL}"
     elif [[ $_SUT == "drag" ]]
     then
-        sut_args="--rag_type=drag --tokenizer meta-llama/Llama-2-7b-chat-hf --model meta-llama/Llama-2-7b-chat-hf --gpu-memory-utilization 0.9 --enforce-eager --enable-prefix-caching"
+        sut_args="--rag_type=drag --tokenizer ${SUTS_MODEL} --model ${SUTS_MODEL} --gpu-memory-utilization 0.9 --enforce-eager --enable-prefix-caching"
     else
         echo "ERROR (get_sut_args): Invalid SUT $_SUT, standard SUTS: [ ${SUTS[*]} ]"
         exit 1

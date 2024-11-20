@@ -39,6 +39,7 @@ dependencies = [
     "fuzzywuzzy",
     "jieba",
     "lxml",
+    "python-Levenshtein",
     "Requests",
     "rouge",
     "termcolor",

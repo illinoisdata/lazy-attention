@@ -3,6 +3,7 @@ import re
 from typing import Callable, List, Optional, Tuple
 
 import torch
+import transformers
 from promptcache.model.falcon import FalconForCausalLM
 from promptcache.model.llama2 import LlamaForCausalLM
 from promptcache.model.mpt import MptForCausalLM
@@ -214,6 +215,33 @@ class Llama2(LanguageModel):
 
     def get_formatter(self) -> Callable[[str], str]:
         return self.formatter
+
+
+class TransformerPipeline(LanguageModel):
+
+    def __init__(self, name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct", **kwargs):
+        pipeline = transformers.pipeline(model=name, **kwargs)
+        tokenizer = pipeline.tokenizer
+        model = pipeline.model
+
+        self.formatter = FormatConversation(
+            system=("<s> [INST] <<SYS>>\n", "<</SYS>>\n\n", "<s> [INST] "),
+            user=("", "[/INST]"),
+            assistant=("", "</s><s> [INST] "))
+
+        stop_token_ids = [tokenizer.eos_token_id]
+
+        stop_str = ["</s>"]
+
+        super().__init__(name, model, tokenizer, stop_token_ids, stop_str)
+
+    def get_formatter(self) -> Callable[[str], str]:
+        return self.formatter
+
+    def get_cache_shape(self) -> Tuple[int, int, int]:
+        num_head = self.config.n_heads
+        head_dim = self.config.d_model // self.config.n_heads
+        return self.config.n_layers, num_head, head_dim
 
 
 class Falcon(LanguageModel):

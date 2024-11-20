@@ -14,6 +14,7 @@ fire
 fuzzywuzzy
 jieba
 lxml
+python-Levenshtein
 Requests
 rouge
 termcolor

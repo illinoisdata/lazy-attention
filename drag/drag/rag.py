@@ -123,13 +123,17 @@ class LLMRAG(RAG):
         context = "\n\n".join([self._docs[doc_id] for doc_id in doc_ids])
         prompt = context + "\n\n" + query
         request_id = self._next_request_id()
+        latest_idx = 0
         async for generate_output in self._llm.generate(
             prompt=prompt,
             sampling_params=sampling_params,
             request_id=request_id,
         ):
-            for output in generate_output.outputs:
-                yield output.text
+            if len(generate_output.outputs) > 1:
+                logger.warning(f"Found {len(generate_output.outputs)} outputs, yielding first one.")
+            prev_latest_idx = latest_idx
+            latest_idx = len(generate_output.outputs[0].text)
+            yield generate_output.outputs[0].text[prev_latest_idx:]
 
     def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
         pass
@@ -195,7 +199,9 @@ class PromptCacheRAG(RAG):
 
     @staticmethod
     def _load_lm(lm_name: str) -> promptcache.model.LanguageModel:
-        if "llama" in lm_name.lower():
+        if lm_name == "meta-llama/Llama-3.1-8B-Instruct":
+            return promptcache.model.TransformerPipeline(lm_name)
+        elif "llama" in lm_name.lower():
             return promptcache.model.CodeLlama(lm_name, load_in_8bit=True, device_map="auto")
         else:
             raise ValueError(f"Invalid language model name {lm_name}")
@@ -286,7 +292,7 @@ class PromptCacheRAG(RAG):
             now = len(output_text) - 1
             if now > pre:
                 tt = " ".join(output_text[pre:now])
-                yield tt
+                yield tt + " "
                 pre = now
         tt = " ".join(output_text[pre:])
         yield tt
