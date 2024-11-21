@@ -7,9 +7,35 @@
 DATA_KEYS=(
     "randtiny"
     "rand"
+
+    # ChatRAG-Bench
     "sqa"
+
+    # Longbench
     "narrativeqa"
+    "qasper"
+    "multifieldqa_en"
+    "multifieldqa_zh"
+    "hotpotqa"
+    "2wikimqa"
+    "musique"
+    "dureader"
+    "gov_report"
+    "qmsum"
+    "multi_news"
+    "vcsum"
+    "trec"
+    "triviaqa"
+    "samsum"
+    "lsht"
+    "passage_count"
+    "passage_retrieval_en"
+    "passage_retrieval_zh"
+    "lcc"
+    "repobench-p"
 )
+
+GLOBAL_DATA_ARGS=""
 
 function get_data_args() {
     local key=$1
@@ -26,6 +52,66 @@ function get_data_args() {
     elif [[ $key == "narrativeqa" ]]
     then
         data_args="--dataset-name longbench --longbench_dataset_name narrativeqa"
+    elif [[ $key == "qasper" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name qasper"
+    elif [[ $key == "multifieldqa_en" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name multifieldqa_en"
+    elif [[ $key == "multifieldqa_zh" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name multifieldqa_zh"
+    elif [[ $key == "hotpotqa" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name hotpotqa"
+    elif [[ $key == "2wikimqa" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name 2wikimqa"
+    elif [[ $key == "musique" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name musique"
+    elif [[ $key == "dureader" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name dureader"
+    elif [[ $key == "gov_report" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name gov_report"
+    elif [[ $key == "qmsum" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name qmsum"
+    elif [[ $key == "multi_news" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name multi_news"
+    elif [[ $key == "vcsum" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name vcsum"
+    elif [[ $key == "trec" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name trec"
+    elif [[ $key == "triviaqa" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name triviaqa"
+    elif [[ $key == "samsum" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name samsum"
+    elif [[ $key == "lsht" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name lsht"
+    elif [[ $key == "passage_count" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name passage_count"
+    elif [[ $key == "passage_retrieval_en" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name passage_retrieval_en"
+    elif [[ $key == "passage_retrieval_zh" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name passage_retrieval_zh"
+    elif [[ $key == "lcc" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name lcc"
+    elif [[ $key == "repobench-p" ]]
+    then
+        data_args="--dataset-name longbench --longbench_dataset_name repobench-p"
     else
         echo "ERROR (get_data_args): Unknown dataset ${key}. standard dataset: [ ${DATA_KEYS[*]} ]"
         exit 1
@@ -82,6 +168,9 @@ function make_data_args() {
         ret_dataargs="${ret_dataargs} ${new_nbargs}"
     done
 
+    # Append global data arguments.
+    ret_dataargs="${ret_dataargs} ${GLOBAL_DATA_ARGS}"
+
     eval $RET_DATAKEY="'${ret_datakey}'"
     eval $RET_DATAARGS="'${ret_dataargs}'"
     return 0
@@ -94,10 +183,16 @@ function make_data_args() {
 SUTS=(
     "parrot"
     "llmrag"
+    "trragr1"
+    "trragr2"
+    "trragm1"
+    "trragm2"
+    "trragm3"
     "pcrag"
     "drag"
 )
 
+# SUTS_MODEL="facebook/opt-125m"
 SUTS_MODEL="meta-llama/Llama-3.1-8B-Instruct"
 
 function make_sut_args() {
@@ -109,6 +204,21 @@ function make_sut_args() {
     elif [[ $_SUT == "llmrag" ]]
     then
         sut_args="--rag_type=llmrag --tokenizer ${SUTS_MODEL} --model ${SUTS_MODEL}"
+    elif [[ $_SUT == "trragr1" ]]
+    then
+        sut_args="--rag_type=trrag --tokenizer ${SUTS_MODEL} --trrag_lm_name ${SUTS_MODEL} --trrag_method r1"
+    elif [[ $_SUT == "trragr2" ]]
+    then
+        sut_args="--rag_type=trrag --tokenizer ${SUTS_MODEL} --trrag_lm_name ${SUTS_MODEL} --trrag_method r2"
+    elif [[ $_SUT == "trragm1" ]]
+    then
+        sut_args="--rag_type=trrag --tokenizer ${SUTS_MODEL} --trrag_lm_name ${SUTS_MODEL} --trrag_method m1"
+    elif [[ $_SUT == "trragm2" ]]
+    then
+        sut_args="--rag_type=trrag --tokenizer ${SUTS_MODEL} --trrag_lm_name ${SUTS_MODEL} --trrag_method m2"
+    elif [[ $_SUT == "trragm3" ]]
+    then
+        sut_args="--rag_type=trrag --tokenizer ${SUTS_MODEL} --trrag_lm_name ${SUTS_MODEL} --trrag_method m3"
     elif [[ $_SUT == "pcrag" ]]
     then
         sut_args="--rag_type=pcrag --tokenizer ${SUTS_MODEL} --pc_lm_name ${SUTS_MODEL}"
@@ -128,12 +238,8 @@ function prepare_sut() {
     if [[ $_SUT == "example" ]]
     then
         echo "Preparing example"
-    elif [[ $_SUT == "parrot" || $_SUT == "llmrag" || $_SUT == "pcrag" || $_SUT == "drag" ]]
-    then
-        : # Do nothing
     else
-        echo "ERROR (prepare_sut): Invalid SUT $_SUT, standard SUTS: [ ${SUTS[*]} ]"
-        exit 1
+        echo "Prepare SUT $_SUT with no-op."
     fi
     return 0
 }

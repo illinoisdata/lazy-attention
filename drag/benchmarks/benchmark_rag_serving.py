@@ -74,6 +74,7 @@ class RAGRequest:
     prompt: str
     prompt_len: int
     output_len: int
+    document_len: int
     documents: List[DocumentId]
     sampling_params: SamplingParams
 
@@ -155,11 +156,15 @@ def sample_random_requests(
             prefix_token_ids + [(offsets[i] + i + j) % tokenizer.vocab_size for j in range(input_lens[i])]
         )
         output_len = int(output_lens[i])
+        document_len = sum(
+            document_lens[(prompt_document_offsets[i] + i + j) % num_documents] for j in range(prompt_document_lens[i])
+        )
         input_requests.append(
             RAGRequest(
                 prompt=prompt,
                 prompt_len=int(prefix_len + input_lens[i]),
                 output_len=output_len,
+                document_len=document_len,
                 documents=prompt_doc_ids,
                 sampling_params=SamplingParams(max_tokens=output_len),
             )
@@ -180,8 +185,10 @@ def sample_chatragbench_requests(
     # Fill document cache and collect prompt document IDs.
     doc_hash_to_id: Dict[int, DocumentId] = {}
     doc_ids_by_prompt: List[List[DocumentId]] = []
+    document_len_by_prompt: List[int] = []
     for item in data_list:
         prompt_doc_ids: List[DocumentId] = []
+        document_len = 0
         for ctx in item["ctxs"][: args.num_ctx]:
             document = ctx["text"]
             doc_hash = hash(document)
@@ -190,12 +197,15 @@ def sample_chatragbench_requests(
                 assert len(doc_ids) == 1
                 doc_hash_to_id[doc_hash] = doc_ids[0]
             prompt_doc_ids.append(doc_hash_to_id[doc_hash])
+            document_len += len(tokenizer.encode(document))
         doc_ids_by_prompt.append(prompt_doc_ids)
+        document_len_by_prompt.append(document_len)
     logger.info(f"{len(doc_hash_to_id)} unique documents")
 
     # Generate input requests.
     input_requests = []
-    for prompt, prompt_doc_ids in zip(prompt_without_context_list, doc_ids_by_prompt):
+    max_len = 0
+    for prompt, prompt_doc_ids, document_len in zip(prompt_without_context_list, doc_ids_by_prompt, document_len_by_prompt):
         prompt_len = len(tokenizer.encode(prompt))
         output_len = args.out_seq_len
         input_requests.append(
@@ -203,10 +213,13 @@ def sample_chatragbench_requests(
                 prompt=prompt,
                 prompt_len=prompt_len,
                 output_len=output_len,
+                document_len=document_len,
                 documents=prompt_doc_ids,
                 sampling_params=SamplingParams(max_tokens=output_len),
             )
         )
+        max_len = max(max_len, prompt_len + document_len)
+    logger.info(f"max_len= {max_len} tokens")
     return input_requests
 
 
@@ -222,6 +235,7 @@ def sample_longbench_requests(
     # Fill document cache and collect prompt document IDs.
     doc_hash_to_id: Dict[int, DocumentId] = {}
     doc_ids_by_prompt: List[List[DocumentId]] = []
+    document_len_by_prompt: List[int] = []
     for row in longbench_dataset.rows:
         document = row.context  # One document per LongBench prompt.
         doc_hash = hash(document)
@@ -230,11 +244,13 @@ def sample_longbench_requests(
             assert len(doc_ids) == 1
             doc_hash_to_id[doc_hash] = doc_ids[0]
         doc_ids_by_prompt.append([doc_hash_to_id[doc_hash]])
+        document_len_by_prompt.append(len(tokenizer.encode(document)))
     logger.info(f"{len(doc_hash_to_id)} unique documents")
 
     # Generate input requests.
     input_requests = []
-    for row, prompt_doc_ids in zip(longbench_dataset.rows, doc_ids_by_prompt):
+    max_len = 0
+    for row, prompt_doc_ids, document_len in zip(longbench_dataset.rows, doc_ids_by_prompt, document_len_by_prompt):
         prompt = row.input
         prompt_len = len(tokenizer.encode(prompt))
         output_len = args.longbench_out_seq_len
@@ -243,10 +259,13 @@ def sample_longbench_requests(
                 prompt=prompt,
                 prompt_len=prompt_len,
                 output_len=output_len,
+                document_len=document_len,
                 documents=prompt_doc_ids,
                 sampling_params=SamplingParams(max_tokens=output_len),
             )
         )
+        max_len = max(max_len, prompt_len + document_len)
+    logger.info(f"max_len= {max_len} tokens")
     return input_requests
 
 

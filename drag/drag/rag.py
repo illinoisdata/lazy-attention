@@ -10,6 +10,8 @@ import numpy as np
 import promptcache
 import promptcache.model
 import torch
+import transformers
+from transformers.cache_utils import DynamicCache
 
 from drag.document import Document
 from drag.logging import logger
@@ -144,6 +146,192 @@ class LLMRAG(RAG):
         return request_id
 
 
+class TransformerRAG(RAG):
+    def __init__(self, lm_name: str, method: str) -> None:
+        RAG.__init__(self)
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._tokenizer = transformers.AutoTokenizer.from_pretrained(lm_name)
+        self._token_eos = self._tokenizer.eos_token_id
+        self._max_tokens = 200
+        self._model = transformers.AutoModelForCausalLM.from_pretrained(lm_name).to(self._device)
+        self._model.eval()
+
+        self._method = method
+        self._preamble = "Below we provide information and a related query. Answer the query as accurately as you can."
+
+        self._docs: Dict[DocumentId, str] = {}
+
+    def add_cache(self, docs: List[str]) -> List[int]:
+        doc_ids = []
+        for doc in docs:
+            doc_id = len(self._docs)
+            self._docs[doc_id] = doc
+            doc_ids.append(doc_id)
+        return doc_ids
+
+    async def iter_generate(
+        self,
+        doc_ids: List[DocumentId],
+        query: str,
+        sampling_params: SamplingParams,
+        position_ids: Optional[List[int]] = None,
+    ) -> AsyncGenerator[str, None]:
+        """Generate answer for a given query."""
+        documents = [self._docs[doc_id] for doc_id in doc_ids]
+
+        # TODO: Yield from these generate methods.
+        kv_cache = DynamicCache()
+        if self._method == "r1":
+            # regular generation
+            generated_text = self._generate_r1(kv_cache=kv_cache, query=query, documents=documents)
+        elif self._method == "r2":
+            # regular generation with preamble
+            generated_text = self._generate_r2(kv_cache=kv_cache, query=query, documents=documents)
+        elif self._method == "m1":
+            # masked generation
+            generated_text = self._generate_m1(kv_cache=kv_cache, query=query, documents=documents)
+        elif self._method == "m2":
+            # masked generation with preamble
+            generated_text = self._generate_m2(kv_cache=kv_cache, query=query, documents=documents)
+        elif self._method == "m3":
+            # masked generation with repeated query
+            generated_text = self._generate_m3(kv_cache=kv_cache, query=query, documents=documents)
+        else:
+            raise ValueError(f"Invalid method: {self._method}")
+
+        del kv_cache
+
+        # release GPU memory
+        torch.cuda.empty_cache()
+
+        yield generated_text
+
+    def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
+        pass
+
+    def _generate_r1(self, kv_cache: DynamicCache, query: str, documents: List[str]) -> str:
+        """Regular generation."""
+        output_tokens = torch.tensor([], dtype=torch.int64).to(self._device)
+        for doc in documents:
+            _, kv_cache = self.prefill(doc, kv_cache)
+        next_token, kv_cache = self.prefill(query, kv_cache)  # next token [token_id]
+        output_tokens = torch.cat([output_tokens, next_token])
+
+        for i in range(self._max_tokens - 1):
+            next_token, kv_cache = self.decode(next_token.unsqueeze(0), kv_cache)
+            output_tokens = torch.cat([output_tokens, next_token])
+            if next_token == self._token_eos:
+                logger.debug(f"EOS token found when {i + 1} tokens generated.")
+                break
+        logger.debug(f"Generated {len(output_tokens)} tokens.\n {output_tokens}")
+        return self._tokenizer.decode(output_tokens)
+
+    def _generate_r2(self, kv_cache: DynamicCache, query: str, documents: List[str]) -> str:
+        """Regular generation with preamble."""
+        _, kv_cache = self.prefill(self._preamble, kv_cache)
+        return self._generate_r1(kv_cache, query, documents)
+
+    def _generate_m1(self, kv_cache: DynamicCache, query: str, documents: List[str]) -> str:
+        """Masked generation."""
+        output_tokens = torch.tensor([], dtype=torch.int64).to(self._device)
+        for doc in documents:
+            past_len = kv_cache.get_seq_length()
+            logger.debug(f"Masked - Past length: {past_len}")
+            current_len = self._tokenizer(doc, return_tensors="pt").input_ids.to(self._device).shape[1]
+            logger.debug(f"Masked - Current length: {current_len}")
+            attention_mask = torch.cat([torch.zeros(past_len), torch.ones(current_len)]).unsqueeze(0).to(self._device)
+            _, kv_cache = self.prefill(doc, kv_cache, attention_mask)
+            logger.debug(f"Masked - Attention mask: {attention_mask}")
+        next_token, kv_cache = self.prefill(query, kv_cache)
+        output_tokens = torch.cat([output_tokens, next_token])
+
+        for i in range(self._max_tokens - 1):
+            next_token, kv_cache = self.decode(next_token.unsqueeze(0), kv_cache)
+            output_tokens = torch.cat([output_tokens, next_token])
+            if next_token == self._token_eos:
+                logger.debug(f"EOS token found when {i + 1} tokens generated.")
+                break
+        return self._tokenizer.decode(output_tokens)
+
+    def _generate_m2(self, kv_cache: DynamicCache, query: str, documents: List[str]) -> str:
+        """Masked generation with preamble."""
+        output_tokens = torch.tensor([], dtype=torch.int64).to(self._device)
+        _, kv_cache = self.prefill(self._preamble, kv_cache)
+        preamble_len = kv_cache.get_seq_length()
+        for doc in documents:
+            past_len = kv_cache.get_seq_length()
+            current_len = self._tokenizer(doc, return_tensors="pt").input_ids.to(self._device).shape[1]
+            attention_mask = (
+                torch.cat([torch.ones(preamble_len), torch.zeros(past_len - preamble_len), torch.ones(current_len)])
+                .unsqueeze(0)
+                .to(self._device)
+            )
+            _, kv_cache = self.prefill(doc, kv_cache, attention_mask)
+            logger.debug(f"Masked - Attention mask: {attention_mask}")
+        next_token, kv_cache = self.prefill(query, kv_cache)
+        output_tokens = torch.cat([output_tokens, next_token])
+
+        for i in range(self._max_tokens - 1):
+            next_token, kv_cache = self.decode(next_token.unsqueeze(0), kv_cache)
+            output_tokens = torch.cat([output_tokens, next_token])
+            if next_token == self._token_eos:
+                logger.debug(f"EOS token found when {i + 1} tokens generated.")
+                break
+        return self._tokenizer.decode(output_tokens)
+
+    def _generate_m3(self, kv_cache: DynamicCache, query: str, documents: List[str]) -> str:
+        """Masked generation with preamble and repeated query."""
+        output_tokens = torch.tensor([], dtype=torch.int64).to(self._device)
+        _, kv_cache = self.prefill(self._preamble, kv_cache)
+        preamble_len = kv_cache.get_seq_length()
+
+        next_token: Optional[torch.Tensor] = None
+        assert len(documents) > 0, "What to do?"
+        for doc in documents:
+            dq = doc + " " + query
+            past_len = kv_cache.get_seq_length()
+            current_len = self._tokenizer(dq, return_tensors="pt").input_ids.to(self._device).shape[1]
+            attention_mask = (
+                torch.cat([torch.ones(preamble_len), torch.zeros(past_len - preamble_len), torch.ones(current_len)])
+                .unsqueeze(0)
+                .to(self._device)
+            )
+            logger.debug(f"Masked - Attention mask: {attention_mask}")
+            next_token, kv_cache = self.prefill(dq, kv_cache, attention_mask)
+        assert next_token is not None
+        output_tokens = torch.cat([output_tokens, next_token])
+
+        for i in range(self._max_tokens - 1):
+            assert next_token is not None
+            next_token, kv_cache = self.decode(next_token.unsqueeze(0), kv_cache)
+            output_tokens = torch.cat([output_tokens, next_token])
+            if next_token == self._token_eos:
+                logger.debug(f"EOS token found when {i + 1} tokens generated.")
+                break
+        return self._tokenizer.decode(output_tokens)
+
+    def prefill(
+        self, prompt: str, kv_cache: DynamicCache, attention_mask: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, DynamicCache]:
+        """Prefill the key-value cache with the prompt."""
+        with torch.no_grad():
+            tokens = self._tokenizer(prompt, return_tensors="pt").input_ids.to(self._device)
+            outputs = self._model(tokens, past_key_values=kv_cache, use_cache=True, attention_mask=attention_mask)
+            logits = outputs.logits
+            kv_cache = outputs.past_key_values
+            next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)[0]
+            return next_token, kv_cache
+
+    def decode(self, in_tokens: torch.Tensor, kv_cache: DynamicCache) -> Tuple[torch.Tensor, DynamicCache]:
+        """Decoding phase. Get a new token and update the key-value cache."""
+        with torch.no_grad():
+            outputs = self._model(in_tokens, past_key_values=kv_cache, use_cache=True)
+            logits = outputs.logits
+            kv_cache = outputs.past_key_values
+            next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)[0]
+            return next_token, kv_cache
+
+
 PROMPT_CACHE_SCHEMA_TEMPLATE = r"""
 <schema name="{schema_name}">
 <system/>
@@ -200,7 +388,7 @@ class PromptCacheRAG(RAG):
     @staticmethod
     def _load_lm(lm_name: str) -> promptcache.model.LanguageModel:
         if lm_name == "meta-llama/Llama-3.1-8B-Instruct":
-            return promptcache.model.TransformerPipeline(lm_name)
+            return promptcache.model.AutoModel(lm_name)
         elif "llama" in lm_name.lower():
             return promptcache.model.CodeLlama(lm_name, load_in_8bit=True, device_map="auto")
         else:
@@ -680,6 +868,9 @@ class DynamicRAG(RAG):
 class RAGArgs:
     rag_type: str = "parrot"  # RAG model name.
 
+    trrag_method: str = "r1"  # [TransformerRAG] Prompting method [r1, r2, m1, m2, m3].
+    trrag_lm_name: str = "meta-llama/Llama-3.1-8B-Instruct"  # [TransformerRAG] Language model name.
+
     pc_lm_name: str = "codellama/CodeLlama-7b-Instruct-hf"  # [PromptCacheRAG] Language model name.
     pc_max_ctx_length: int = 5000  # [PromptCacheRAG] Max context length.
     pc_enable_cpu_inference: bool = False  # [PromptCacheRAG] Inference on CPU.
@@ -692,6 +883,8 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
     elif args.rag_type == "llmrag":
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
         return LLMRAG(llm=AsyncLLMEngine.from_engine_args(async_engine_args))
+    elif args.rag_type == "trrag":
+        return TransformerRAG(lm_name=args.trrag_lm_name, method=args.trrag_method)
     elif args.rag_type == "pcrag":
         return PromptCacheRAG(
             lm_name=args.pc_lm_name,

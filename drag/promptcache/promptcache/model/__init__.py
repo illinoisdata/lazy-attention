@@ -217,12 +217,14 @@ class Llama2(LanguageModel):
         return self.formatter
 
 
-class TransformerPipeline(LanguageModel):
+class AutoModel(LanguageModel):
 
     def __init__(self, name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct", **kwargs):
-        pipeline = transformers.pipeline(model=name, **kwargs)
-        tokenizer = pipeline.tokenizer
-        model = pipeline.model
+        # pipeline = transformers.pipeline(model=name, **kwargs)
+        # tokenizer = pipeline.tokenizer
+        # model = pipeline.model
+        tokenizer = AutoTokenizer.from_pretrained(name)
+        model = AutoModelForCausalLM.from_pretrained(name)
 
         self.formatter = FormatConversation(
             system=("<s> [INST] <<SYS>>\n", "<</SYS>>\n\n", "<s> [INST] "),
@@ -237,11 +239,6 @@ class TransformerPipeline(LanguageModel):
 
     def get_formatter(self) -> Callable[[str], str]:
         return self.formatter
-
-    def get_cache_shape(self) -> Tuple[int, int, int]:
-        num_head = self.config.n_heads
-        head_dim = self.config.d_model // self.config.n_heads
-        return self.config.n_layers, num_head, head_dim
 
 
 class Falcon(LanguageModel):
