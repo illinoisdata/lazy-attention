@@ -153,7 +153,10 @@ class TransformerRAG(RAG):
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(lm_name)
         self._token_eos = self._tokenizer.eos_token_id
         self._max_tokens = 200
-        self._model = transformers.AutoModelForCausalLM.from_pretrained(lm_name).to(self._device)
+        self._document_max_len = 512
+        self._model = transformers.AutoModelForCausalLM.from_pretrained(
+            lm_name, device_map="balanced", offload_folder="offload"
+        )
         self._model.eval()
 
         self._method = method
@@ -211,7 +214,7 @@ class TransformerRAG(RAG):
 
     def _generate_r1(self, kv_cache: DynamicCache, query: str, documents: List[str]) -> str:
         """Regular generation."""
-        output_tokens = torch.tensor([], dtype=torch.int64).to(self._device)
+        output_tokens = torch.tensor([], dtype=torch.int64)
         for doc in documents:
             _, kv_cache = self.prefill(doc, kv_cache)
         next_token, kv_cache = self.prefill(query, kv_cache)  # next token [token_id]
@@ -233,13 +236,13 @@ class TransformerRAG(RAG):
 
     def _generate_m1(self, kv_cache: DynamicCache, query: str, documents: List[str]) -> str:
         """Masked generation."""
-        output_tokens = torch.tensor([], dtype=torch.int64).to(self._device)
+        output_tokens = torch.tensor([], dtype=torch.int64)
         for doc in documents:
             past_len = kv_cache.get_seq_length()
             logger.debug(f"Masked - Past length: {past_len}")
-            current_len = self._tokenizer(doc, return_tensors="pt").input_ids.to(self._device).shape[1]
+            current_len = self._tokenizer(doc, return_tensors="pt").input_ids.shape[1]
             logger.debug(f"Masked - Current length: {current_len}")
-            attention_mask = torch.cat([torch.zeros(past_len), torch.ones(current_len)]).unsqueeze(0).to(self._device)
+            attention_mask = torch.cat([torch.zeros(past_len), torch.ones(current_len)]).unsqueeze(0)
             _, kv_cache = self.prefill(doc, kv_cache, attention_mask)
             logger.debug(f"Masked - Attention mask: {attention_mask}")
         next_token, kv_cache = self.prefill(query, kv_cache)
@@ -255,17 +258,15 @@ class TransformerRAG(RAG):
 
     def _generate_m2(self, kv_cache: DynamicCache, query: str, documents: List[str]) -> str:
         """Masked generation with preamble."""
-        output_tokens = torch.tensor([], dtype=torch.int64).to(self._device)
+        output_tokens = torch.tensor([], dtype=torch.int64)
         _, kv_cache = self.prefill(self._preamble, kv_cache)
         preamble_len = kv_cache.get_seq_length()
         for doc in documents:
             past_len = kv_cache.get_seq_length()
-            current_len = self._tokenizer(doc, return_tensors="pt").input_ids.to(self._device).shape[1]
-            attention_mask = (
-                torch.cat([torch.ones(preamble_len), torch.zeros(past_len - preamble_len), torch.ones(current_len)])
-                .unsqueeze(0)
-                .to(self._device)
-            )
+            current_len = self._tokenizer(doc, return_tensors="pt").input_ids.shape[1]
+            attention_mask = torch.cat(
+                [torch.ones(preamble_len), torch.zeros(past_len - preamble_len), torch.ones(current_len)]
+            ).unsqueeze(0)
             _, kv_cache = self.prefill(doc, kv_cache, attention_mask)
             logger.debug(f"Masked - Attention mask: {attention_mask}")
         next_token, kv_cache = self.prefill(query, kv_cache)
@@ -281,7 +282,7 @@ class TransformerRAG(RAG):
 
     def _generate_m3(self, kv_cache: DynamicCache, query: str, documents: List[str]) -> str:
         """Masked generation with preamble and repeated query."""
-        output_tokens = torch.tensor([], dtype=torch.int64).to(self._device)
+        output_tokens = torch.tensor([], dtype=torch.int64)
         _, kv_cache = self.prefill(self._preamble, kv_cache)
         preamble_len = kv_cache.get_seq_length()
 
@@ -290,12 +291,10 @@ class TransformerRAG(RAG):
         for doc in documents:
             dq = doc + " " + query
             past_len = kv_cache.get_seq_length()
-            current_len = self._tokenizer(dq, return_tensors="pt").input_ids.to(self._device).shape[1]
-            attention_mask = (
-                torch.cat([torch.ones(preamble_len), torch.zeros(past_len - preamble_len), torch.ones(current_len)])
-                .unsqueeze(0)
-                .to(self._device)
-            )
+            current_len = self._tokenizer(dq, return_tensors="pt").input_ids.shape[1]
+            attention_mask = torch.cat(
+                [torch.ones(preamble_len), torch.zeros(past_len - preamble_len), torch.ones(current_len)]
+            ).unsqueeze(0)
             logger.debug(f"Masked - Attention mask: {attention_mask}")
             next_token, kv_cache = self.prefill(dq, kv_cache, attention_mask)
         assert next_token is not None
@@ -315,11 +314,13 @@ class TransformerRAG(RAG):
     ) -> Tuple[torch.Tensor, DynamicCache]:
         """Prefill the key-value cache with the prompt."""
         with torch.no_grad():
-            tokens = self._tokenizer(prompt, return_tensors="pt").input_ids.to(self._device)
-            outputs = self._model(tokens, past_key_values=kv_cache, use_cache=True, attention_mask=attention_mask)
-            logits = outputs.logits
-            kv_cache = outputs.past_key_values
-            next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)[0]
+            tokens = self._tokenizer(prompt, return_tensors="pt").input_ids
+            for i in range(0, tokens.shape[1], self._document_max_len):
+                chunk = tokens[:, i : i + self._document_max_len]
+                outputs = self._model(chunk, past_key_values=kv_cache, use_cache=True, attention_mask=attention_mask)
+                logits = outputs.logits
+                kv_cache = outputs.past_key_values
+                next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)[0]
             return next_token, kv_cache
 
     def decode(self, in_tokens: torch.Tensor, kv_cache: DynamicCache) -> Tuple[torch.Tensor, DynamicCache]:
