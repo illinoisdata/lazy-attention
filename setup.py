@@ -184,7 +184,7 @@ class cmake_build_ext(build_ext):
             # Default build tool to whatever cmake picks.
             build_tool = []
         print("Print configure command:", " ".join(['cmake', ext.cmake_lists_dir, *build_tool, *cmake_args]))
-        distutils.log.error("DRAG - Print configure command:", " ".join(['cmake', ext.cmake_lists_dir, *build_tool, *cmake_args]))
+        distutils.log.error("DRAG - Print configure command:" + " ".join(['cmake', ext.cmake_lists_dir, *build_tool, *cmake_args]))
         subprocess.check_call(
             ['cmake', ext.cmake_lists_dir, *build_tool, *cmake_args],
             cwd=self.build_temp)
@@ -218,7 +218,7 @@ class cmake_build_ext(build_ext):
         ]
 
         print("Print build command:", " ".join(["cmake", *build_args]))
-        distutils.log.error("DRAG - Print build command:", " ".join(["cmake", *build_args]))
+        distutils.log.error("DRAG - Print build command:" + " ".join(["cmake", *build_args]))
         subprocess.check_call(["cmake", *build_args], cwd=self.build_temp)
 
         # Install the libraries
@@ -245,7 +245,7 @@ class cmake_build_ext(build_ext):
                 "cmake", "--install", ".", "--prefix", str(prefix), "--component",
                 target_name(ext.name)
             ]))
-            distutils.log.error("DRAG - Print install command:", " ".join([
+            distutils.log.error("DRAG - Print install command:" + " ".join([
                 "cmake", "--install", ".", "--prefix", str(prefix), "--component",
                 target_name(ext.name)
             ]))

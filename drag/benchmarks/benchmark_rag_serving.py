@@ -236,6 +236,7 @@ def sample_longbench_requests(
     doc_hash_to_id: Dict[int, DocumentId] = {}
     doc_ids_by_prompt: List[List[DocumentId]] = []
     document_len_by_prompt: List[int] = []
+    sum_tokens: int = 0
     for row in longbench_dataset.rows:
         document = row.context  # One document per LongBench prompt.
         doc_hash = hash(document)
@@ -243,9 +244,11 @@ def sample_longbench_requests(
             doc_ids = rag.add_cache([document])
             assert len(doc_ids) == 1
             doc_hash_to_id[doc_hash] = doc_ids[0]
+        document_token = len(tokenizer.encode(document))
         doc_ids_by_prompt.append([doc_hash_to_id[doc_hash]])
-        document_len_by_prompt.append(len(tokenizer.encode(document)))
-    logger.info(f"{len(doc_hash_to_id)} unique documents")
+        document_len_by_prompt.append(document_token)
+        sum_tokens += document_token
+    logger.info(f"{len(doc_hash_to_id)} unique documents, sum tokens= {sum_tokens}")
 
     # Generate input requests.
     input_requests = []
