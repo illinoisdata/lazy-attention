@@ -84,9 +84,44 @@ def grade_longbench(
     return result_scores
 
 
+def grade_chatragbench(
+    args: chatragbench.ChatRAGBenchArgs,
+    result_jsons: Dict[Path, Dict[str, Any]],
+) -> Dict[Path, chatragbench.AccurracyResult]:
+    # Get prompt_list once.
+    groundtruth_answers = chatragbench.load_groundtruth_answers(args)
+    logger.info(f"Loaded {len(groundtruth_answers)} ChatRAGBench prompts")
+
+    # Score one by one.
+    result_scores = {}
+    for result_path, result_json in result_jsons.items():
+        # Get answer and prediction pairs.
+        selected_groundtruth_answers: List[List[str]] = []
+        prediction_answers: List[str] = []
+        for request_id, prediction in zip(result_json["input_request_ids"], result_json["generated_texts"]):
+            selected_groundtruth_answers.append(groundtruth_answers[request_id])
+            prediction_answers.append(prediction)
+
+        # Grade.
+        total_score = chatragbench.scorer(
+            eval_dataset=args.eval_dataset,
+            groundtruth_answers=selected_groundtruth_answers,
+            prediction_answers=prediction_answers,
+        )
+        result_scores[result_path] = total_score
+        logger.info(
+            f"ChatRAGBench[{args.eval_dataset},{result_path.stem}]: "
+            f"{len(prediction_answers)} predictions, score= {total_score}"
+        )
+
+    return result_scores
+
+
 def grade(args: argparse.Namespace, result_jsons: Dict[Path, Dict[str, Any]]):
     if args.dataset_name == "longbench":
         grade_longbench(args.longbench, result_jsons)
+    elif args.dataset_name == "chatragbench":
+        grade_chatragbench(args.chatragbench, result_jsons)
     else:
         raise ValueError(f"Unknown dataset for grading: {args.dataset_name}")
 
@@ -156,7 +191,9 @@ if __name__ == "__main__":
     parser.add_arguments(GradeAccuracyArgs, "grade")
     parser.add_arguments(chatragbench.ChatRAGBenchArgs, "chatragbench")
     parser.add_arguments(longbench.LongBenchArgs, "longbench")
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
+    if len(unknown) > 0:
+        logger.warning(f"Unrecognized arguments: {unknown}")
     logger.info(args)
 
     result_jsons = read_results(args.grade)

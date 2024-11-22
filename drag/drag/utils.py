@@ -1,5 +1,6 @@
 import io
 import sys
+from typing import Optional
 
 import numpy as np
 
@@ -97,12 +98,12 @@ def get_block_allocator(llm: LLM):
     return llm.llm_engine.scheduler[0].block_manager.block_allocator._allocators[Device.GPU]
 
 
-def get_evictor(llm: LLM, processing: bool = None):
+def get_evictor(llm: LLM, processing: Optional[bool] = None):
     """
     Get the evictor.
     """
     evictor = get_block_allocator(llm).evictor
-    if hasattr(evictor, 'set_processing_state'):
+    if hasattr(evictor, "set_processing_state"):
         evictor.set_processing_state(processing)  # Pass processing state dynamically
     return evictor
 

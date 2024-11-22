@@ -7,6 +7,7 @@ from vllm import _custom_ops as ops
 from vllm.triton_utils import HAS_TRITON
 
 #------ DynmaicRAG begins ------
+from vllm import envs
 from loguru import logger
 #------ DynmaicRAG ends ------
 
@@ -134,7 +135,7 @@ class PagedAttention:
         #------ DynmaicRAG begins ------
         use_dynamic = envs.DRAG_DECODE_USE_DYNAMIC
         if use_dynamic:
-            logger.info("decoding: using DynamicRAG")
+            logger.debug("decoding: using DynamicRAG")
             assert use_v1, "DynamicRAG only supports PagedAttention V1"
             ops.dynamic_paged_attention(
                 output,
@@ -160,7 +161,7 @@ class PagedAttention:
                 blocksparse_head_sliding_step,)
             return output
         else:
-            logger.info(f"decoding: using PagedAttention" 
+            logger.debug(f"decoding: using PagedAttention" 
                         f"{'V1' if use_v1 else 'V2'}")
         #------ DynmaicRAG begins ------
 

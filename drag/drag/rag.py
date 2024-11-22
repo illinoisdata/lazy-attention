@@ -16,7 +16,7 @@ from transformers.cache_utils import DynamicCache
 
 from drag.document import Document
 from drag.logging import logger
-from drag.utils import get_block_size, get_gpu_cache, get_model_runner, get_tokenizer, get_evictor
+from drag.utils import get_block_size, get_evictor, get_gpu_cache, get_model_runner, get_tokenizer
 from vllm import LLM
 from vllm.engine.arg_utils import AsyncEngineArgs, EngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
@@ -342,9 +342,9 @@ class TransformerRAG(RAG):
             next_token, kv_cache = self.decode(next_token.unsqueeze(0), kv_cache)
             output_tokens = torch.cat([output_tokens, next_token])
             if next_token == self._token_eos:
-                logger.debug(f"EOS token found when {i + 1} tokens generated.")
+                # logger.debug(f"EOS token found when {i + 1} tokens generated.")
                 break
-        logger.debug(f"Generated {len(output_tokens)} tokens.\n {output_tokens}")
+        # logger.debug(f"Generated {len(output_tokens)} tokens.\n {output_tokens}")
         return self._tokenizer.decode(output_tokens)
 
     def _generate_r2(self, kv_cache: DynamicCache, query: str, documents: List[str]) -> str:
@@ -357,12 +357,12 @@ class TransformerRAG(RAG):
         output_tokens = torch.tensor([], dtype=torch.int64).to(self._device)
         for doc in documents:
             past_len = kv_cache.get_seq_length()
-            logger.debug(f"Masked - Past length: {past_len}")
+            # logger.debug(f"Masked - Past length: {past_len}")
             current_len = self._tokenizer(doc, return_tensors="pt").input_ids.shape[1]
-            logger.debug(f"Masked - Current length: {current_len}")
+            # logger.debug(f"Masked - Current length: {current_len}")
             attention_mask = torch.cat([torch.zeros(past_len), torch.ones(current_len)]).unsqueeze(0)
             _, kv_cache = self.prefill(doc, kv_cache, attention_mask)
-            logger.debug(f"Masked - Attention mask: {attention_mask}")
+            # logger.debug(f"Masked - Attention mask: {attention_mask}")
         next_token, kv_cache = self.prefill(query, kv_cache)
         output_tokens = torch.cat([output_tokens, next_token])
 
@@ -370,7 +370,7 @@ class TransformerRAG(RAG):
             next_token, kv_cache = self.decode(next_token.unsqueeze(0), kv_cache)
             output_tokens = torch.cat([output_tokens, next_token])
             if next_token == self._token_eos:
-                logger.debug(f"EOS token found when {i + 1} tokens generated.")
+                # logger.debug(f"EOS token found when {i + 1} tokens generated.")
                 break
         return self._tokenizer.decode(output_tokens)
 
@@ -386,7 +386,7 @@ class TransformerRAG(RAG):
                 [torch.ones(preamble_len), torch.zeros(past_len - preamble_len), torch.ones(current_len)]
             ).unsqueeze(0)
             _, kv_cache = self.prefill(doc, kv_cache, attention_mask)
-            logger.debug(f"Masked - Attention mask: {attention_mask}")
+            # logger.debug(f"Masked - Attention mask: {attention_mask}")
         next_token, kv_cache = self.prefill(query, kv_cache)
         output_tokens = torch.cat([output_tokens, next_token])
 
@@ -394,7 +394,7 @@ class TransformerRAG(RAG):
             next_token, kv_cache = self.decode(next_token.unsqueeze(0), kv_cache)
             output_tokens = torch.cat([output_tokens, next_token])
             if next_token == self._token_eos:
-                logger.debug(f"EOS token found when {i + 1} tokens generated.")
+                # logger.debug(f"EOS token found when {i + 1} tokens generated.")
                 break
         return self._tokenizer.decode(output_tokens)
 
@@ -417,7 +417,7 @@ class TransformerRAG(RAG):
             attention_mask = torch.cat(
                 [torch.ones(preamble_len), torch.zeros(past_len - preamble_len), torch.ones(current_len)]
             ).unsqueeze(0)
-            logger.debug(f"Masked - Attention mask: {attention_mask}")
+            # logger.debug(f"Masked - Attention mask: {attention_mask}")
             next_token, kv_cache = self.prefill(dq, kv_cache, attention_mask)
         assert next_token is not None
         output_tokens = torch.cat([output_tokens, next_token])
@@ -427,7 +427,7 @@ class TransformerRAG(RAG):
             next_token, kv_cache = self.decode(next_token.unsqueeze(0), kv_cache)
             output_tokens = torch.cat([output_tokens, next_token])
             if next_token == self._token_eos:
-                logger.debug(f"EOS token found when {i + 1} tokens generated.")
+                # logger.debug(f"EOS token found when {i + 1} tokens generated.")
                 break
         return self._tokenizer.decode(output_tokens)
 
@@ -735,7 +735,7 @@ class DynamicRAG(RAG):
 
         block_table.extend(query_block_ids)
         self.set_used_blocks.update(query_block_ids)
-        logger.debug(f"Block table after prefill {block_table}")
+        # logger.debug(f"Block table after prefill {block_table}")
         return DynamicOutput(prompt_token_ids=prompt_token_ids, block_table=block_table, next_token_id=next_token_id)
 
     def decode(
@@ -769,7 +769,7 @@ class DynamicRAG(RAG):
 
         input_ids = torch.tensor(output_token_ids[-1:]).cuda()
         position_ids = torch.tensor([seq_len - 1]).cuda()
-        logger.debug(f"decode slot_mapping {slot_mapping}")
+        # logger.debug(f"decode slot_mapping {slot_mapping}")
         # get hidden status (complete prefill)
         attn_metadata = DynamicRAG._build_attn_metadata(
             num_prefill_tokens=0,
@@ -879,7 +879,7 @@ class DynamicRAG(RAG):
             output_token_ids.append(next_token_id)
 
             next_tokens = self.tokenizer.batch_decode([next_token_id])
-            logger.debug(f"next token {next_tokens}")
+            # logger.debug(f"next token {next_tokens}")
             for next_token in next_tokens:
                 yield next_token
 
@@ -903,9 +903,9 @@ class DynamicRAG(RAG):
         num_used_blocks = len(set_used_blocks)
         set_candidate_blocks = set(np.arange(num_needed_blocks + num_used_blocks, dtype=np.int32))
         set_candidate_blocks = {int(x) for x in set_candidate_blocks}
-        logger.debug(f"original candidate blocks {set_candidate_blocks}")
+        # logger.debug(f"original candidate blocks {set_candidate_blocks}")
         set_candidate_blocks.difference_update(set_used_blocks)
-        logger.debug(f"filtered candidate blocks {set_candidate_blocks}")
+        # logger.debug(f"filtered candidate blocks {set_candidate_blocks}")
         allocated_block_ids = list(set_candidate_blocks)[:num_needed_blocks]
         # convert to slot mapping
         slot_mapping = []

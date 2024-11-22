@@ -58,7 +58,7 @@ class Document:
         """
         # directly feed token_ids rather than str,
         tokens_prompt = {
-            'prompt_token_ids': self.token_ids,
+            "prompt_token_ids": self.token_ids,
         }
         logger.info(f'length of tokens prompt is {len(tokens_prompt["prompt_token_ids"])}')
         outputs = self.llm.generate([tokens_prompt], get_sampling_param("prefill"))
