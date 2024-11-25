@@ -6,6 +6,8 @@ import torch
 from vllm import _custom_ops as ops
 from vllm.triton_utils import HAS_TRITON
 
+from vllm import envs  # DynamicRAG: import envs.py from vllm
+
 if HAS_TRITON:
     from vllm.attention.ops.prefix_prefill import context_attention_fwd
 
@@ -127,16 +129,17 @@ class PagedAttention:
         use_v1 = (max_seq_len <= 8192
                   and (max_num_partitions == 1 or num_seqs * num_heads > 512))
         
-        #---DynmaicRAG begins------
-        use_dynamic = True #hard set flag 
-        if use_v1 and use_dynamic:
+        #------ DynmaicRAG begins ------
+        use_dynamic = envs.DRAG_DECODE_USE_DYNAMIC
+        if use_dynamic:
+            assert use_v1, "DynamicRAG only supports PagedAttention V1"
             ops.dynamic_paged_attention(
                 output,
                 query,
                 key_cache,
                 value_cache,
-                cos_sin_cache, #new dynamic_pos parameter compared to paged_attention_v1
-                rotary_dim, #new dynamic_pos parameter compared to paged_attention_v1
+                cos_sin_cache,
+                rotary_dim,
                 num_kv_heads,
                 scale,
                 block_tables,
@@ -152,8 +155,8 @@ class PagedAttention:
                 blocksparse_vert_stride,
                 blocksparse_block_size,
                 blocksparse_head_sliding_step,)
-
-        #----DynamicRAG ends------
+            return output
+        #------ DynmaicRAG begins ------
 
         if use_v1:
             # Run PagedAttention V1.

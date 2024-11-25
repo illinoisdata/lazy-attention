@@ -71,6 +71,13 @@ if TYPE_CHECKING:
     VLLM_DISABLED_KERNELS: List[str] = []
     VLLM_USE_V1: bool = False
 
+    # ------ DynmaicRAG begins ------
+    # Custom env vars
+    DRAG_STORE_UNRAOTATED_KEY: bool = False  # not used
+    DRAG_PREFILL_USE_DYNAMIC: bool = False  # not used
+    DRAG_DECODE_USE_DYNAMIC: bool = False
+    # ------ DynmaicRAG ends ------
+
 
 def get_default_cache_root():
     return os.getenv(
@@ -460,6 +467,12 @@ environment_variables: Dict[str, Callable[[], Any]] = {
     # If set, use the V1 code path.
     "VLLM_USE_V1":
     lambda: bool(int(os.getenv("VLLM_USE_V1", "0"))),
+
+    # ------ DynmaicRAG begins ------
+    # Custom env vars
+    "DRAG_DECODE_USE_DYNAMIC":
+    lambda: bool(int(os.getenv("DRAG_DECODE_USE_DYNAMIC", "0"))),
+    # ------ DynmaicRAG ends ------
 }
 
 # end-env-vars-definition

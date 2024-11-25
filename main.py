@@ -1,14 +1,11 @@
-import logging
-
-from sympy.physics.units import temperature
-
-logging.basicConfig(level=logging.DEBUG,
-                    format='%(asctime)s - %(name)s '
-                           '- %(levelname)s - %(message)s')
 import os
-os.environ['VLLM_LOGGING_LEVEL'] = 'DEBUG'
-os.environ['TRITON_DEBUG'] = '1'
 from vllm import LLM, SamplingParams
+
+# set the environment variable to enable dynamic
+os.environ["DRAG_DECODE_USE_DYNAMIC"] = "1"
+
+print("DRAG_DECODE_USE_DYNAMIC:", bool(int(os.environ.get("DRAG_DECODE_USE_DYNAMIC"))))
+assert bool(int(os.environ.get("DRAG_DECODE_USE_DYNAMIC")))
 
 # vllm ------------------------------------------------------------------------
 llm = LLM(model="meta-llama/Llama-3.1-8B-Instruct",
