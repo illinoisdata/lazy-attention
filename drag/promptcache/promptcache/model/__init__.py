@@ -240,6 +240,16 @@ class AutoModel(LanguageModel):
     def get_formatter(self) -> Callable[[str], str]:
         return self.formatter
 
+    def get_cache_shape(self):
+        num_head = None
+        if hasattr(self.config, 'num_key_value_heads'):
+            num_head = self.config.num_key_value_heads
+        if num_head is None:
+            num_head = self.config.num_attention_heads
+        head_dim = self.config.hidden_size // self.config.num_attention_heads
+
+        return self.config.num_hidden_layers, num_head, head_dim
+
 
 class Falcon(LanguageModel):
     def __init__(self, name="tiiuae/falcon-7b-instruct", **kwargs):
