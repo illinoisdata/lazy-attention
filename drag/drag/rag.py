@@ -280,6 +280,28 @@ class TransformerRAG(RAG):
                 break
         return self._tokenizer.decode(output_tokens)
 
+    def _generate_m2v2(self, kv_cache: DynamicCache, query: str, documents: List[str]) -> str:
+        """Masked generation with preamble. Preamble in an individual document."""
+        output_tokens = torch.tensor([], dtype=torch.int64)
+        for doc in [self._preamble, *documents]:
+            past_len = kv_cache.get_seq_length()
+            logger.debug(f"Masked - Past length: {past_len}")
+            current_len = self._tokenizer(doc, return_tensors="pt").input_ids.shape[1]
+            logger.debug(f"Masked - Current length: {current_len}")
+            attention_mask = torch.cat([torch.zeros(past_len), torch.ones(current_len)]).unsqueeze(0)
+            _, kv_cache = self.prefill(doc, kv_cache, attention_mask)
+            logger.debug(f"Masked - Attention mask: {attention_mask}")
+        next_token, kv_cache = self.prefill(query, kv_cache)
+        output_tokens = torch.cat([output_tokens, next_token])
+
+        for i in range(self._max_tokens - 1):
+            next_token, kv_cache = self.decode(next_token.unsqueeze(0), kv_cache)
+            output_tokens = torch.cat([output_tokens, next_token])
+            if next_token == self._token_eos:
+                logger.debug(f"EOS token found when {i + 1} tokens generated.")
+                break
+        return self._tokenizer.decode(output_tokens)
+
     def _generate_m3(self, kv_cache: DynamicCache, query: str, documents: List[str]) -> str:
         """Masked generation with preamble and repeated query."""
         output_tokens = torch.tensor([], dtype=torch.int64)

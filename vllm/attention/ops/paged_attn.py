@@ -6,7 +6,11 @@ import torch
 from vllm import _custom_ops as ops
 from vllm.triton_utils import HAS_TRITON
 
-from vllm import envs  # DynamicRAG: import envs.py from vllm
+#------ DynmaicRAG begins ------
+from vllm import envs 
+from vllm.logging import get_logger
+logger = get_logger(__name__)
+#------ DynmaicRAG ends ------
 
 if HAS_TRITON:
     from vllm.attention.ops.prefix_prefill import context_attention_fwd
@@ -132,6 +136,7 @@ class PagedAttention:
         #------ DynmaicRAG begins ------
         use_dynamic = envs.DRAG_DECODE_USE_DYNAMIC
         if use_dynamic:
+            logger.info("decoding: using DynamicRAG")
             assert use_v1, "DynamicRAG only supports PagedAttention V1"
             ops.dynamic_paged_attention(
                 output,
@@ -156,6 +161,9 @@ class PagedAttention:
                 blocksparse_block_size,
                 blocksparse_head_sliding_step,)
             return output
+        else:
+            logger.info(f"decoding: using PagedAttention" 
+                        f"{'V1' if use_v1 else 'V2'}")
         #------ DynmaicRAG begins ------
 
         if use_v1:
