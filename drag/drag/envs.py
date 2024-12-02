@@ -1,4 +1,3 @@
-import os
 from typing import Any, Callable, Dict
 
 # begin-env-vars-definition
@@ -8,6 +7,7 @@ environment_variables: Dict[str, Callable[[], Any]] = {
 }
 
 # end-env-vars-definition
+
 
 def __getattr__(name: str):
     # lazy evaluation of environment variables

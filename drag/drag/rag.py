@@ -4,7 +4,8 @@ import asyncio
 import dataclasses
 import sys
 from abc import ABC, abstractmethod
-from typing import AsyncGenerator, Dict, FrozenSet, List, Optional, Tuple
+from collections import OrderedDict
+from typing import Any, AsyncGenerator, Dict, FrozenSet, List, Optional, Tuple
 
 import numpy as np
 import promptcache
@@ -22,6 +23,7 @@ from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.model_executor.sampling_metadata import SamplingMetadata, SequenceGroupToSample
 from vllm.sampling_params import SamplingParams, SamplingType
 from vllm.sequence import SequenceData
+from vllm.transformers_utils.tokenizer import get_tokenizer as vllm_get_tokenizer
 
 try:
     from vllm.attention.backends.xformers import XFormersMetadata
@@ -72,6 +74,9 @@ class RAG(ABC):
     def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
         pass
 
+    def get_stats_dict(self) -> Dict[str, Any]:
+        return {}
+
 
 class ParrotRAG(RAG):
 
@@ -97,6 +102,116 @@ class ParrotRAG(RAG):
 
     def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
         pass
+
+
+class LRUCacheManager:
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self.cache: OrderedDict[Any, int] = OrderedDict()
+        self.current_weight = 0
+        self.cache_hit = 0
+        self.cache_miss = 0
+
+    def put(self, item_ids: List[Any], item_weights: List[int]) -> Tuple[bool, List[Any], List[int], List[int]]:
+        evicted_items: List[Any] = []
+        evicted_item_weights: List[int] = []
+        fill_items_weights: List[int] = []
+        if sum(item_weights) > self.capacity:
+            # logger.error(f"Cannot cache all items ({sum(item_weights)}) within the capacity ({self.capacity})")
+            return True, evicted_items, evicted_item_weights, fill_items_weights
+
+        for item_id, item_weight in zip(item_ids, item_weights):
+
+            # If item already exists, remove it to update its position
+            if item_id in self.cache:
+                self.current_weight -= self.cache[item_id]
+                del self.cache[item_id]
+                self.cache_hit += 1
+            else:
+                fill_items_weights.append(item_weight)
+                self.cache_miss += 1
+
+            # Evict items if necessary to make space for the new item
+            while self.current_weight + item_weight > self.capacity:
+                # Evict the least recently used item
+                evicted_item_id, evicted_item_weight = self.cache.popitem(last=False)
+                evicted_items.append(evicted_item_id)
+                evicted_item_weights.append(evicted_item_weight)
+                self.current_weight -= evicted_item_weight
+
+            # Add the new item
+            self.cache[item_id] = item_weight
+            self.current_weight += item_weight
+
+        return False, evicted_items, evicted_item_weights, fill_items_weights
+
+
+class CacheParrotRAG(ParrotRAG):
+    """Only use for cache estimation."""
+
+    def __init__(self, tokenizer_id: str, capacity: int) -> None:
+        ParrotRAG.__init__(self)
+        self._tokenizer = vllm_get_tokenizer(tokenizer_id)
+        self._doc_tokens: Dict[DocumentId, int] = {}
+
+        # Need to be thread-safe.
+        self._sync_lock = asyncio.Lock()
+        self._cache_manager = LRUCacheManager(capacity)
+        self._is_fails: List[bool] = []
+        self._evicted_doc_ids: List[DocumentId] = []
+        self._evicted_doc_tokens: List[int] = []
+        self._fill_doc_tokens: List[int] = []
+
+    def add_cache(self, docs: List[str]) -> List[int]:
+        doc_ids = ParrotRAG.add_cache(self, docs)
+        for doc, doc_id in zip(docs, doc_ids):
+            self._doc_tokens[doc_id] = len(self._tokenizer.encode(doc))
+        return doc_ids
+
+    async def iter_generate(
+        self,
+        doc_ids: List[DocumentId],
+        query: str,
+        sampling_params: SamplingParams,
+        position_ids: Optional[List[int]] = None,
+    ) -> AsyncGenerator[str, None]:
+        # Simulate allocating for document cache.
+        doc_tokens = [self._doc_tokens[doc_id] for doc_id in doc_ids]
+        async with self._sync_lock:
+            is_fail, evicted_doc_ids, evicted_doc_tokens, fill_doc_tokens = self._cache_manager.put(doc_ids, doc_tokens)
+            self._is_fails.append(is_fail)
+            self._evicted_doc_ids.extend(evicted_doc_ids)
+            self._evicted_doc_tokens.extend(evicted_doc_tokens)
+            self._fill_doc_tokens.extend(fill_doc_tokens)
+
+        yield "cache!"
+
+    def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
+        pass
+
+    def get_stats_dict(self) -> Dict[str, Any]:
+        return {
+            "hit": self._cache_manager.cache_hit,
+            "miss": self._cache_manager.cache_miss,
+            "num_evict": len(self._evicted_doc_tokens),
+            "num_fill": len(self._fill_doc_tokens),
+            "evict_toks": sum(self._evicted_doc_tokens),
+            "fill_toks": sum(self._fill_doc_tokens),
+            "fails": sum(self._is_fails),
+        }
+
+    def __str__(self):
+        return (
+            "CacheParrotRAG("
+            f"hit= {self._cache_manager.cache_hit}, "
+            f"miss= {self._cache_manager.cache_miss}, "
+            f"num_evict= {len(self._evicted_doc_tokens)}, "
+            f"num_fill= {len(self._fill_doc_tokens)}, "
+            f"evict_toks= {sum(self._evicted_doc_tokens)}, "
+            f"fill_toks= {sum(self._fill_doc_tokens)}, "
+            f"fails= {sum(self._is_fails)}"
+            ")"
+        )
 
 
 class LLMRAG(RAG):
@@ -879,6 +994,9 @@ class DynamicRAG(RAG):
 class RAGArgs:
     rag_type: str = "parrot"  # RAG model name.
 
+    cachep_capacity: int = 615_000  # [CacheParrotRAG] Cache capacity in tokens
+    cachep_tokenizer: str = "meta-llama/Llama-3.1-8B-Instruct"  # [CacheParrotRAG] Tokenizer name
+
     trrag_method: str = "r1"  # [TransformerRAG] Prompting method [r1, r2, m1, m2, m3].
     trrag_lm_name: str = "meta-llama/Llama-3.1-8B-Instruct"  # [TransformerRAG] Language model name.
 
@@ -891,6 +1009,8 @@ class RAGArgs:
 def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
     if args.rag_type == "parrot":
         return ParrotRAG()
+    elif args.rag_type == "cachep":
+        return CacheParrotRAG(tokenizer_id=args.cachep_tokenizer, capacity=args.cachep_capacity)
     elif args.rag_type == "llmrag":
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
         return LLMRAG(llm=AsyncLLMEngine.from_engine_args(async_engine_args))

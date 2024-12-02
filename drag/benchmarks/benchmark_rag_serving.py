@@ -240,14 +240,14 @@ def sample_longbench_requests(
     for row in longbench_dataset.rows:
         document = row.context  # One document per LongBench prompt.
         doc_hash = hash(document)
+        document_token = len(tokenizer.encode(document))
         if doc_hash not in doc_hash_to_id:
             doc_ids = rag.add_cache([document])
             assert len(doc_ids) == 1
             doc_hash_to_id[doc_hash] = doc_ids[0]
-        document_token = len(tokenizer.encode(document))
+            sum_tokens += document_token
         doc_ids_by_prompt.append([doc_hash_to_id[doc_hash]])
         document_len_by_prompt.append(document_token)
-        sum_tokens += document_token
     logger.info(f"{len(doc_hash_to_id)} unique documents, sum tokens= {sum_tokens}")
 
     # Generate input requests.
@@ -714,6 +714,9 @@ def main(args: argparse.Namespace):
     result_json["request_rate"] = args.request_rate if args.request_rate < float("inf") else "inf"
     result_json["max_concurrency"] = args.max_concurrency
 
+    # RAG stats
+    result_json["rag_stats"] = rag.get_stats_dict()
+
     # Merge with benchmark result
     result_json = {**result_json, **benchmark_result}
 
@@ -723,6 +726,7 @@ def main(args: argparse.Namespace):
     with open(result_path, "w", encoding="utf-8") as f:
         json.dump(result_json, f)
     logger.info(f"Save results to {result_path}")
+    logger.info(f"RAG: {rag}")
 
 
 if __name__ == "__main__":

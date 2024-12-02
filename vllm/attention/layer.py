@@ -103,20 +103,20 @@ class Attention(nn.Module):
     ) -> torch.Tensor:
 
         # -----DynamicRAG begins------
-        assert torch.any(query != 0), "Query is all zeros!"
-        # logger.debug(f"q {query}\nk {key}\nv {value}")
-        return self.impl.forward(query, key, value, kv_cache, attn_metadata,
-                                 self._k_scale, self._v_scale,
-                                 cos_sin_cache=cos_sin_cache,
-                                 rotary_dim=rotary_dim,
-                                 attn_type=attn_type,
-                                 unrotated_key=unrotated_key
-                                 )
+        if cos_sin_cache is not None and rotary_dim is not None: 
+            # assert torch.any(query != 0), "Query is all zeros!"
+            # logger.debug(f"q {query}\nk {key}\nv {value}")
+            return self.impl.forward(query, key, value, kv_cache, attn_metadata,
+                                     self._k_scale, self._v_scale,
+                                     cos_sin_cache=cos_sin_cache,
+                                     rotary_dim=rotary_dim,
+                                     attn_type=attn_type,
+                                     unrotated_key=unrotated_key
+                                     )
         # -----DynmaicRAG ends------
-        # original
-        # return self.impl.forward(query, key, value, kv_cache, attn_metadata,
-        #                              self._k_scale, self._v_scale,
-        #                              attn_type=attn_type)
+        return self.impl.forward(query, key, value, kv_cache, attn_metadata,
+                                     self._k_scale, self._v_scale,
+                                     attn_type=attn_type)
 
     def extra_repr(self) -> str:
         s = f"head_size={self.impl.head_size}"  # type: ignore

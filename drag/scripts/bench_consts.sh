@@ -9,7 +9,18 @@ DATA_KEYS=(
     "rand"
 
     # ChatRAG-Bench
+    "doc2dial"
+    "convfinqa"
+    "quac"
+    "qrecc"
+    "doqa_cooking"
+    "doqa_travel"
+    "doqa_movies"
+    "coqa"
     "sqa"
+    "topiocqa"
+    "inscit"
+    "hybridial"
 
     # Longbench
     "narrativeqa"
@@ -35,7 +46,8 @@ DATA_KEYS=(
     "repobench-p"
 )
 
-GLOBAL_DATA_ARGS=""
+# GLOBAL_DATA_ARGS=""
+GLOBAL_DATA_ARGS="--max-concurrency 1"
 
 function get_data_args() {
     local key=$1
@@ -45,10 +57,43 @@ function get_data_args() {
         data_args="--dataset-name random --random-num-prompts 10 --random-input-len 128 --random-output-len 32 --random-document-len 16 --random-num-documents 4 --random-num-documents-per-prompt 1"
     elif [[ $key == "rand" ]]
     then
-        data_args="--dataset-name random --sample-requests 2000 --random-num-prompts 100 --random-input-len 128 --random-output-len 32 --random-document-len 16 --random-num-documents 10 --random-num-documents-per-prompt 2"
+        data_args="--dataset-name random --sample-requests 128 --random-num-prompts 64 --random-input-len 16 --random-output-len 16 --random-document-len 128 --random-num-documents 8 --random-num-documents-per-prompt 4"
+    elif [[ $key == "doc2dial" ]]
+    then
+        data_args="--dataset-name chatragbench --eval_dataset doc2dial"
+    elif [[ $key == "convfinqa" ]]
+    then
+        data_args="--dataset-name chatragbench --eval_dataset convfinqa"
+    elif [[ $key == "quac" ]]
+    then
+        data_args="--dataset-name chatragbench --eval_dataset quac"
+    elif [[ $key == "qrecc" ]]
+    then
+        data_args="--dataset-name chatragbench --eval_dataset qrecc"
+    elif [[ $key == "doqa_cooking" ]]
+    then
+        data_args="--dataset-name chatragbench --eval_dataset doqa_cooking"
+    elif [[ $key == "doqa_travel" ]]
+    then
+        data_args="--dataset-name chatragbench --eval_dataset doqa_travel"
+    elif [[ $key == "doqa_movies" ]]
+    then
+        data_args="--dataset-name chatragbench --eval_dataset doqa_movies"
+    elif [[ $key == "coqa" ]]
+    then
+        data_args="--dataset-name chatragbench --eval_dataset coqa"
     elif [[ $key == "sqa" ]]
     then
         data_args="--dataset-name chatragbench --eval_dataset sqa"
+    elif [[ $key == "topiocqa" ]]
+    then
+        data_args="--dataset-name chatragbench --eval_dataset topiocqa"
+    elif [[ $key == "inscit" ]]
+    then
+        data_args="--dataset-name chatragbench --eval_dataset inscit"
+    elif [[ $key == "hybridial" ]]
+    then
+        data_args="--dataset-name chatragbench --eval_dataset hybridial"
     elif [[ $key == "narrativeqa" ]]
     then
         data_args="--dataset-name longbench --longbench_dataset_name narrativeqa"
@@ -127,6 +172,12 @@ function get_data_augment_args() {
     if [[ $key == "example" ]]
     then
         data_args="--example_flag ${val}"
+    elif [[ $key == "rdl" ]]
+    then
+        data_args="--random-document-len ${val}"
+    elif [[ $key == "n" ]]
+    then
+        data_args="--sample-requests ${val}"
     else
         echo "ERROR (get_data_augment_args): Unknown key= ${key}, with value= ${value}"
         exit 1
@@ -182,11 +233,13 @@ function make_data_args() {
 
 SUTS=(
     "parrot"
+    "cachep"
     "llmrag"
     "trragr1"
     "trragr2"
     "trragm1"
     "trragm2"
+    "trragm2v2"
     "trragm3"
     "pcrag"
     "drag"
@@ -195,12 +248,15 @@ SUTS=(
 # SUTS_MODEL="facebook/opt-125m"
 SUTS_MODEL="meta-llama/Llama-3.1-8B-Instruct"
 
-function make_sut_args() {
+function get_sut_args() {
     local _SUT=$1
     local retVal=$2
     if [[ $_SUT == "parrot" ]]
     then
         sut_args="--rag_type=parrot --tokenizer ${SUTS_MODEL}"
+    elif [[ $_SUT == "cachep" ]]
+    then
+        sut_args="--rag_type=cachep --tokenizer ${SUTS_MODEL} --cachep_tokenizer ${SUTS_MODEL}"
     elif [[ $_SUT == "llmrag" ]]
     then
         sut_args="--rag_type=llmrag --tokenizer ${SUTS_MODEL} --model ${SUTS_MODEL}"
@@ -216,6 +272,9 @@ function make_sut_args() {
     elif [[ $_SUT == "trragm2" ]]
     then
         sut_args="--rag_type=trrag --tokenizer ${SUTS_MODEL} --trrag_lm_name ${SUTS_MODEL} --trrag_method m2"
+    elif [[ $_SUT == "trragm2v2" ]]
+    then
+        sut_args="--rag_type=trrag --tokenizer ${SUTS_MODEL} --trrag_lm_name ${SUTS_MODEL} --trrag_method m2v2"
     elif [[ $_SUT == "trragm3" ]]
     then
         sut_args="--rag_type=trrag --tokenizer ${SUTS_MODEL} --trrag_lm_name ${SUTS_MODEL} --trrag_method m3"
@@ -230,6 +289,66 @@ function make_sut_args() {
         exit 1
     fi
     eval $retVal="'${sut_args}'"
+    return 0
+}
+
+function get_sut_augment_args() {
+    local key=$1
+    local val=$2
+    local RET_SUTARGS=$3
+    if [[ $key == "example" ]]
+    then
+        sut_args="--example_flag ${val}"
+    elif [[ $key == "id" ]]
+    then
+        sut_args=""  # No-op, used for repetitions
+    elif [[ $key == "cpc" ]]
+    then
+        sut_args="--cachep_capacity ${val}"
+    else
+        echo "ERROR (get_sut_augment_args): Unknown key= ${key}, with value= ${value}"
+        exit 1
+    fi
+    eval $RET_SUTARGS="'${sut_args}'"
+    return 0
+}
+
+# The mapping function.
+function make_sut_args() {
+    local sutname=$1
+    local RET_SUTARGS=$2
+
+    # SUT key is everything before `[`.
+    ret_sutkey="${sutname%%\[*}"
+    pairs="${sutname#*$ret_sutkey}"
+
+    # Get sutset arguments.
+    get_sut_args "${ret_sutkey}" ret_sutargs
+
+    # Parse optional flags in each pair of `[`` and `]`.
+    while [[ "$pairs" =~ \[([^\]]*)\](.*) ]]; do
+        pair="${BASH_REMATCH[1]}"
+        pairs="${BASH_REMATCH[2]}"
+
+        # Parse `key` or `key=value`.
+        if [[ "$pair" == *"="* ]]; then
+            # Split the pair into key and value
+            IFS='=' read -r key value <<< "$pair"
+        else
+            # If no '=', treat the key as the entire pair and value as empty
+            key="$pair"
+            value=""
+        fi
+
+        # Map the short name to full argument format.
+        get_sut_augment_args "${key}" "${value}" new_nbargs
+        ret_sutargs="${ret_sutargs} ${new_nbargs}"
+    done
+
+    # Append global sut arguments.
+    ret_sutargs="${ret_sutargs} ${GLOBAL_SUT_ARGS}"
+
+    eval $RET_SUTARGS="'${ret_sutargs}'"
     return 0
 }
 
