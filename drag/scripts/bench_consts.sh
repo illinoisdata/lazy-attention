@@ -245,12 +245,18 @@ SUTS=(
     "drag"
 )
 
-# SUTS_MODEL="facebook/opt-125m"
-SUTS_MODEL="meta-llama/Llama-3.1-8B-Instruct"
-
 function get_sut_args() {
     local _SUT=$1
     local retVal=$2
+
+    if [ -z "$SUTS_MODEL" ]
+    then
+        # SUTS_MODEL="facebook/opt-125m"
+        SUTS_MODEL="meta-llama/Llama-3.1-8B-Instruct"
+        # SUTS_MODEL="meta-llama/Llama-3.1-70B-Instruct"
+    fi
+    echo "Using SUTS_MODEL=${SUTS_MODEL}"
+
     if [[ $_SUT == "parrot" ]]
     then
         sut_args="--rag_type=parrot --tokenizer ${SUTS_MODEL}"

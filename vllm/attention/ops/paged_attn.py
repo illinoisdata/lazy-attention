@@ -7,9 +7,7 @@ from vllm import _custom_ops as ops
 from vllm.triton_utils import HAS_TRITON
 
 #------ DynmaicRAG begins ------
-from vllm import envs 
-from vllm.logger import init_logger
-logger = init_logger(__name__)
+from loguru import logger
 #------ DynmaicRAG ends ------
 
 if HAS_TRITON:
