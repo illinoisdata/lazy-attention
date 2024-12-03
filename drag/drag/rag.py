@@ -16,7 +16,7 @@ from transformers.cache_utils import DynamicCache
 
 from drag.document import Document
 from drag.logging import logger
-from drag.utils import get_block_size, get_gpu_cache, get_model_runner, get_tokenizer
+from drag.utils import get_block_size, get_gpu_cache, get_model_runner, get_tokenizer, get_evictor
 from vllm import LLM
 from vllm.engine.arg_utils import AsyncEngineArgs, EngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
@@ -634,9 +634,29 @@ class DynamicRAG(RAG):
         self.block_size = get_block_size(self.llm)
         self.kv_cache = get_gpu_cache(self.llm)[0]
         self.set_used_blocks = set()
+        self._processing = False  # Internal variable to track processing state
+        self._evictor = None  # Cached evictor
 
         self.stage = None
         self.cached_documents: Dict[int, Document] = {}
+
+    @property
+    def processing(self) -> bool:
+        """Getter for processing state"""
+        return self._processing
+
+    @processing.setter
+    def processing(self, value: bool):
+        """Setter for processing state, updates evictor if state changes"""
+        if self._processing != value:
+            self._processing = value
+            self._evictor = get_evictor(self.llm, self._processing)
+
+    @property
+    def evictor(self):
+        """Return the cached evictor, always up to date"""
+        if self._evictor is None:
+            self._evictor = get_evictor(self.llm, self._processing)
 
     def add_cache(self, docs: List[str]) -> List[DocumentId]:
         """
@@ -647,6 +667,7 @@ class DynamicRAG(RAG):
         :return: a list of document ids
         """
         doc_ids = []
+        self.processing = True
         for doc in docs:
             document = Document(doc, self.llm)
             self.cached_documents[document.doc_id] = document
@@ -863,6 +884,7 @@ class DynamicRAG(RAG):
                 yield next_token
 
     def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
+        self.processing = False
         if doc_ids is None:
             doc_ids = list(self.cached_documents.keys())
         for doc_id in doc_ids:

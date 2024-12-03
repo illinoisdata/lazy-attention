@@ -97,11 +97,14 @@ def get_block_allocator(llm: LLM):
     return llm.llm_engine.scheduler[0].block_manager.block_allocator._allocators[Device.GPU]
 
 
-def get_evictor(llm: LLM):
+def get_evictor(llm: LLM, processing: bool = None):
     """
     Get the evictor.
     """
-    return get_block_allocator(llm).evictor
+    evictor = get_block_allocator(llm).evictor
+    if hasattr(evictor, 'set_processing_state'):
+        evictor.set_processing_state(processing)  # Pass processing state dynamically
+    return evictor
 
 
 def get_gpu_block(llm: LLM, block_id: int):

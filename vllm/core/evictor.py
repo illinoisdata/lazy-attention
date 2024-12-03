@@ -49,6 +49,11 @@ class Evictor(ABC):
         """Remove a given block id from the cache."""
         pass
 
+    @abstractmethod
+    def set_processing_state(self, processing: bool):
+        """Set the processing state to adjust eviction logic based on current processing status."""
+        pass
+
     @property
     @abstractmethod
     def num_blocks(self) -> int:
@@ -94,6 +99,14 @@ class LRUEvictor(Evictor):
         logger.debug(f"DRAG: unset {special_block_ids} as special\n"
                      f"all speical blocks: {self.special_block_ids}")
         self.special_block_ids.difference_update(special_block_ids)
+
+    def set_processing_state(self, processing: bool):
+        """
+        Set the processing state to chnage eviction logic
+        """
+        if processing is not None:
+            self.processing = processing
+            logger.debug(f"Processing state set to {self.processing}")
     # DynamicRAG ends
 
     def __contains__(self, block_id: int) -> bool:
@@ -108,7 +121,7 @@ class LRUEvictor(Evictor):
         # at the start of OrderedDict. Loop through all these blocks to
         # find the one with maximum number of hashed tokens.
         for _id, block in self.free_table.items():
-            if _id in self.special_block_ids:
+            if self.processing and _id in self.special_block_ids: #keep special blocks in cache only when processing
                 continue
             if evicted_block is None:
                 evicted_block, evicted_block_id = block, _id
