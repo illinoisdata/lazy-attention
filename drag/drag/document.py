@@ -56,15 +56,19 @@ class Document:
         cache for prompts.
         :return:
         """
-        # TODO(haocheng): directly feed token_ids rather than str,
+        # directly feed token_ids rather than str,
+        tokens_prompt = {
+            'prompt_token_ids': self.token_ids,
+        }
+        logger.info(f'length of tokens prompt is {len(tokens_prompt["prompt_token_ids"])}')
+        outputs = self.llm.generate([tokens_prompt], get_sampling_param("prefill"))
         # since token_ids not always equal to encode(decode(token_ids))
-        outputs = self.llm.generate(["".join(self.token_str)], get_sampling_param("prefill"))
+        # outputs = self.llm.generate(["".join(self.token_str)], get_sampling_param("prefill"))
 
         logger.debug(f"Doc id {self.doc_id}\n" f"Prefilling output - {outputs[0].outputs[0].text}")
         ctx = get_ctx(self.llm)
+        # logger.debug(f"Block tables {ctx.seq_group_metadata_list[0].block_tables}")
         self.block_table = list(ctx.seq_group_metadata_list[0].block_tables.values())[0]
-        # TODO(haocheng): avoid any decoding when add cache
-        self.block_table = self.block_table[:-1]
         self.num_blocks = len(self.block_table)
 
         logger.debug(

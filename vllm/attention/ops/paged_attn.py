@@ -8,8 +8,8 @@ from vllm.triton_utils import HAS_TRITON
 
 #------ DynmaicRAG begins ------
 from vllm import envs 
-from vllm.logging import get_logger
-logger = get_logger(__name__)
+from vllm.logger import init_logger
+logger = init_logger(__name__)
 #------ DynmaicRAG ends ------
 
 if HAS_TRITON:
