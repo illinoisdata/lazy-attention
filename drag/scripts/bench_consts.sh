@@ -234,6 +234,9 @@ function make_data_args() {
 SUTS=(
     "parrot"
     "cachep"
+    "cachepno"
+    "cachepseq"
+    "cachepptree"
     "llmrag"
     "trragr1"
     "trragr2"
@@ -262,7 +265,16 @@ function get_sut_args() {
         sut_args="--rag_type=parrot --tokenizer ${SUTS_MODEL}"
     elif [[ $_SUT == "cachep" ]]
     then
-        sut_args="--rag_type=cachep --tokenizer ${SUTS_MODEL} --cachep_tokenizer ${SUTS_MODEL}"
+        sut_args="--rag_type=cachep --tokenizer ${SUTS_MODEL} --cachep_tokenizer ${SUTS_MODEL} --cachep_type lru"
+    elif [[ $_SUT == "cachepno" ]]
+    then
+        sut_args="--rag_type=cachep --tokenizer ${SUTS_MODEL} --cachep_tokenizer ${SUTS_MODEL} --cachep_type no"
+    elif [[ $_SUT == "cachepseq" ]]
+    then
+        sut_args="--rag_type=cachep --tokenizer ${SUTS_MODEL} --cachep_tokenizer ${SUTS_MODEL} --cachep_type seq"
+    elif [[ $_SUT == "cachepptree" ]]
+    then
+        sut_args="--rag_type=cachep --tokenizer ${SUTS_MODEL} --cachep_tokenizer ${SUTS_MODEL} --cachep_type ptree"
     elif [[ $_SUT == "llmrag" ]]
     then
         sut_args="--rag_type=llmrag --tokenizer ${SUTS_MODEL} --model ${SUTS_MODEL}"

@@ -104,13 +104,138 @@ class ParrotRAG(RAG):
         pass
 
 
-class LRUCacheManager:
+class CacheManager:
+    def __init__(self):
+        self.cache_hit = 0
+        self.cache_miss = 0
+
+    def put(self, item_ids: List[Any], item_weights: List[int]) -> Tuple[bool, List[Any], List[int], List[int]]:
+        raise NotImplementedError("Abstract method")
+
+    def get_cache_hit(self) -> int:
+        return self.cache_hit
+
+    def get_cache_miss(self) -> int:
+        return self.cache_miss
+
+
+class NoCacheManager(CacheManager):
+    def __init__(self):
+        CacheManager.__init__(self)
+
+    def put(self, item_ids: List[Any], item_weights: List[int]) -> Tuple[bool, List[Any], List[int], List[int]]:
+        assert len(item_ids) == len(item_weights)
+        self.cache_miss += len(item_ids)
+        return False, [], [], item_weights
+
+
+class SequenceCacheManager(CacheManager):
+    """Cache of exact sequence. A cache key is the strict sequence of item IDs."""
+
     def __init__(self, capacity: int):
+        CacheManager.__init__(self)
+        self.capacity = capacity
+        self.cache: OrderedDict[Any, List[int]] = OrderedDict()
+        self.current_weight = 0
+
+    def put(self, item_ids: List[Any], item_weights: List[int]) -> Tuple[bool, List[Any], List[int], List[int]]:
+        evicted_items: List[Any] = []
+        evicted_item_weights: List[int] = []
+        fill_items_weights: List[int] = []
+        total_weight = sum(item_weights)
+        if total_weight > self.capacity:
+            # logger.error(f"Cannot cache all items ({sum(item_weights)}) within the capacity ({self.capacity})")
+            return True, evicted_items, evicted_item_weights, fill_items_weights
+
+        # If item already exists, remove it to update its position
+        cache_key = tuple(item_ids)
+        if cache_key in self.cache:
+            self.current_weight -= sum(self.cache[cache_key])
+            del self.cache[cache_key]
+            self.cache_hit += len(item_ids)
+        else:
+            fill_items_weights.extend(item_weights)
+            self.cache_miss += len(item_ids)
+
+        # Evict items if necessary to make space for the new item
+        while self.current_weight + total_weight > self.capacity:
+            # Evict the least recently used item
+            evicted_item_ids, evicted_item_weight = self.cache.popitem(last=False)
+            evicted_items.extend(evicted_item_ids)
+            evicted_item_weights.extend(evicted_item_weight)
+            self.current_weight -= sum(evicted_item_weight)
+
+        # Add the new item
+        self.cache[cache_key] = item_weights
+        self.current_weight += total_weight
+
+        return False, evicted_items, evicted_item_weights, fill_items_weights
+
+
+class PrefixTreeCacheManager(CacheManager):
+    """Cache of prefix tree.
+
+    LRU tracks prefix usage (which uses prefixes of prefix). Evict suffix of prefix one by one.
+
+    Needs to fill suffix (e.g., BC in ABC) when the prefix is cached but not entire string (e.g., A is cached but not AB).
+    """
+
+    def __init__(self, capacity: int):
+        CacheManager.__init__(self)
+        self.capacity = capacity
+        self.prefix_cache: OrderedDict[Any, int] = OrderedDict()  # Prefix --> suffix weight
+        self.current_weight = 0
+
+    def put(self, item_ids: List[Any], item_weights: List[int]) -> Tuple[bool, List[Any], List[int], List[int]]:
+        evicted_items: List[Any] = []
+        evicted_item_weights: List[int] = []
+        fill_items_weights: List[int] = []
+        if sum(item_weights) > self.capacity:
+            # logger.error(f"Cannot cache all items ({sum(item_weights)}) within the capacity ({self.capacity})")
+            return True, evicted_items, evicted_item_weights, fill_items_weights
+
+        # Find largest prefix.
+        largest_prefix_rdx: Optional[int] = None
+        for rdx in range(len(item_ids), 0, -1):
+            if tuple(item_ids[:rdx]) in self.prefix_cache:
+                largest_prefix_rdx = rdx
+                break
+            fill_items_weights.append(item_weights[rdx - 1])
+
+        # If a prefix already exists, remove all prefixes to update its position
+        if largest_prefix_rdx is not None:
+            for sub_rdx in range(1, largest_prefix_rdx + 1):
+                prefix_ids = tuple(item_ids[:sub_rdx])
+                self.current_weight -= self.prefix_cache[prefix_ids]
+                del self.prefix_cache[prefix_ids]
+                self.cache_hit += 1
+        else:
+            largest_prefix_rdx = 0
+        self.cache_miss += len(item_ids) - largest_prefix_rdx
+
+        # Evict items if necessary to make space for the new item
+        while self.current_weight + sum(item_weights) > self.capacity:
+            # Evict the least recently used item
+            evicted_prefix_ids, evicted_item_weight = self.prefix_cache.popitem(last=False)
+            evicted_items.append(evicted_prefix_ids[-1])
+            evicted_item_weights.append(evicted_item_weight)
+            self.current_weight -= evicted_item_weight
+
+        # Add all prefixes in reverse order so that shorter prefixes are evicted later.
+        for rdx in range(len(item_ids), 0, -1):
+            # Add the new item
+            self.prefix_cache[tuple(item_ids[:rdx])] = item_weights[rdx - 1]
+            self.current_weight += item_weights[rdx - 1]
+
+        return False, evicted_items, evicted_item_weights, fill_items_weights
+
+
+class LRUCacheManager(CacheManager):
+    def __init__(self, capacity: int):
+        CacheManager.__init__(self)
         self.capacity = capacity
         self.cache: OrderedDict[Any, int] = OrderedDict()
         self.current_weight = 0
-        self.cache_hit = 0
-        self.cache_miss = 0
 
     def put(self, item_ids: List[Any], item_weights: List[int]) -> Tuple[bool, List[Any], List[int], List[int]]:
         evicted_items: List[Any] = []
@@ -149,14 +274,14 @@ class LRUCacheManager:
 class CacheParrotRAG(ParrotRAG):
     """Only use for cache estimation."""
 
-    def __init__(self, tokenizer_id: str, capacity: int) -> None:
+    def __init__(self, tokenizer_id: str, cache_manager: CacheManager) -> None:
         ParrotRAG.__init__(self)
         self._tokenizer = vllm_get_tokenizer(tokenizer_id)
         self._doc_tokens: Dict[DocumentId, int] = {}
 
         # Need to be thread-safe.
         self._sync_lock = asyncio.Lock()
-        self._cache_manager = LRUCacheManager(capacity)
+        self._cache_manager = cache_manager
         self._is_fails: List[bool] = []
         self._evicted_doc_ids: List[DocumentId] = []
         self._evicted_doc_tokens: List[int] = []
@@ -183,7 +308,6 @@ class CacheParrotRAG(ParrotRAG):
             self._evicted_doc_ids.extend(evicted_doc_ids)
             self._evicted_doc_tokens.extend(evicted_doc_tokens)
             self._fill_doc_tokens.extend(fill_doc_tokens)
-
         yield "cache!"
 
     def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
@@ -191,8 +315,8 @@ class CacheParrotRAG(ParrotRAG):
 
     def get_stats_dict(self) -> Dict[str, Any]:
         return {
-            "hit": self._cache_manager.cache_hit,
-            "miss": self._cache_manager.cache_miss,
+            "hit": self._cache_manager.get_cache_hit(),
+            "miss": self._cache_manager.get_cache_miss(),
             "num_evict": len(self._evicted_doc_tokens),
             "num_fill": len(self._fill_doc_tokens),
             "evict_toks": sum(self._evicted_doc_tokens),
@@ -203,8 +327,8 @@ class CacheParrotRAG(ParrotRAG):
     def __str__(self):
         return (
             "CacheParrotRAG("
-            f"hit= {self._cache_manager.cache_hit}, "
-            f"miss= {self._cache_manager.cache_miss}, "
+            f"hit= {self._cache_manager.get_cache_hit()}, "
+            f"miss= {self._cache_manager.get_cache_miss()}, "
             f"num_evict= {len(self._evicted_doc_tokens)}, "
             f"num_fill= {len(self._fill_doc_tokens)}, "
             f"evict_toks= {sum(self._evicted_doc_tokens)}, "
@@ -440,7 +564,12 @@ class TransformerRAG(RAG):
             tokens = self._tokenizer(prompt, return_tensors="pt").input_ids
             for i in range(0, tokens.shape[1], self._document_max_len):
                 chunk = tokens[:, i : i + self._document_max_len]
-                outputs = self._model(chunk.to(self._device), past_key_values=kv_cache, use_cache=True, attention_mask=attention_mask.to(self._device) if attention_mask is not None else None)
+                outputs = self._model(
+                    chunk.to(self._device),
+                    past_key_values=kv_cache,
+                    use_cache=True,
+                    attention_mask=attention_mask.to(self._device) if attention_mask is not None else None,
+                )
                 logits = outputs.logits
                 kv_cache = outputs.past_key_values
                 next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)[0]
@@ -1017,6 +1146,7 @@ class DynamicRAG(RAG):
 class RAGArgs:
     rag_type: str = "parrot"  # RAG model name.
 
+    cachep_type: str = "lru"  # [CacheParrotRAG] Cache policy (e.g., no, seq, ptree, lru)
     cachep_capacity: int = 615_000  # [CacheParrotRAG] Cache capacity in tokens
     cachep_tokenizer: str = "meta-llama/Llama-3.1-8B-Instruct"  # [CacheParrotRAG] Tokenizer name
 
@@ -1029,11 +1159,25 @@ class RAGArgs:
     pc_cache_max_token: int = 800  # [PromptCacheRAG] Max tokens for document cache.
 
 
+def make_cache_manager(args: RAGArgs) -> CacheManager:
+    if args.cachep_type == "no":
+        return NoCacheManager()
+    elif args.cachep_type == "seq":
+        return SequenceCacheManager(capacity=args.cachep_capacity)
+    elif args.cachep_type == "ptree":
+        return PrefixTreeCacheManager(capacity=args.cachep_capacity)
+    elif args.cachep_type == "lru":
+        return LRUCacheManager(capacity=args.cachep_capacity)
+    logger.error(f"Invalid CacheManager type {args.cachep_type}")
+    sys.exit(1)
+
+
 def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
     if args.rag_type == "parrot":
         return ParrotRAG()
     elif args.rag_type == "cachep":
-        return CacheParrotRAG(tokenizer_id=args.cachep_tokenizer, capacity=args.cachep_capacity)
+        cache_manager = make_cache_manager(args)
+        return CacheParrotRAG(tokenizer_id=args.cachep_tokenizer, cache_manager=cache_manager)
     elif args.rag_type == "llmrag":
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
         return LLMRAG(llm=AsyncLLMEngine.from_engine_args(async_engine_args))
