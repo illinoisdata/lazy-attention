@@ -354,7 +354,7 @@ class TransformerRAG(RAG):
 
     def _generate_m1(self, kv_cache: DynamicCache, query: str, documents: List[str]) -> str:
         """Masked generation."""
-        output_tokens = torch.tensor([], dtype=torch.int64)
+        output_tokens = torch.tensor([], dtype=torch.int64).to(self._device)
         for doc in documents:
             past_len = kv_cache.get_seq_length()
             logger.debug(f"Masked - Past length: {past_len}")
@@ -376,7 +376,7 @@ class TransformerRAG(RAG):
 
     def _generate_m2(self, kv_cache: DynamicCache, query: str, documents: List[str]) -> str:
         """Masked generation with preamble."""
-        output_tokens = torch.tensor([], dtype=torch.int64)
+        output_tokens = torch.tensor([], dtype=torch.int64).to(self._device)
         _, kv_cache = self.prefill(self._preamble, kv_cache)
         preamble_len = kv_cache.get_seq_length()
         for doc in documents:
@@ -404,7 +404,7 @@ class TransformerRAG(RAG):
 
     def _generate_m3(self, kv_cache: DynamicCache, query: str, documents: List[str]) -> str:
         """Masked generation with preamble and repeated query."""
-        output_tokens = torch.tensor([], dtype=torch.int64)
+        output_tokens = torch.tensor([], dtype=torch.int64).to(self._device)
         _, kv_cache = self.prefill(self._preamble, kv_cache)
         preamble_len = kv_cache.get_seq_length()
 
@@ -439,7 +439,7 @@ class TransformerRAG(RAG):
             tokens = self._tokenizer(prompt, return_tensors="pt").input_ids
             for i in range(0, tokens.shape[1], self._document_max_len):
                 chunk = tokens[:, i : i + self._document_max_len]
-                outputs = self._model(chunk, past_key_values=kv_cache, use_cache=True, attention_mask=attention_mask)
+                outputs = self._model(chunk.to(self._device), past_key_values=kv_cache, use_cache=True, attention_mask=attention_mask.to(self._device) if attention_mask is not None else None)
                 logits = outputs.logits
                 kv_cache = outputs.past_key_values
                 next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)[0]
@@ -448,7 +448,7 @@ class TransformerRAG(RAG):
     def decode(self, in_tokens: torch.Tensor, kv_cache: DynamicCache) -> Tuple[torch.Tensor, DynamicCache]:
         """Decoding phase. Get a new token and update the key-value cache."""
         with torch.no_grad():
-            outputs = self._model(in_tokens, past_key_values=kv_cache, use_cache=True)
+            outputs = self._model(in_tokens.to(self._device), past_key_values=kv_cache, use_cache=True)
             logits = outputs.logits
             kv_cache = outputs.past_key_values
             next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)[0]
