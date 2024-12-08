@@ -250,7 +250,8 @@ class LLMRAG(RAG):
                 logger.warning(f"Found {len(generate_output.outputs)} outputs, yielding first one.")
             prev_latest_idx = latest_idx
             latest_idx = len(generate_output.outputs[0].text)
-            yield generate_output.outputs[0].text[prev_latest_idx:]
+            if prev_latest_idx < latest_idx:
+                yield generate_output.outputs[0].text[prev_latest_idx:]
 
     def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
         pass

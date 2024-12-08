@@ -135,7 +135,7 @@ class PagedAttention:
         #------ DynmaicRAG begins ------
         use_dynamic = envs.DRAG_DECODE_USE_DYNAMIC
         if use_dynamic:
-            logger.debug("decoding: using DynamicRAG")
+            # logger.debug("decoding: using DynamicRAG")
             assert use_v1, "DynamicRAG only supports PagedAttention V1"
             ops.dynamic_paged_attention(
                 output,
@@ -160,9 +160,9 @@ class PagedAttention:
                 blocksparse_block_size,
                 blocksparse_head_sliding_step,)
             return output
-        else:
-            logger.debug(f"decoding: using PagedAttention" 
-                        f"{'V1' if use_v1 else 'V2'}")
+        # else:
+        #     logger.debug(f"decoding: using PagedAttention" 
+        #                 f"{'V1' if use_v1 else 'V2'}")
         #------ DynmaicRAG begins ------
 
         if use_v1:
