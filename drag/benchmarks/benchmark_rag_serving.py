@@ -185,10 +185,10 @@ def sample_chatragbench_requests(
     # Fill document cache and collect prompt document IDs.
     doc_hash_to_id: Dict[int, DocumentId] = {}
     doc_ids_by_prompt: List[List[DocumentId]] = []
-    document_len_by_prompt: List[int] = []
+    document_tokens_by_prompt: List[List[int]] = []
     for item in data_list:
         prompt_doc_ids: List[DocumentId] = []
-        document_len = 0
+        document_tokens = []
         for ctx in item["ctxs"][: args.num_ctx]:
             document = ctx["text"]
             doc_hash = hash(document)
@@ -197,17 +197,34 @@ def sample_chatragbench_requests(
                 assert len(doc_ids) == 1
                 doc_hash_to_id[doc_hash] = doc_ids[0]
             prompt_doc_ids.append(doc_hash_to_id[doc_hash])
-            document_len += len(tokenizer.encode(document))
+            document_tokens.append(len(tokenizer.encode(document)))
         doc_ids_by_prompt.append(prompt_doc_ids)
-        document_len_by_prompt.append(document_len)
+        document_tokens_by_prompt.append(document_tokens)
+    num_documents_by_prompt = np.array([len(document_tokens) for document_tokens in document_tokens_by_prompt])
+    num_document_tokens_by_prompt = np.array([sum(document_tokens) for document_tokens in document_tokens_by_prompt])
     logger.info(f"{len(doc_hash_to_id)} unique documents")
+    logger.info(
+        "Per-prompt number of documents, "
+        f"min= {num_documents_by_prompt.min()}, "
+        f"max= {num_documents_by_prompt.max()}, "
+        f"mean= {num_documents_by_prompt.mean()}"
+    )
+    logger.info(
+        "Per-prompt document tokens, "
+        f"min= {num_document_tokens_by_prompt.min()}, "
+        f"max= {num_document_tokens_by_prompt.max()}, "
+        f"mean= {num_document_tokens_by_prompt.mean()}"
+    )
 
     # Generate input requests.
     input_requests = []
     max_len = 0
-    for prompt, prompt_doc_ids, document_len in zip(prompt_without_context_list, doc_ids_by_prompt, document_len_by_prompt):
+    for prompt, prompt_doc_ids, document_tokens in zip(
+        prompt_without_context_list, doc_ids_by_prompt, document_tokens_by_prompt
+    ):
         prompt_len = len(tokenizer.encode(prompt))
         output_len = args.out_seq_len
+        document_len = sum(document_tokens)
         input_requests.append(
             RAGRequest(
                 prompt=prompt,
