@@ -332,7 +332,7 @@ class TransformerRAG(RAG):
 
     def _generate_r1(self, kv_cache: DynamicCache, query: str, documents: List[str]) -> str:
         """Regular generation."""
-        output_tokens = torch.tensor([], dtype=torch.int64)
+        output_tokens = torch.tensor([], dtype=torch.int64).to(self._device)
         for doc in documents:
             _, kv_cache = self.prefill(doc, kv_cache)
         next_token, kv_cache = self.prefill(query, kv_cache)  # next token [token_id]
