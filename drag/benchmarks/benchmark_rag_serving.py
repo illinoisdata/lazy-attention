@@ -179,8 +179,8 @@ def sample_chatragbench_requests(
     tokenizer: PreTrainedTokenizerBase,
 ) -> List[RAGRequest]:
     # Get prompt_list
-    prompt_list, data_list, prompt_without_context_list = chatragbench.get_prompt_list(args)
-    logger.info(f"Loaded {len(prompt_list)} ChatRAG-Bench prompts")
+    data_list, prompt_without_context_list = chatragbench.get_prompt_list(args)
+    logger.info(f"Loaded {len(prompt_without_context_list)} ChatRAG-Bench prompts")
 
     # Fill document cache and collect prompt document IDs.
     doc_hash_to_id: Dict[int, DocumentId] = {}

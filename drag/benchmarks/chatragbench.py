@@ -115,49 +115,41 @@ def reformat_question(turn_list, dataset_name: str):
 
 def get_inputs(
     data_list: dict, dataset_name: str, tokenizer, num_ctx: int, max_output_len: int, max_seq_length: int = 4096
-) -> Tuple[List[str], List[str]]:
+) -> List[str]:
 
     system = "System: This is a chat between a user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions based on the context. The assistant should also indicate when the answer cannot be found in the context."  # noqa: E501
 
-    prompt_list = []
     prompt_without_context_list = []
-    len_context_tokens: List[int] = []
+    # len_context_tokens: List[int] = []
     len_doc_tokens: List[int] = []
     for item in data_list:
         turn_list = item["messages"]
         question_formatted = reformat_question(turn_list, dataset_name)
 
         ctx_list = ["title: " + ctx["title"] + ", source: " + ctx["text"] for ctx in item["ctxs"][:num_ctx]]
-        context = "\n\n".join(ctx_list)
 
-        context_tokens = tokenizer.encode(context)
-        question_tokens = tokenizer.encode(question_formatted)
-        system_tokens = tokenizer.encode(system)
-        len_context_tokens.append(len(context_tokens))
-        for doc in ctx_list:
-            doc_tokens = tokenizer.encode(doc)
-            len_doc_tokens.append(len(doc_tokens))
+        # context_tokens = tokenizer.encode("\n\n".join(ctx_list))
+        # question_tokens = tokenizer.encode(question_formatted)
+        # system_tokens = tokenizer.encode(system)
         # logger.info(
         #     f"{len(context_tokens)} context_tokens + "
         #     f"{len(question_tokens)} question_tokens + "
         #     f"{len(system_tokens)} system_tokens"
         # )
+        # len_context_tokens.append(len(context_tokens))
 
-        if len(context_tokens) + len(question_tokens) + len(system_tokens) + max_output_len >= max_seq_length:
-            context_tokens = context_tokens[: max_seq_length - max_output_len - len(question_tokens) - len(system_tokens)]
-            context = tokenizer.decode(context_tokens, skip_special_tokens=True)
+        for doc in ctx_list:
+            doc_tokens = tokenizer.encode(doc)
+            len_doc_tokens.append(len(doc_tokens))
 
-        model_input = system + "\n\n" + context + "\n\n" + question_formatted
         model_input_without_context = system + "\n\n" + question_formatted
-
-        prompt_list.append(model_input)
         prompt_without_context_list.append(model_input_without_context)
-    logger.info(
-        f"Context tokens, avg= {np.mean(len_context_tokens):.0f}, "
-        f"stddev= {np.std(len_context_tokens):.0f}, "
-        f"max= {np.max(len_context_tokens)}, "
-        f"count= {len(len_context_tokens)}"
-    )
+    # logger.info(
+    #     f"Context tokens, avg= {np.mean(len_context_tokens):.0f}, "
+    #     f"stddev= {np.std(len_context_tokens):.0f}, "
+    #     f"max= {np.max(len_context_tokens)}, "
+    #     f"count= {len(len_context_tokens)}"
+    # )
     logger.info(
         f"Document tokens, avg= {np.mean(len_doc_tokens):.0f}, "
         f"stddev= {np.std(len_doc_tokens):.0f}, "
@@ -165,7 +157,7 @@ def get_inputs(
         f"count= {len(len_doc_tokens)}"
     )
 
-    return prompt_list, prompt_without_context_list
+    return prompt_without_context_list
 
 
 def get_datapath(args: ChatRAGBenchArgs) -> Path:
@@ -197,7 +189,7 @@ def get_datapath(args: ChatRAGBenchArgs) -> Path:
         raise Exception(f"Invalid eval_dataset name ({args.eval_dataset})!")
 
 
-def get_prompt_list(args: ChatRAGBenchArgs) -> Tuple[List[str], dict, List[str]]:
+def get_prompt_list(args: ChatRAGBenchArgs) -> Tuple[dict, List[str]]:
 
     # Get tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_model)
@@ -206,11 +198,11 @@ def get_prompt_list(args: ChatRAGBenchArgs) -> Tuple[List[str], dict, List[str]]
     input_datapath = get_datapath(args)
     data_list = load_data(input_datapath)
     logger.info(f"number of samples in the dataset: {len(data_list)}")
-    prompt_list, prompt_without_context_list = get_inputs(
+    prompt_without_context_list = get_inputs(
         data_list, args.eval_dataset, tokenizer, num_ctx=args.num_ctx, max_output_len=args.out_seq_len
     )
 
-    return prompt_list, data_list, prompt_without_context_list
+    return data_list, prompt_without_context_list
 
 
 """Accuracy measurements"""
