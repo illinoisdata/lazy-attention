@@ -125,6 +125,9 @@ class RotaryEmbedding(CustomOp):
         query: torch.Tensor,
         key: torch.Tensor,
         offsets: Optional[torch.Tensor] = None,
+        # ------ DynmaicRAG begins ------
+        use_dynamic_attn: bool = False,
+        # ------ DynmaicRAG ends ------
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """A PyTorch-native implementation of forward()."""
         if offsets is not None:
@@ -147,7 +150,13 @@ class RotaryEmbedding(CustomOp):
         key_pass = key[..., self.rotary_dim:]
         key_rot = _apply_rotary_emb(key_rot, cos, sin, self.is_neox_style)
         key = torch.cat((key_rot, key_pass), dim=-1).reshape(key_shape)
-        return query, key, self.cos_sin_cache, self.rotary_dim  # passing cos_sin_cache and rotary_dim for DynamicPagedAttention
+        
+        # ------ DynmaicRAG begins ------
+        if use_dynamic_attn:
+            return query, key, self.cos_sin_cache, self.rotary_dim
+        else:
+            return query, key
+        # ------ DynmaicRAG ends ------
 
     def forward_cuda(
         self,
@@ -155,6 +164,9 @@ class RotaryEmbedding(CustomOp):
         query: torch.Tensor,
         key: torch.Tensor,
         offsets: Optional[torch.Tensor] = None,
+        # ------ DynmaicRAG begins ------
+        use_dynamic_attn: bool = False,
+        # ------ DynmaicRAG ends ------
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         from vllm import _custom_ops as ops
 
@@ -170,7 +182,13 @@ class RotaryEmbedding(CustomOp):
         else:
             ops.rotary_embedding(positions, query, key, self.head_size,
                                  self.cos_sin_cache, self.is_neox_style)
-        return query, key, self.cos_sin_cache, self.rotary_dim     # passing cos_sin_cache and rotary_dim for DynamicPagedAttention
+            
+        # ------ DynmaicRAG begins ------
+        if use_dynamic_attn:
+            return query, key, self.cos_sin_cache, self.rotary_dim
+        else:
+            return query, key
+        # ------ DynmaicRAG ends ------
 
 
     def forward_xpu(

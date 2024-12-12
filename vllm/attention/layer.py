@@ -96,27 +96,33 @@ class Attention(nn.Module):
             kv_cache: torch.Tensor,
             attn_metadata: AttentionMetadata,
             attn_type: AttentionType = AttentionType.DECODER,
+            # ----- DynamicRAG begins ------
             cos_sin_cache: Optional[torch.Tensor] = None,
-            # passing cos_sin_cache and rotary_dim for DynamicPagedAttention
             rotary_dim: Optional[int] = None,
-            unrotated_key: Optional[torch.Tensor] = None
+            unrotated_key: Optional[torch.Tensor] = None,
+            use_dynamic_attn: bool = False,
+            # ----- DynamicRAG ends ------
     ) -> torch.Tensor:
 
-        # -----DynamicRAG begins------
-        if cos_sin_cache is not None and rotary_dim is not None: 
-            # assert torch.any(query != 0), "Query is all zeros!"
-            # logger.debug(f"q {query}\nk {key}\nv {value}")
-            return self.impl.forward(query, key, value, kv_cache, attn_metadata,
-                                     self._k_scale, self._v_scale,
-                                     cos_sin_cache=cos_sin_cache,
-                                     rotary_dim=rotary_dim,
-                                     attn_type=attn_type,
-                                     unrotated_key=unrotated_key
-                                     )
-        # -----DynmaicRAG ends------
+        # ----- DynamicRAG begins ------
+        # check
+        if use_dynamic_attn:
+            assert cos_sin_cache is not None
+            assert rotary_dim is not None
+            assert unrotated_key is not None
+        else:
+            assert cos_sin_cache is None
+            assert rotary_dim is None
+            assert unrotated_key is None            
+
         return self.impl.forward(query, key, value, kv_cache, attn_metadata,
-                                     self._k_scale, self._v_scale,
-                                     attn_type=attn_type)
+                                 self._k_scale, self._v_scale,
+                                 cos_sin_cache=cos_sin_cache,
+                                 rotary_dim=rotary_dim,
+                                 attn_type=attn_type,
+                                 unrotated_key=unrotated_key,
+                                 use_dynamic_attn=use_dynamic_attn)
+        # ----- DynamicRAG ends ------
 
     def extra_repr(self) -> str:
         s = f"head_size={self.impl.head_size}"  # type: ignore

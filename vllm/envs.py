@@ -467,14 +467,6 @@ environment_variables: Dict[str, Callable[[], Any]] = {
     # If set, use the V1 code path.
     "VLLM_USE_V1":
     lambda: bool(int(os.getenv("VLLM_USE_V1", "0"))),
-
-    # ------ DynmaicRAG begins ------
-    # Custom env vars
-    "DRAG_DECODE_USE_DYNAMIC":
-    lambda: bool(int(os.getenv("DRAG_DECODE_USE_DYNAMIC", "0"))),
-    "DRAG_STORE_UNRAOTATED_KEY":
-    lambda: bool(int(os.getenv("DRAG_STORE_UNRAOTATED_KEY", "0"))),
-    # ------ DynmaicRAG ends ------
 }
 
 # end-env-vars-definition

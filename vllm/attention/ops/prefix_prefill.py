@@ -195,9 +195,9 @@ if triton.__version__ >= "2.1.0":
             else:
                 k = k_load
 
-            # ---------DynamicRAG begins-------------
+            # --------- DynamicRAG begins -------------
             # k = apply_rotary_embedding(k, start_n, BLOCK_N, cos_sin_cache, rotary_dim, cur_batch_ctx_len)
-            # ---------DynamicRAG ends-------------
+            # --------- DynamicRAG ends -------------
 
             qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)  # [M,N]
             qk += tl.dot(q, k)
@@ -275,9 +275,9 @@ if triton.__version__ >= "2.1.0":
                         ((start_n + offs_n[None, :]) < cur_batch_query_len),
                         other=0.0)
 
-            # ---------DynamicRAG begins-------------
+            # --------- DynamicRAG begins -------------
             # k = apply_rotary_embedding(k, ...)
-            # ---------DynamicRAG ends-------------
+            # --------- DynamicRAG ends -------------
 
             qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
             qk += tl.dot(q, k)

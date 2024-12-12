@@ -184,6 +184,10 @@ class EngineArgs:
     mm_processor_kwargs: Optional[Dict[str, Any]] = None
     scheduling_policy: Literal["fcfs", "priority"] = "fcfs"
 
+    # ------ DynmaicRAG begins ------
+    use_dynamic_attn: bool = False
+    # ------ DynmaicRAG ends ------
+
     def __post_init__(self):
         if not self.tokenizer:
             self.tokenizer = self.model
@@ -849,6 +853,12 @@ class EngineArgs:
             'or "priority" (requests are handled based on given '
             'priority (lower value means earlier handling) and time of '
             'arrival deciding any ties).')
+        
+        # ------ DynmaicRAG begins ------
+        parser.add_argument('--use-dynamic-attn',
+                            action='store_true',
+                            help='Enables automatic prefix caching.')
+        # ------ DynmaicRAG ends ------
 
         return parser
 
@@ -950,6 +960,9 @@ class EngineArgs:
             sliding_window=model_config.get_sliding_window(),
             enable_prefix_caching=self.enable_prefix_caching,
             cpu_offload_gb=self.cpu_offload_gb,
+            # ---- DynamicRAG begins ----
+            use_dynamic_attn=self.use_dynamic_attn,
+            # ---- DynamicRAG ends ----
         )
         parallel_config = ParallelConfig(
             pipeline_parallel_size=self.pipeline_parallel_size,

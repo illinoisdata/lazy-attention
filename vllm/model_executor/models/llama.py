@@ -57,9 +57,6 @@ from .interfaces import SupportsLoRA, SupportsPP
 from .utils import (AutoWeightsLoader, PPMissingLayer, is_pp_missing_parameter,
                     make_empty_intermediate_tensors_factory, make_layers)
 
-#------ DynmaicRAG begins ------
-from vllm import envs
-#------ DynmaicRAG ends ------
 
 class LlamaMLP(nn.Module):
 
@@ -140,6 +137,10 @@ class LlamaAttention(nn.Module):
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
 
+        # ------ DynmaicRAG begins ------
+        self.use_dynamic_attn = cache_config.use_dynamic_attn
+        # ------ DynmaicRAG ends ------
+
         self.qkv_proj = QKVParallelLinear(
             hidden_size=hidden_size,
             head_size=self.head_dim,
@@ -188,18 +189,25 @@ class LlamaAttention(nn.Module):
     ) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        #------ DynmaicRAG begins ------
+        # ------ DynmaicRAG begins ------
+        cos_sin_cache = None
+        rotary_dim = None
         unrotated_k = None
-        if envs.DRAG_STORE_UNRAOTATED_KEY:
+
+        if self.use_dynamic_attn:
             unrotated_k = torch.clone(k)
-        q, k, cos_sin_cache, rotary_dim = self.rotary_emb(positions, q, k)
-        # invoke xformer attention
+            q, k, cos_sin_cache, rotary_dim = self.rotary_emb(positions, q, k, 
+                                                              True)
+        else:
+            q, k = self.rotary_emb(positions, q, k)
+        
         attn_output = self.attn(q, k, v, kv_cache, attn_metadata,
                                 # new arguments
                                 cos_sin_cache=cos_sin_cache, 
                                 rotary_dim=rotary_dim,
-                                unrotated_key=unrotated_k)
-        #------ DynmaicRAG ends ------
+                                unrotated_key=unrotated_k,
+                                use_dynamic_attn=self.use_dynamic_attn)
+        # ------ DynmaicRAG ends ------
         output, _ = self.o_proj(attn_output)
         return output
 

@@ -6,10 +6,6 @@ import torch
 from vllm import _custom_ops as ops
 from vllm.triton_utils import HAS_TRITON
 
-#------ DynmaicRAG begins ------
-from vllm import envs
-from loguru import logger
-#------ DynmaicRAG ends ------
 
 if HAS_TRITON:
     from vllm.attention.ops.prefix_prefill import context_attention_fwd
@@ -106,8 +102,11 @@ class PagedAttention:
         blocksparse_vert_stride: int = 0,
         blocksparse_block_size: int = 64,
         blocksparse_head_sliding_step: int = 0,
-        cos_sin_cache: Optional[torch.Tensor] = None,     #passing cos_sin_cache and rotary_dim for DynamicPagedAttention
+        # ------ DynmaicRAG begins ------
+        cos_sin_cache: Optional[torch.Tensor] = None,
         rotary_dim: Optional[int] = None,
+        use_dynamic_attn: bool = False
+        # ------ DynmaicRAG ends ------
     ) -> torch.Tensor:
         if blocksparse_vert_stride is not None and blocksparse_vert_stride > 1:
             # use blocksparse paged attention
@@ -132,13 +131,9 @@ class PagedAttention:
         use_v1 = (max_seq_len <= 8192
                   and (max_num_partitions == 1 or num_seqs * num_heads > 512))
         
-        #------ DynmaicRAG begins ------
-        use_dynamic = envs.DRAG_DECODE_USE_DYNAMIC
-        store_unrotated_key = envs.DRAG_STORE_UNRAOTATED_KEY
-        if use_dynamic:
-            # logger.debug("decoding: using DynamicRAG")
-            assert use_v1, "DynamicRAG only supports PagedAttention V1"
-            assert store_unrotated_key, "DynamicRAG requires storing unrotated key"
+        # ------ DynmaicRAG begins ------
+        if use_dynamic_attn:
+            assert use_v1, "DynamicRAG only supports PagedAttention V1 now"
             ops.dynamic_paged_attention(
                 output,
                 query,
@@ -162,12 +157,7 @@ class PagedAttention:
                 blocksparse_block_size,
                 blocksparse_head_sliding_step,)
             return output
-        # else:
-        #     logger.debug(f"decoding: using PagedAttention" 
-        #                 f"{'V1' if use_v1 else 'V2'}")
-        if not use_dynamic:
-            assert not store_unrotated_key, "Only DynamicRAG requires storing unrotated key"
-        #------ DynmaicRAG ends ------
+        # ------ DynmaicRAG ends ------
 
         if use_v1:
             # Run PagedAttention V1.
@@ -249,10 +239,14 @@ class PagedAttention:
         sliding_window: Optional[int],
         k_scale: float,
         v_scale: float,
-        cos_sin_cache: Optional[torch.Tensor] = None,     #passing cos_sin_cache and rotary_dim for DynamicPagedAttention
+        # ------ DynmaicRAG begins ------
+        cos_sin_cache: Optional[torch.Tensor] = None,
         rotary_dim: Optional[int] = None,
-        unrotated_key : Optional[torch.Tensor] = None,
+        unrotated_key: Optional[torch.Tensor] = None,
+        use_dynamic_attn: bool = False,
+        # ------ DynmaicRAG ends ------
     ) -> torch.Tensor:
+        # TODO(haocheng): enable dynamic
         output = torch.empty_like(query)
         context_attention_fwd(
             q=query,

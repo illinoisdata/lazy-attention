@@ -16,11 +16,10 @@ from vllm.attention.backends.utils import (CommonAttentionState,
 from vllm.attention.ops.paged_attn import (PagedAttention,
                                            PagedAttentionMetadata)
                                            
-#------ DynmaicRAG begins ------
-from vllm import envs
+# ------ DynmaicRAG begins ------
 from vllm.logger import init_logger
 logger = init_logger(__name__)
-#------ DynmaicRAG ends ------
+# ------ DynmaicRAG ends ------
 
 
 class XFormersBackend(AttentionBackend):
@@ -465,11 +464,12 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
         k_scale: float = 1.0,
         v_scale: float = 1.0,
         attn_type: AttentionType = AttentionType.DECODER,
-        #------ DynmaicRAG begins ------
+        # ------ DynmaicRAG begins ------
         cos_sin_cache: Optional[torch.Tensor] = None,
         rotary_dim: Optional[int] = None,
         unrotated_key: Optional[torch.Tensor] = None,
-        #------ DynmaicRAG ends ------
+        use_dynamic_attn: bool = False,
+        # ------ DynmaicRAG ends ------
     ) -> torch.Tensor:
         """Forward pass with xFormers and PagedAttention.
 
@@ -544,8 +544,10 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
         else:
             assert value is None
 
+        # ----- DynamicRAG begins ------
         if unrotated_key is not None:
             unrotated_key = unrotated_key.view(-1, self.num_kv_heads, self.head_size)
+        # ----- DynamicRAG ends ------
 
         # Self-attention vs. cross-attention will impact
         # which KV cache memory-mapping & which
@@ -578,24 +580,20 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                 # not cached. This happens during the initial memory
                 # profiling run.
 
-                #------ DynmaicRAG begins ------
-                use_dynamic = envs.DRAG_DECODE_USE_DYNAMIC
-                store_unrotated_key = envs.DRAG_STORE_UNRAOTATED_KEY
-                if unrotated_key is not None:
-                    assert use_dynamic and store_unrotated_key, "unrotated_key should be stored"
+                # ------ DynmaicRAG begins ------
+                if use_dynamic_attn:
                     PagedAttention.write_to_paged_cache(unrotated_key, value, key_cache,
                                                         value_cache,
                                                         updated_slot_mapping,
                                                         self.kv_cache_dtype,
                                                         k_scale, v_scale)
                 else:
-                    assert not use_dynamic and not store_unrotated_key, "rotated_key should be stored"
                     PagedAttention.write_to_paged_cache(key, value, key_cache,
                                                         value_cache,
                                                         updated_slot_mapping,
                                                         self.kv_cache_dtype,
                                                         k_scale, v_scale)
-                #------ DynmaicRAG ends ------
+                # ------ DynmaicRAG ends ------
 
         if attn_type == AttentionType.ENCODER:
             # Encoder attention - chunked prefill is not applicable;
@@ -652,18 +650,11 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
 
                 assert prefill_meta.query_start_loc is not None
                 assert prefill_meta.max_query_len is not None
-
+                
                 # prefix-enabled attention
                 # TODO(Hai) this triton kernel has regression issue (broke) to
                 # deal with different data types between KV and FP8 KV cache,
                 # to be addressed separately.
-                
-                logger.debug(f"DRAG: send unrotated key to the forward_prefix\n"
-                             f"rotary_dim is {rotary_dim}\n"
-                             f"cos_sin_cache shape is {cos_sin_cache.shape}\n"
-                             f"key token {key.shape[0]}\n"
-                             f"num head {key.shape[0]}\n"
-                             f"head size is {key.shape[-1]}")
                 out = PagedAttention.forward_prefix(
                     query,
                     key,
@@ -680,11 +671,12 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                     self.sliding_window,
                     k_scale,
                     v_scale,
-                    #------ DynmaicRAG begins ------
+                    # ------ DynmaicRAG begins ------
                     cos_sin_cache=cos_sin_cache,
                     rotary_dim=rotary_dim,
                     unrotated_key=unrotated_key,
-                    #------ DynmaicRAG ends ------
+                    use_dynamic_attn=use_dynamic_attn,
+                    # ------ DynmaicRAG ends ------
                  )
             
                 assert output[:num_prefill_tokens].shape == out.shape
@@ -714,10 +706,11 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                 self.alibi_slopes,
                 k_scale,
                 v_scale,
-                #------ DynmaicRAG begins ------
+                # ------ DynmaicRAG begins ------
                 cos_sin_cache=cos_sin_cache,
                 rotary_dim=rotary_dim,
-                #------ DynmaicRAG ends ------
+                use_dynamic_attn=use_dynamic_attn,
+                # ------ DynmaicRAG ends ------
             )
             if output.device != res.device:
                 print("Xformer backend device error")

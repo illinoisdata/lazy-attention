@@ -1191,6 +1191,7 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
             cache_max_token=args.pc_cache_max_token,
         )
     elif args.rag_type == "drag":
+        engine_args.use_dynamic_attn = True
         return DynamicRAG(llm=LLM(**dataclasses.asdict(engine_args)))
     logger.error(f"Invalid RAG type {args.rag_type}")
     sys.exit(1)
