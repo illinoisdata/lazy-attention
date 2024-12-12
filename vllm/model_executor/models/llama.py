@@ -57,6 +57,9 @@ from .interfaces import SupportsLoRA, SupportsPP
 from .utils import (AutoWeightsLoader, PPMissingLayer, is_pp_missing_parameter,
                     make_empty_intermediate_tensors_factory, make_layers)
 
+#------ DynmaicRAG begins ------
+from vllm import envs
+#------ DynmaicRAG ends ------
 
 class LlamaMLP(nn.Module):
 
@@ -185,12 +188,18 @@ class LlamaAttention(nn.Module):
     ) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        unrotated_k = torch.clone(k)
-        q, k, cos_sin_cache, rotary_dim = self.rotary_emb(positions, q, k) 
-        attn_output = self.attn(q, k, v, kv_cache, attn_metadata, 
+        #------ DynmaicRAG begins ------
+        unrotated_k = None
+        if envs.DRAG_STORE_UNRAOTATED_KEY:
+            unrotated_k = torch.clone(k)
+        q, k, cos_sin_cache, rotary_dim = self.rotary_emb(positions, q, k)
+        # invoke xformer attention
+        attn_output = self.attn(q, k, v, kv_cache, attn_metadata,
+                                # new arguments
                                 cos_sin_cache=cos_sin_cache, 
-                                rotary_dim=rotary_dim, 
-                                unrotated_key=unrotated_k) #passing cos_sin_cache and rotary_emb for DynamicPagedAttention
+                                rotary_dim=rotary_dim,
+                                unrotated_key=unrotated_k)
+        #------ DynmaicRAG ends ------
         output, _ = self.o_proj(attn_output)
         return output
 

@@ -134,9 +134,11 @@ class PagedAttention:
         
         #------ DynmaicRAG begins ------
         use_dynamic = envs.DRAG_DECODE_USE_DYNAMIC
+        store_unrotated_key = envs.DRAG_STORE_UNRAOTATED_KEY
         if use_dynamic:
             # logger.debug("decoding: using DynamicRAG")
             assert use_v1, "DynamicRAG only supports PagedAttention V1"
+            assert store_unrotated_key, "DynamicRAG requires storing unrotated key"
             ops.dynamic_paged_attention(
                 output,
                 query,
@@ -163,7 +165,9 @@ class PagedAttention:
         # else:
         #     logger.debug(f"decoding: using PagedAttention" 
         #                 f"{'V1' if use_v1 else 'V2'}")
-        #------ DynmaicRAG begins ------
+        if not use_dynamic:
+            assert not store_unrotated_key, "Only DynamicRAG requires storing unrotated key"
+        #------ DynmaicRAG ends ------
 
         if use_v1:
             # Run PagedAttention V1.

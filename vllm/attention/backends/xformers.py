@@ -15,9 +15,12 @@ from vllm.attention.backends.utils import (CommonAttentionState,
                                            CommonMetadataBuilder)
 from vllm.attention.ops.paged_attn import (PagedAttention,
                                            PagedAttentionMetadata)
+                                           
+#------ DynmaicRAG begins ------
+from vllm import envs
 from vllm.logger import init_logger
-
 logger = init_logger(__name__)
+#------ DynmaicRAG ends ------
 
 
 class XFormersBackend(AttentionBackend):
@@ -462,9 +465,11 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
         k_scale: float = 1.0,
         v_scale: float = 1.0,
         attn_type: AttentionType = AttentionType.DECODER,
-        cos_sin_cache: Optional[torch.Tensor] = None,     #passing cos_sin_cache and rotary_dim for DynamicPagedAttention
+        #------ DynmaicRAG begins ------
+        cos_sin_cache: Optional[torch.Tensor] = None,
         rotary_dim: Optional[int] = None,
         unrotated_key: Optional[torch.Tensor] = None,
+        #------ DynmaicRAG ends ------
     ) -> torch.Tensor:
         """Forward pass with xFormers and PagedAttention.
 
@@ -573,20 +578,24 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                 # not cached. This happens during the initial memory
                 # profiling run.
 
+                #------ DynmaicRAG begins ------
+                use_dynamic = envs.DRAG_DECODE_USE_DYNAMIC
+                store_unrotated_key = envs.DRAG_STORE_UNRAOTATED_KEY
                 if unrotated_key is not None:
-                    logger.debug("DRAG: write unrotated key to the cache")
+                    assert use_dynamic and store_unrotated_key, "unrotated_key should be stored"
                     PagedAttention.write_to_paged_cache(unrotated_key, value, key_cache,
                                                         value_cache,
                                                         updated_slot_mapping,
                                                         self.kv_cache_dtype,
-                                                        k_scale, v_scale) # DynamicRAG: change it to make the storage is only the unrotated keys
+                                                        k_scale, v_scale)
                 else:
-                    logger.debug("DRAG: write rotated key to the cache")
+                    assert not use_dynamic and not store_unrotated_key, "rotated_key should be stored"
                     PagedAttention.write_to_paged_cache(key, value, key_cache,
                                                         value_cache,
                                                         updated_slot_mapping,
                                                         self.kv_cache_dtype,
                                                         k_scale, v_scale)
+                #------ DynmaicRAG ends ------
 
         if attn_type == AttentionType.ENCODER:
             # Encoder attention - chunked prefill is not applicable;
@@ -671,9 +680,11 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                     self.sliding_window,
                     k_scale,
                     v_scale,
-                    cos_sin_cache=cos_sin_cache, #passing cos_sin_cache and rotary_dim for DynamicPagedAttention
+                    #------ DynmaicRAG begins ------
+                    cos_sin_cache=cos_sin_cache,
                     rotary_dim=rotary_dim,
                     unrotated_key=unrotated_key,
+                    #------ DynmaicRAG ends ------
                  )
             
                 assert output[:num_prefill_tokens].shape == out.shape
@@ -703,8 +714,10 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                 self.alibi_slopes,
                 k_scale,
                 v_scale,
-                cos_sin_cache=cos_sin_cache, #passing cos_sin_cache and rotary_dim for DynamicPagedAttention
+                #------ DynmaicRAG begins ------
+                cos_sin_cache=cos_sin_cache,
                 rotary_dim=rotary_dim,
+                #------ DynmaicRAG ends ------
             )
             if output.device != res.device:
                 print("Xformer backend device error")

@@ -472,6 +472,8 @@ environment_variables: Dict[str, Callable[[], Any]] = {
     # Custom env vars
     "DRAG_DECODE_USE_DYNAMIC":
     lambda: bool(int(os.getenv("DRAG_DECODE_USE_DYNAMIC", "0"))),
+    "DRAG_STORE_UNRAOTATED_KEY":
+    lambda: bool(int(os.getenv("DRAG_STORE_UNRAOTATED_KEY", "0"))),
     # ------ DynmaicRAG ends ------
 }
 
