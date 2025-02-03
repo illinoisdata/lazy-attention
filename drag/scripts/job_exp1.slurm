@@ -2,6 +2,8 @@
 #SBATCH --job-name="drag_job_exp1"
 #SBATCH --output="drag_job_exp1.%j.%N.out"
 #SBATCH --partition=gpuA40x4
+##SBATCH --mail-type=END,FAIL 
+##SBATCH --mail-user=your_email@example.com
 #SBATCH --mem=62G
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1  # could be 1 for py-torch
