@@ -15,11 +15,6 @@ from vllm.attention.backends.utils import (CommonAttentionState,
                                            CommonMetadataBuilder)
 from vllm.attention.ops.paged_attn import (PagedAttention,
                                            PagedAttentionMetadata)
-                                           
-# ------ DynmaicRAG begins ------
-from vllm.logger import init_logger
-logger = init_logger(__name__)
-# ------ DynmaicRAG ends ------
 
 
 class XFormersBackend(AttentionBackend):
@@ -464,12 +459,10 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
         k_scale: float = 1.0,
         v_scale: float = 1.0,
         attn_type: AttentionType = AttentionType.DECODER,
-        # ------ DynmaicRAG begins ------
+        # **************************** drag begins ****************************
         cos_sin_cache: Optional[torch.Tensor] = None,
         rotary_dim: Optional[int] = None,
-        unrotated_key: Optional[torch.Tensor] = None,
-        use_dynamic_attn: bool = False,
-        # ------ DynmaicRAG ends ------
+        # **************************** drag ends ******************************
     ) -> torch.Tensor:
         """Forward pass with xFormers and PagedAttention.
 
@@ -544,11 +537,6 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
         else:
             assert value is None
 
-        # ----- DynamicRAG begins ------
-        if unrotated_key is not None:
-            unrotated_key = unrotated_key.view(-1, self.num_kv_heads, self.head_size)
-        # ----- DynamicRAG ends ------
-
         # Self-attention vs. cross-attention will impact
         # which KV cache memory-mapping & which
         # seqlen datastructures we utilize
@@ -579,21 +567,12 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                 # If kv_cache is not provided, the new key and value tensors are
                 # not cached. This happens during the initial memory
                 # profiling run.
+                PagedAttention.write_to_paged_cache(key, value, key_cache,
+                                                    value_cache,
+                                                    updated_slot_mapping,
+                                                    self.kv_cache_dtype,
+                                                    k_scale, v_scale)
 
-                # ------ DynmaicRAG begins ------
-                if use_dynamic_attn:
-                    PagedAttention.write_to_paged_cache(unrotated_key, value, key_cache,
-                                                        value_cache,
-                                                        updated_slot_mapping,
-                                                        self.kv_cache_dtype,
-                                                        k_scale, v_scale)
-                else:
-                    PagedAttention.write_to_paged_cache(key, value, key_cache,
-                                                        value_cache,
-                                                        updated_slot_mapping,
-                                                        self.kv_cache_dtype,
-                                                        k_scale, v_scale)
-                # ------ DynmaicRAG ends ------
 
         if attn_type == AttentionType.ENCODER:
             # Encoder attention - chunked prefill is not applicable;
@@ -671,12 +650,10 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                     self.sliding_window,
                     k_scale,
                     v_scale,
-                    # ------ DynmaicRAG begins ------
+                    # **************************** drag begins ****************************
                     cos_sin_cache=cos_sin_cache,
                     rotary_dim=rotary_dim,
-                    unrotated_key=unrotated_key,
-                    use_dynamic_attn=use_dynamic_attn,
-                    # ------ DynmaicRAG ends ------
+                    # **************************** drag ends ******************************
                  )
             
                 assert output[:num_prefill_tokens].shape == out.shape
@@ -706,11 +683,10 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                 self.alibi_slopes,
                 k_scale,
                 v_scale,
-                # ------ DynmaicRAG begins ------
+                # **************************** drag begins ****************************
                 cos_sin_cache=cos_sin_cache,
                 rotary_dim=rotary_dim,
-                use_dynamic_attn=use_dynamic_attn,
-                # ------ DynmaicRAG ends ------
+                # **************************** drag ends ******************************
             )
             if output.device != res.device:
                 print("Xformer backend device error")

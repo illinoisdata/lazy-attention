@@ -125,9 +125,9 @@ class RotaryEmbedding(CustomOp):
         query: torch.Tensor,
         key: torch.Tensor,
         offsets: Optional[torch.Tensor] = None,
-        # ------ DynmaicRAG begins ------
+        # **************************** drag begins ****************************
         use_dynamic_attn: bool = False,
-        # ------ DynmaicRAG ends ------
+        # **************************** drag ends ******************************
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """A PyTorch-native implementation of forward()."""
         if offsets is not None:
@@ -144,19 +144,18 @@ class RotaryEmbedding(CustomOp):
         query_rot = _apply_rotary_emb(query_rot, cos, sin, self.is_neox_style)
         query = torch.cat((query_rot, query_pass), dim=-1).reshape(query_shape)
 
+        # **************************** drag begins ****************************
+        if use_dynamic_attn:
+            return query, key, self.cos_sin_cache, self.rotary_dim
+        
         key_shape = key.shape
         key = key.view(num_tokens, -1, self.head_size)
         key_rot = key[..., :self.rotary_dim]
         key_pass = key[..., self.rotary_dim:]
         key_rot = _apply_rotary_emb(key_rot, cos, sin, self.is_neox_style)
         key = torch.cat((key_rot, key_pass), dim=-1).reshape(key_shape)
-        
-        # ------ DynmaicRAG begins ------
-        if use_dynamic_attn:
-            return query, key, self.cos_sin_cache, self.rotary_dim
-        else:
-            return query, key
-        # ------ DynmaicRAG ends ------
+        return query, key, None, None
+        # **************************** drag ends ******************************
 
     def forward_cuda(
         self,
@@ -164,14 +163,18 @@ class RotaryEmbedding(CustomOp):
         query: torch.Tensor,
         key: torch.Tensor,
         offsets: Optional[torch.Tensor] = None,
-        # ------ DynmaicRAG begins ------
+        # **************************** drag begins ****************************
         use_dynamic_attn: bool = False,
-        # ------ DynmaicRAG ends ------
+        # **************************** drag ends ******************************
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         from vllm import _custom_ops as ops
-
         self.cos_sin_cache = self.cos_sin_cache.to(query.device,
                                                    dtype=query.dtype)
+        # **************************** drag begins ****************************
+        unrotated_key = torch.clone(key) if use_dynamic_attn else None
+        # TODO(haocheng): do not rotate key if use_dynamic_attn is True
+        # **************************** drag ends ******************************
+        
         # ops.rotary_embedding()/batched_rotary_embedding()
         # are in-place operations that update the query and key tensors.
         if offsets is not None:
@@ -183,12 +186,12 @@ class RotaryEmbedding(CustomOp):
             ops.rotary_embedding(positions, query, key, self.head_size,
                                  self.cos_sin_cache, self.is_neox_style)
             
-        # ------ DynmaicRAG begins ------
+        # **************************** drag begins ****************************
         if use_dynamic_attn:
-            return query, key, self.cos_sin_cache, self.rotary_dim
+            return query, unrotated_key, self.cos_sin_cache, self.rotary_dim
         else:
-            return query, key
-        # ------ DynmaicRAG ends ------
+            return query, key, None, None
+        # **************************** drag ends ******************************
 
 
     def forward_xpu(

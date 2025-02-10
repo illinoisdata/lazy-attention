@@ -71,13 +71,6 @@ if TYPE_CHECKING:
     VLLM_DISABLED_KERNELS: List[str] = []
     VLLM_USE_V1: bool = False
 
-    # ------ DynmaicRAG begins ------
-    # Custom env vars
-    DRAG_STORE_UNRAOTATED_KEY: bool = False  # not used
-    DRAG_PREFILL_USE_DYNAMIC: bool = False  # not used
-    DRAG_DECODE_USE_DYNAMIC: bool = False
-    # ------ DynmaicRAG ends ------
-
 
 def get_default_cache_root():
     return os.getenv(

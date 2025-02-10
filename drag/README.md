@@ -53,3 +53,9 @@ sbatch --mail-user=${USER}@illinois.edu --mail-type="BEGIN,END" scripts/job_exp1
   journal={arXiv preprint arXiv:2401.10225},
   year={2024}}
 ```
+
+## Testing
+
+```bash
+pytest tests/test_prefill.py
+```

@@ -102,11 +102,10 @@ class PagedAttention:
         blocksparse_vert_stride: int = 0,
         blocksparse_block_size: int = 64,
         blocksparse_head_sliding_step: int = 0,
-        # ------ DynmaicRAG begins ------
+        # **************************** drag begins ****************************
         cos_sin_cache: Optional[torch.Tensor] = None,
         rotary_dim: Optional[int] = None,
-        use_dynamic_attn: bool = False
-        # ------ DynmaicRAG ends ------
+        # **************************** drag ends ******************************
     ) -> torch.Tensor:
         if blocksparse_vert_stride is not None and blocksparse_vert_stride > 1:
             # use blocksparse paged attention
@@ -131,9 +130,18 @@ class PagedAttention:
         use_v1 = (max_seq_len <= 8192
                   and (max_num_partitions == 1 or num_seqs * num_heads > 512))
         
-        # ------ DynmaicRAG begins ------
+
+        # **************************** drag begins ****************************
+        if (cos_sin_cache is not None) and (rotary_dim is not None):
+            use_dynamic_attn = True
+        else:
+            use_dynamic_attn = False
+        # print(f'---------------------------------- decoding use_dynamic_attn: {use_dynamic_attn}')
+
+        # TODO(haocheng): enable dynamic attention for V2
+        use_v1 = True  # force use V1 for now
         if use_dynamic_attn:
-            assert use_v1, "DynamicRAG only supports PagedAttention V1 now"
+            # print("---------------------------------- invoke dynamic paged attention")
             ops.dynamic_paged_attention(
                 output,
                 query,
@@ -157,7 +165,7 @@ class PagedAttention:
                 blocksparse_block_size,
                 blocksparse_head_sliding_step,)
             return output
-        # ------ DynmaicRAG ends ------
+        # **************************** drag ends ******************************
 
         if use_v1:
             # Run PagedAttention V1.
@@ -225,7 +233,7 @@ class PagedAttention:
     @staticmethod
     def forward_prefix(
         query: torch.Tensor,
-        key: torch.Tensor,
+        key: torch.Tensor,  # hint: unrotated key when use DynamicRAG, otherwise rotated key
         value: torch.Tensor,
         kv_cache_dtype: str,
         key_cache: torch.Tensor,
@@ -239,18 +247,15 @@ class PagedAttention:
         sliding_window: Optional[int],
         k_scale: float,
         v_scale: float,
-        # ------ DynmaicRAG begins ------
+        # **************************** drag begins ****************************
         cos_sin_cache: Optional[torch.Tensor] = None,
         rotary_dim: Optional[int] = None,
-        unrotated_key: Optional[torch.Tensor] = None,
-        use_dynamic_attn: bool = False,
-        # ------ DynmaicRAG ends ------
+        # **************************** drag ends ******************************
     ) -> torch.Tensor:
-        # TODO(haocheng): enable dynamic
         output = torch.empty_like(query)
         context_attention_fwd(
             q=query,
-            k=key, # TODO: only pass unrotated_key
+            k=key,
             v=value,
             o=output,
             kv_cache_dtype=kv_cache_dtype,
@@ -266,9 +271,10 @@ class PagedAttention:
             v_scale=v_scale,
             alibi_slopes=alibi_slopes,
             sliding_window=sliding_window,
+            # **************************** drag begins ****************************
             cos_sin_cache=cos_sin_cache,
             rotary_dim=rotary_dim,
-            unrotated_key=unrotated_key,
+            # **************************** drag ends ******************************
         )
         return output
 

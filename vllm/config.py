@@ -654,9 +654,12 @@ class CacheConfig:
         sliding_window: Optional[int] = None,
         enable_prefix_caching: bool = False,
         cpu_offload_gb: float = 0,
-        # ------ DynmaicRAG begins ------
+        # **************************** drag begins ****************************
         use_dynamic_attn: bool = False,  # use dynamic paged attention
-        # ------ DynmaicRAG ends ------
+        # store_unrotated_key: bool = False,
+        # prefill_use_dynamic: bool = False,
+        # decode_use_dynamic: bool = False,
+        # **************************** drag ends ******************************
     ) -> None:
         self.block_size = block_size
         self.gpu_memory_utilization = gpu_memory_utilization
@@ -668,9 +671,9 @@ class CacheConfig:
         self.enable_prefix_caching = enable_prefix_caching
         self.cpu_offload_gb = cpu_offload_gb
 
-        # ------ DynmaicRAG begins ------
+        # **************************** drag begins ****************************
         self.use_dynamic_attn = use_dynamic_attn
-        # ------ DynmaicRAG ends ------
+        # **************************** drag ends ******************************
 
         self._verify_args()
         self._verify_cache_dtype()

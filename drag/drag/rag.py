@@ -1009,6 +1009,10 @@ class DynamicRAG(RAG):
             output_token_ids.append(next_token_id)
 
             next_tokens = self.tokenizer.batch_decode([next_token_id])
+
+            # TODO(haocheng): better stop string
+            if next_tokens[0] in sampling_params.stop:
+                break
             # logger.debug(f"next token {next_tokens}")
             for next_token in next_tokens:
                 yield next_token

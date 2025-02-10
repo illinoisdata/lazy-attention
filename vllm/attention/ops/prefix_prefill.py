@@ -1,76 +1,402 @@
 # The kernels in this file are adapted from LightLLM's context_attention_fwd:
 # https://github.com/ModelTC/lightllm/blob/main/lightllm/models/llama/triton_kernel/context_flashattention_nopad.py
 
+# Modified by DynamicRAG team to include DynamicRAG's Rotary Encoding for prefilling stage
+
 import torch
 import triton
 import triton.language as tl
 
 from vllm.platforms import current_platform
 
+
 if triton.__version__ >= "2.1.0":
 
-    #DynamicRAG Rotary Encoding begins--------
+    # **************************** drag begins ****************************
     @triton.jit
-    def apply_rotary_embedding(k, start_n, BLOCK_N, cos_sin_cache, rotary_dim, half_dim, stride_cs0, stride_cs1, N, D, stride_kbs):
-        """
-        Apply rotary embedding to the key tensor `k`.
+    def _fwd_kernel_dynamic_rag(
+        Q,
+        K,
+        V,
+        K_cache,
+        V_cache,
+        B_Loc,
+        sm_scale,
+        k_scale,
+        v_scale,
+        B_Start_Loc,
+        B_Seqlen,
+        B_Ctxlen,
+        block_size,
+        x,
+        Out,
+        stride_b_loc_b,
+        stride_b_loc_s,
+        stride_qbs,
+        stride_qh,
+        stride_qd,
+        stride_kbs,
+        stride_kh,
+        stride_kd,
+        stride_vbs,
+        stride_vh,
+        stride_vd,
+        stride_obs,
+        stride_oh,
+        stride_od,
+        stride_k_cache_bs,
+        stride_k_cache_h,
+        stride_k_cache_d,
+        stride_k_cache_bl,
+        stride_k_cache_x,
+        stride_v_cache_bs,
+        stride_v_cache_h,
+        stride_v_cache_d,
+        stride_v_cache_bl,
+        num_queries_per_kv: int,
+        BLOCK_M: tl.constexpr,
+        BLOCK_DMODEL: tl.constexpr,  # head size
+        BLOCK_DMODEL_PADDED: tl.constexpr,  # head size padded to a power of 2
+        BLOCK_N: tl.constexpr,
+        SLIDING_WINDOW: tl.constexpr,
+        cos_sin_cache,
+        rotary_dim: tl.constexpr,
+    ):
+        # grid: (batch_size, num_head, num_blocks) -> triton instances for parallel execution
+        # ceil(max_input_len / BLOCK) = num_blocks
+        # from grid get id of batch, head, and start_m
+        # For debug:
+        debug_cached_part = False
+        debug_new_part = False
 
-        Args:
-            k: [D, N] Tensor, where D is the head size, and N is BLOCK_N.
-            start_n: The starting position index of the current block in the sequence.
-            BLOCK_N: The number of keys in the current block.
-            cos_sin_cache: Precomputed cos and sin values, shape [seq_len, rotary_dim].
-            rotary_dim: Number of dimensions in `k` to which rotary embedding will be applied.
-            stride_cs0, stride_cs1: Strides for `cos_sin_cache` in the 0th and 1st dimension.
+        cur_batch = tl.program_id(0)  
+        cur_head = tl.program_id(1)
+        start_m = tl.program_id(2)
 
-        Returns:
-            k: The rotated key tensor with the same shape as input [D, N].
-        """
-        # TODO: impl for DynamicRAG
-        tl.device_assert(N == BLOCK_N, "The number of keys (N) must match BLOCK_N.")
-        tl.device_assert(rotary_dim <= D, "Rotary embedding dim must not exceed key dim.")
+        cur_kv_head = cur_head // num_queries_per_kv  # share kv for query
 
-        offs_d = tl.arange(0, half_dim)  # Indices for rotary embedding dimensions
-        offs_n = tl.arange(0, BLOCK_N)  # Indices for keys
-        positions = offs_n + start_n  # Absolute positions in the sequence
+        cur_batch_ctx_len = tl.load(B_Ctxlen + cur_batch)  # get context length for current request
+        cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)  # get sequence length for current request
+        cur_batch_in_all_start_index = tl.load(B_Start_Loc + cur_batch)  # get start index for current request
+        cur_batch_query_len = cur_batch_seq_len - cur_batch_ctx_len  # get query length for current request
 
-        # 128 token
-        for pos in range(start_n, start_n + BLOCK_N, 1):
-            tl.device_print("in tirton loop", pos)
+        # start position inside of the query
+        # generally, N goes over kv, while M goes over query_len
+        block_start_loc = BLOCK_M * start_m
 
-        # # Compute pointers for cos and sin
-        # cos_ptrs = cos_sin_cache + positions[None, :] * stride_cs0 + offs_d[:, None] * stride_cs1
-        # sin_ptrs = cos_sin_cache + positions[None, :] * stride_cs0 + (offs_d[:, None] + half_dim) * stride_cs1
-        #
-        # cos = tl.load(cos_ptrs)  # [half_dim, BLOCK_N]
-        # sin = tl.load(sin_ptrs)  # [half_dim, BLOCK_N]
-        #
-        # # Compute indices for k
-        # real_indices = offs_d * 2  # Even indices
-        # imag_indices = offs_d * 2 + 1  # Odd indices
-        #
-        # stride_k0 = N  # Stride for the 0th dimension of k
-        # stride_k1 = 1  # Stride for the 1st dimension of k
-        #
-        # # Compute pointers for k
-        # real_ptrs = k + real_indices[:, None] * stride_k0 + offs_n[None, :] * stride_k1
-        # imag_ptrs = k + imag_indices[:, None] * stride_k0 + offs_n[None, :] * stride_k1
-        #
-        # # Load real and imaginary parts of k
-        # rotary_mask = real_indices[:, None] < rotary_dim  # Mask for rotary dimensions
-        # k_real = tl.load(real_ptrs, mask=rotary_mask, other=0.0)  # Even dimensions
-        # k_imag = tl.load(imag_ptrs, mask=rotary_mask, other=0.0)  # Odd dimensions
-        #
-        # # Apply rotation embedding
-        # k_rotated_real = k_real * cos - k_imag * sin
-        # k_rotated_imag = k_real * sin + k_imag * cos
-        #
-        # # Store back into k
-        # tl.store(real_ptrs, k_rotated_real, mask=rotary_mask)
-        # tl.store(imag_ptrs, k_rotated_imag, mask=rotary_mask)
+        # initialize offsets
+        # [N]; starts at 0
+        offs_n = tl.arange(0, BLOCK_N)
+        # [D]; starts at 0
+        offs_d = tl.arange(0, BLOCK_DMODEL_PADDED)
+        # [M]; starts at current position in query
+        offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+        # [M,D]
+        off_q = (
+            (cur_batch_in_all_start_index + offs_m[:, None]) * stride_qbs +
+            cur_head * stride_qh + offs_d[None, :] * stride_qd)
 
-        return k
-        #DynamicRAG Rotary Encoding ends--------
+        dim_mask = tl.where(
+            tl.arange(0, BLOCK_DMODEL_PADDED) < BLOCK_DMODEL, 1,
+            0).to(tl.int1)  # [D]
+
+        q = tl.load(Q + off_q,
+                    mask=dim_mask[None, :] &
+                    (offs_m[:, None] < cur_batch_query_len),
+                    other=0.0)  # [M,D]
+
+        # initialize pointer to m and l
+        m_i = tl.zeros([BLOCK_M], dtype=tl.float32) - float("inf")  # [M]
+        l_i = tl.zeros([BLOCK_M], dtype=tl.float32)  # [M]
+        acc = tl.zeros([BLOCK_M, BLOCK_DMODEL_PADDED],
+                       dtype=tl.float32)  # [M,D]
+            
+        # compute query against context (no causal mask here)
+        for start_n in range(0, cur_batch_ctx_len, BLOCK_N):
+            start_n = tl.multiple_of(start_n, BLOCK_N)
+            # -- compute qk ----
+            bn = tl.load(B_Loc + cur_batch * stride_b_loc_b +
+                         ((start_n + offs_n) // block_size) * stride_b_loc_s,
+                         mask=(start_n + offs_n) < cur_batch_ctx_len,
+                         other=0)  # [N]
+            '''
+            bn: e.g. [0,0,.., 0,1,1,..,1,0...], 0 for block 0, 1 for block 1, etc.
+            '''
+            # [D,N]
+            # off_k = (bn[None, :] * stride_k_cache_bs +
+            #          cur_kv_head * stride_k_cache_h +  # [1, N]
+            #          (offs_d[:, None] // x) * stride_k_cache_d +  # offs_d = tl.arange(0, BLOCK_DMODEL_PADDED) [D, 1]
+            #          ((start_n + offs_n[None, :]) % block_size) *
+            #          stride_k_cache_bl +
+            #          (offs_d[:, None] % x) * stride_k_cache_x)
+            # [N,D]
+            off_v = (
+                bn[:, None] * stride_v_cache_bs +
+                cur_kv_head * stride_v_cache_h +
+                offs_d[None, :] * stride_v_cache_d +
+                (start_n + offs_n[:, None]) % block_size * stride_v_cache_bl)
+            
+            qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)  # [M,N]
+
+                # Apply rotary embedding to the key tensor `k` for the cached part
+                # k [head_dim, block_length]
+                # if ((tl.program_id(0) == 0) and (tl.program_id(1) == 0)) and (tl.program_id(2) == 0):
+                #     tl.static_print('rotary_dim: ', rotary_dim)
+
+                # second block wrong
+                # TODO(haocheng): better rotary_dim support different style neox and gptj
+            embed_dim: tl.constexpr = rotary_dim // 2
+            dim_mask = tl.where(
+                    tl.arange(0, BLOCK_DMODEL_PADDED) < BLOCK_DMODEL, 1,
+                    0).to(tl.int1)  # [D]
+                # TODO(haocheng): robust to the number of BLOCK_DMODEL_PADDED
+            offs_d1 = tl.arange(0, rotary_dim) % embed_dim
+            offs_d2 = offs_d1 + embed_dim
+
+            # [D,N]
+            off_k_1 = (bn[None, :] * stride_k_cache_bs +  # block
+                     cur_kv_head * stride_k_cache_h +         # head
+                     (offs_d1[:, None] // x) * stride_k_cache_d + 
+                     ((start_n + offs_n[None, :]) % block_size) *
+                     stride_k_cache_bl +
+                     (offs_d1[:, None] % x) * stride_k_cache_x)
+                
+            off_k_2 = (bn[None, :] * stride_k_cache_bs +
+                     cur_kv_head * stride_k_cache_h +
+                     (offs_d2[:, None] // x) * stride_k_cache_d +
+                     ((start_n + offs_n[None, :]) % block_size) *
+                     stride_k_cache_bl +
+                     (offs_d2[:, None] % x) * stride_k_cache_x)
+                
+            k_load_1 = tl.load(K_cache + off_k_1,
+                                mask=dim_mask[:, None] &
+                                ((start_n + offs_n[None, :]) < cur_batch_ctx_len),
+                                other=0.0)
+            k_load_2 = tl.load(K_cache + off_k_2,
+                                mask=dim_mask[:, None] &
+                                ((start_n + offs_n[None, :]) < cur_batch_ctx_len),
+                                other=0.0)
+
+            if k_load_1.dtype.is_fp8():
+                k_load_1 = (k_load_1.to(tl.float32) * k_scale).to(q.dtype)
+            else:
+                k_load_1 = k_load_1
+
+            if k_load_2.dtype.is_fp8():
+                k_load_2 = (k_load_2.to(tl.float32) * k_scale).to(q.dtype)
+            else:
+                k_load_2 = k_load_2
+
+            index_d = tl.arange(0, rotary_dim)
+            k_load = tl.where(index_d[:, None] < embed_dim, k_load_1, k_load_2)
+
+                # get corresponding cos_sin_cache
+                # [D, N]
+                # TODO(haocheng): mask
+                # if ((tl.program_id(0) == 0) and (tl.program_id(1) == 0)):
+                #     tl.device_print('compute qk for cached k', start_n)
+            positions = start_n + tl.arange(0, BLOCK_N)  # [N]
+            offs_cache_1 = (positions[None, :] * rotary_dim +
+                                offs_d1[:, None])
+            offs_cache_2 = (positions[None, :] * rotary_dim +
+                                offs_d2[:, None])
+                
+            cos_val = tl.load(cos_sin_cache + offs_cache_1)
+            sin_val = tl.load(cos_sin_cache + offs_cache_2)
+                
+            rotated_k_load_1 = k_load_1 * cos_val - k_load_2 * sin_val
+            rotated_k_load_2 = k_load_1 * sin_val + k_load_2 * cos_val
+
+            index_d = tl.arange(0, rotary_dim)
+            k = tl.where(index_d[:, None] < embed_dim, rotated_k_load_1, rotated_k_load_2)
+            #     ###########################################
+            # if debug_cached_part:
+            #     tl.debug_barrier()
+            #     if ((tl.program_id(0) == 0) and (tl.program_id(1) == 0)) and (tl.program_id(2) == 0):
+            #         int_val = tl.cast(k_load * 1000, tl.int32)
+            #         tl.device_print('cached k after custom rotary 1k', int_val)
+            #     ###########################################
+            qk += tl.dot(q, k)
+            qk = tl.where((start_n + offs_n[None, :]) < cur_batch_ctx_len, qk,
+                            float("-inf"))
+            qk *= sm_scale
+            if SLIDING_WINDOW > 0:
+                # (cur_batch_ctx_len + offs_m[:, None]) are the positions of
+                # Q entries in sequence
+                # (start_n + offs_n[None, :]) are the positions of
+                # KV entries in sequence
+                # So the condition makes sure each entry in Q only attends
+                # to KV entries not more than SLIDING_WINDOW away.
+                #
+                # We can't use -inf here, because the
+                # sliding window may lead to the entire row being masked.
+                # This then makes m_ij contain -inf, which causes NaNs in
+                # exp().
+                qk = tl.where((cur_batch_ctx_len + offs_m[:, None]) -
+                              (start_n + offs_n[None, :]) < SLIDING_WINDOW, qk,
+                              -10000)
+
+            # -- compute m_ij, p, l_ij
+            m_ij = tl.max(qk, 1)  # [M]
+            p = tl.exp(qk - m_ij[:, None])  # [M,N]
+            l_ij = tl.sum(p, 1)  # [M]
+            # -- update m_i and l_i
+            m_i_new = tl.maximum(m_i, m_ij)  # [M]
+            alpha = tl.exp(m_i - m_i_new)  # [M]
+            beta = tl.exp(m_ij - m_i_new)  # [M]
+            l_i_new = alpha * l_i + beta * l_ij  # [M]
+
+            # -- update output accumulator --
+            # scale p
+            p_scale = beta / l_i_new
+            p = p * p_scale[:, None]
+            # scale acc
+            acc_scale = l_i / l_i_new * alpha
+            acc = acc * acc_scale[:, None]
+            # update acc
+            v_load = tl.load(V_cache + off_v,
+                             mask=dim_mask[None, :] &
+                             ((start_n + offs_n[:, None]) < cur_batch_ctx_len),
+                             other=0.0)  # [N,D]
+            if v_load.dtype.is_fp8():
+                v = (v_load.to(tl.float32) * v_scale).to(q.dtype)
+            else:
+                v = v_load
+            p = p.to(v.dtype)
+
+            acc += tl.dot(p, v)
+            # # update m_i and l_i
+            l_i = l_i_new
+            m_i = m_i_new
+
+        off_k = (offs_n[None, :] * stride_kbs + cur_kv_head * stride_kh +
+                 offs_d[:, None] * stride_kd)
+        off_v = (offs_n[:, None] * stride_vbs + cur_kv_head * stride_vh +
+                 offs_d[None, :] * stride_vd)
+
+       
+        k_ptrs = K + off_k
+        v_ptrs = V + off_v
+
+        # block_mask is 0 when we're already past the current query length
+        block_mask = tl.where(block_start_loc < cur_batch_query_len, 1, 0)
+
+        # compute query against itself (with causal mask)
+        for start_n in range(0, block_mask * (start_m + 1) * BLOCK_M, BLOCK_N):
+            start_n = tl.multiple_of(start_n, BLOCK_N)
+            # -- compute qk ----
+            qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+            # Apply rotary embedding to the key tensor `k` for the new part
+            if True:
+                # Apply rotary embedding to the key tensor `k` for the new part
+                embed_dim: tl.constexpr = rotary_dim // 2
+                dim_mask = tl.where(
+                    tl.arange(0, BLOCK_DMODEL_PADDED) < BLOCK_DMODEL, 1,
+                    0).to(tl.int1)  # [D]
+                # TODO(haocheng): robust to the number of BLOCK_DMODEL_PADDED
+                offs_d1 = tl.arange(0, rotary_dim) % embed_dim
+                offs_d2 = offs_d1 + embed_dim
+
+                # [D,N]
+                off_k_1 = (offs_n[None, :] * stride_kbs + cur_kv_head * stride_kh +
+                 offs_d1[:, None] * stride_kd)
+                
+                off_k_2 = (offs_n[None, :] * stride_kbs + cur_kv_head * stride_kh +
+                 offs_d2[:, None] * stride_kd)
+                
+                k_load_1 = tl.load(K + off_k_1 + 
+                (cur_batch_in_all_start_index + start_n) * stride_kbs,
+                        mask=dim_mask[:, None] &
+                        ((start_n + offs_n[None, :]) < cur_batch_query_len),
+                        other=0.0)
+                k_load_2 = tl.load(K + off_k_2 + 
+                (cur_batch_in_all_start_index + start_n) * stride_kbs,
+                        mask=dim_mask[:, None] &
+                        ((start_n + offs_n[None, :]) < cur_batch_query_len),
+                        other=0.0)
+
+                index_d = tl.arange(0, rotary_dim)
+                k_load = tl.where(index_d[:, None] < embed_dim, k_load_1, k_load_2)
+                #########################################
+                if debug_new_part:
+                    tl.debug_barrier()
+                    if ((tl.program_id(0) == 0) and (tl.program_id(1) == 0)) and (tl.program_id(2) == 0):
+                        int_val = tl.cast(k_load * 1000, tl.int32)
+                        tl.device_print('new k before custom rotary 1k', int_val)
+                #########################################
+                # # get corresponding cos_sin_cache
+                # # [D//2, N]
+                # # TODO(haocheng): mask
+                # # if ((tl.program_id(0) == 0) and (tl.program_id(1) == 0)):
+                # #     tl.device_print('compute qk for query itself', cur_batch_ctx_len + start_n)
+                positions = cur_batch_ctx_len + start_n + tl.arange(0, BLOCK_N)  # [N]
+                offs_cache_1 = (positions[None, :] * rotary_dim +
+                                offs_d1[:, None])
+                offs_cache_2 = (positions[None, :] * rotary_dim +
+                                offs_d2[:, None])
+                
+                cos_val = tl.load(cos_sin_cache + offs_cache_1)
+                sin_val = tl.load(cos_sin_cache + offs_cache_2)
+                
+                rotated_k_load_1 = k_load_1 * cos_val - k_load_2 * sin_val
+                rotated_k_load_2 = k_load_1 * sin_val + k_load_2 * cos_val
+
+                index_d = tl.arange(0, rotary_dim)
+                k_load = tl.where(index_d[:, None] < embed_dim, rotated_k_load_1, rotated_k_load_2)
+                qk += tl.dot(q, k_load)
+                qk *= sm_scale
+            # if ((tl.program_id(0) == 0) and (tl.program_id(1) == 0)) and (tl.program_id(2) == 0):
+            #     int_val = tl.cast(qk * 1000, tl.int32)
+            #     tl.device_print('after new qk', int_val)
+
+            # apply causal mask
+            qk = tl.where(offs_m[:, None] >= (start_n + offs_n[None, :]), qk,
+                          float("-inf"))
+            if SLIDING_WINDOW > 0:
+                qk = tl.where(
+                    offs_m[:, None] -
+                    (start_n + offs_n[None, :]) < SLIDING_WINDOW, qk, -10000)
+
+            # -- compute m_ij, p, l_ij
+            m_ij = tl.max(qk, 1)
+            p = tl.exp(qk - m_ij[:, None])
+            l_ij = tl.sum(p, 1)
+            # -- update m_i and l_i
+            m_i_new = tl.maximum(m_i, m_ij)
+            alpha = tl.exp(m_i - m_i_new)
+            beta = tl.exp(m_ij - m_i_new)
+            l_i_new = alpha * l_i + beta * l_ij
+            # -- update output accumulator --
+            # scale p
+            p_scale = beta / l_i_new
+            p = p * p_scale[:, None]
+            # scale acc
+            acc_scale = l_i / l_i_new * alpha
+            acc = acc * acc_scale[:, None]
+            # update acc
+            v = tl.load(v_ptrs +
+                        (cur_batch_in_all_start_index + start_n) * stride_vbs,
+                        mask=dim_mask[None, :] &
+                        ((start_n + offs_n[:, None]) < cur_batch_query_len),
+                        other=0.0)
+            p = p.to(v.dtype)
+
+            acc += tl.dot(p, v)
+            # update m_i and l_i
+            l_i = l_i_new
+            m_i = m_i_new
+        # initialize pointers to output
+        off_o = (
+            (cur_batch_in_all_start_index + offs_m[:, None]) * stride_obs +
+            cur_head * stride_oh + offs_d[None, :] * stride_od)
+        out_ptrs = Out + off_o
+        tl.store(out_ptrs,
+                 acc,
+                 mask=dim_mask[None, :] &
+                 (offs_m[:, None] < cur_batch_query_len))
+        return
+
+    # **************************** drag ends ******************************
 
     @triton.jit
     def _fwd_kernel(
@@ -118,9 +444,6 @@ if triton.__version__ >= "2.1.0":
         BLOCK_DMODEL_PADDED: tl.constexpr,  # head size padded to a power of 2
         BLOCK_N: tl.constexpr,
         SLIDING_WINDOW: tl.constexpr,
-        cos_sin_cache,
-        rotary_dim: tl.constexpr,
-        unrotated_key
     ):
         cur_batch = tl.program_id(0)
         cur_head = tl.program_id(1)
@@ -185,6 +508,7 @@ if triton.__version__ >= "2.1.0":
                 cur_kv_head * stride_v_cache_h +
                 offs_d[None, :] * stride_v_cache_d +
                 (start_n + offs_n[:, None]) % block_size * stride_v_cache_bl)
+            
             k_load = tl.load(K_cache + off_k,
                              mask=dim_mask[:, None] &
                              ((start_n + offs_n[None, :]) < cur_batch_ctx_len),
@@ -194,10 +518,6 @@ if triton.__version__ >= "2.1.0":
                 k = (k_load.to(tl.float32) * k_scale).to(q.dtype)
             else:
                 k = k_load
-
-            # --------- DynamicRAG begins -------------
-            # k = apply_rotary_embedding(k, start_n, BLOCK_N, cos_sin_cache, rotary_dim, cur_batch_ctx_len)
-            # --------- DynamicRAG ends -------------
 
             qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)  # [M,N]
             qk += tl.dot(q, k)
@@ -274,10 +594,6 @@ if triton.__version__ >= "2.1.0":
                         mask=dim_mask[:, None] &
                         ((start_n + offs_n[None, :]) < cur_batch_query_len),
                         other=0.0)
-
-            # --------- DynamicRAG begins -------------
-            # k = apply_rotary_embedding(k, ...)
-            # --------- DynamicRAG ends -------------
 
             qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
             qk += tl.dot(q, k)
@@ -769,7 +1085,7 @@ if triton.__version__ >= "2.1.0":
 
     @torch.inference_mode()
     def context_attention_fwd(q,
-                              k, # rotated key
+                              k,  # hint: unrotated key when use DynamicRAG, otherwise rotated key
                               v,
                               o,
                               kv_cache_dtype: str,
@@ -784,10 +1100,11 @@ if triton.__version__ >= "2.1.0":
                               v_scale: float = 1.0,
                               alibi_slopes=None,
                               sliding_window=None,
-                              cos_sin_cache=None,     #passing unrotated_key, cos_sin_cache and rotary_dim for DynamicPagedAttention
+                              # **************************** drag begins ****************************
+                              cos_sin_cache=None,
                               rotary_dim=None,
-                              unrotated_key=None):
-
+                              # **************************** drag ends ******************************
+                              ):
         BLOCK = 128 if current_platform.has_device_capability(80) else 64
         NUM_WARPS = 8
 
@@ -822,7 +1139,6 @@ if triton.__version__ >= "2.1.0":
         assert Lq == Lk and Lk == Lv
         # round up Lk to a power of 2 - this is required for Triton block size
         Lk_padded = triton.next_power_of_2(Lk)
-
         sm_scale = 1.0 / (Lq**0.5)
         batch, head = b_seq_len.shape[0], q.shape[1]
         num_queries_per_kv = q.shape[1] // k.shape[1]
@@ -886,23 +1202,84 @@ if triton.__version__ >= "2.1.0":
                 num_stages=1,
             )
             return
+        
+        # **************************** drag begins ****************************
+        # for debug
+        # print(f'-------------------------------- prefill, context len is {b_ctx_len}, seq len is {b_seq_len}')
+        if (cos_sin_cache is not None) and (rotary_dim is not None):
+            _fwd_kernel_dynamic_rag[grid](
+                q,
+                k,
+                v,
+                k_cache,
+                v_cache,
+                b_loc,  # block tables
+                sm_scale,  # scores = (Q @ K.T) * sm_scale
+                k_scale,
+                v_scale,
+                b_start_loc,  # query start loc
+                b_seq_len,  # sequence length
+                b_ctx_len,  # context length
+                v_cache.shape[3],  # block_size, e.g., 16 from [9596, 8, 128, 16]
+                k_cache.shape[4],  # x, e.g., 8 from [9596, 8, 16, 16, 8]
+                o,  # output
+                b_loc.stride(0),
+                b_loc.stride(1),
+                q.stride(0),
+                q.stride(1),
+                q.stride(2),
+                k.stride(0),
+                k.stride(1),
+                k.stride(2),
+                v.stride(0),
+                v.stride(1),
+                v.stride(2),
+                o.stride(0),
+                o.stride(1),
+                o.stride(2),
+                k_cache.stride(0),
+                k_cache.stride(1),
+                k_cache.stride(2),
+                k_cache.stride(3),
+                k_cache.stride(
+                    4),  #[num_blocks, num_kv_heads, head_size/x, block_size, x]
+                v_cache.stride(0),
+                v_cache.stride(1),
+                v_cache.stride(2),
+                v_cache.stride(
+                    3),  #[num_blocks, num_kv_heads, head_size, block_size]
+                num_queries_per_kv=num_queries_per_kv,  # share kv for each query
+                BLOCK_M=BLOCK,
+                BLOCK_DMODEL=Lk,
+                BLOCK_DMODEL_PADDED=Lk_padded,
+                BLOCK_N=BLOCK,
+                SLIDING_WINDOW=sliding_window,
+                num_warps=NUM_WARPS,
+                num_stages=1,
+                cos_sin_cache=cos_sin_cache,  # [max_position, rot_dim]
+                rotary_dim=rotary_dim,
+            )
+            return
+        # **************************** drag ends ******************************
 
+        # grid: (batch_size, num_head, num_blocks) -> triton instances for parallel execution
+        # ceil(max_input_len / BLOCK) = num_blocks
         _fwd_kernel[grid](
             q,
             k,
             v,
             k_cache,
             v_cache,
-            b_loc,
-            sm_scale,
+            b_loc,  # block tables
+            sm_scale,  # scores = (Q @ K.T) * sm_scale
             k_scale,
             v_scale,
-            b_start_loc,
-            b_seq_len,
-            b_ctx_len,
-            v_cache.shape[3],
-            k_cache.shape[4],
-            o,
+            b_start_loc,  # query start loc
+            b_seq_len,  # sequence length
+            b_ctx_len,  # context length
+            v_cache.shape[3],  # block_size, e.g., 16 from [9596, 8, 128, 16]
+            k_cache.shape[4],  # x, e.g., 8 from [9596, 8, 16, 16, 8]
+            o,  # output
             b_loc.stride(0),
             b_loc.stride(1),
             q.stride(0),
@@ -922,13 +1299,13 @@ if triton.__version__ >= "2.1.0":
             k_cache.stride(2),
             k_cache.stride(3),
             k_cache.stride(
-                4),  #[num_blocks, num_kv_heads, head_size/x, block_size, x] #what is x?
+                4),  #[num_blocks, num_kv_heads, head_size/x, block_size, x]
             v_cache.stride(0),
             v_cache.stride(1),
             v_cache.stride(2),
             v_cache.stride(
                 3),  #[num_blocks, num_kv_heads, head_size, block_size]
-            num_queries_per_kv=num_queries_per_kv,
+            num_queries_per_kv=num_queries_per_kv,  # share kv for each query
             BLOCK_M=BLOCK,
             BLOCK_DMODEL=Lk,
             BLOCK_DMODEL_PADDED=Lk_padded,
@@ -936,8 +1313,5 @@ if triton.__version__ >= "2.1.0":
             SLIDING_WINDOW=sliding_window,
             num_warps=NUM_WARPS,
             num_stages=1,
-            cos_sin_cache=cos_sin_cache,
-            rotary_dim=rotary_dim,
-            unrotated_key=unrotated_key, # can be used for testing
         )
         return
