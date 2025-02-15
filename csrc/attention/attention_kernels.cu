@@ -43,6 +43,8 @@ typedef __hip_bfloat16 __nv_bfloat16;
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define DIVIDE_ROUND_UP(a, b) (((a) + (b) - 1) / (b))
 
+#define USE_NEOX true
+
 namespace vllm {
 
 // Utility function for attention softmax.
@@ -82,7 +84,7 @@ inline __device__ float block_sum(float* red_smem, float sum) {
 }
 
 template <typename scalar_t>
-inline __device__ void apply_local_token_rotary_embedding(
+inline __device__ void apply_gptj_rotary_embedding(
     scalar_t* __restrict__ arr, const scalar_t* __restrict__ cos_ptr,
     const scalar_t* __restrict__ sin_ptr, int vetor_size) {
   scalar_t x;
@@ -92,6 +94,21 @@ inline __device__ void apply_local_token_rotary_embedding(
     y = arr[i + 1];
     arr[i] = x * cos_ptr[i / 2] - y * sin_ptr[i / 2];
     arr[i + 1] = y * cos_ptr[i / 2] + x * sin_ptr[i / 2];
+  }
+}
+
+template <typename scalar_t>
+inline __device__ void apply_neox_rotary_embedding(
+    scalar_t* __restrict__ arr1, scalar_t* __restrict__ arr2,
+    const scalar_t* __restrict__ cos_ptr,
+    const scalar_t* __restrict__ sin_ptr, int vetor_size) {
+  scalar_t x;
+  scalar_t y;
+  for (int i = 0; i < vetor_size; i ++){
+    x = arr1[i];
+    y = arr2[i];
+    arr1[i] = x * cos_ptr[i] - y * sin_ptr[i];
+    arr2[i] = y * cos_ptr[i] + x * sin_ptr[i];
   }
 }
 
@@ -161,6 +178,10 @@ __device__ void dynamic_paged_attention_kernel(
       NUM_THREADS / THREAD_GROUP_SIZE;  // Note: This assumes THREAD_GROUP_SIZE
                                         // divides NUM_THREADS
   assert(NUM_THREADS % THREAD_GROUP_SIZE == 0);
+  if (USE_NEOX){
+    assert(rot_dim % 2 == 0); // for neox, the rotary dimension must be an even number
+    assert((rot_dim / 2) % THREAD_GROUP_SIZE == 0); // for neox, the first element of the first half and the first element of the second half must belong to the same thread
+  }
   constexpr int NUM_TOKENS_PER_THREAD_GROUP =
       DIVIDE_ROUND_UP(BLOCK_SIZE, WARP_SIZE);
   constexpr int NUM_WARPS = NUM_THREADS / WARP_SIZE;
@@ -180,7 +201,11 @@ __device__ void dynamic_paged_attention_kernel(
   // group fetch or compute 16 bytes at a time. For example, if the size of a
   // thread group is 4 and the data type is half, then the vector size is 16 /
   // (4 * sizeof(half)) == 2.
-  constexpr int VEC_SIZE = MAX(16 / (THREAD_GROUP_SIZE * sizeof(scalar_t)), 2); // For position embedding, vec_size we deal with each time needs to be at least 2.
+  // if (!USE_NEOX){
+  //   constexpr int VEC_SIZE = MAX(16 / (THREAD_GROUP_SIZE * sizeof(scalar_t)), 2); // For gpt-j position embedding, vec_size we deal with each time needs to be at least 2.
+  // }
+  // constexpr int VEC_SIZE = MAX(16 / (THREAD_GROUP_SIZE * sizeof(scalar_t)), 1); 
+  constexpr int VEC_SIZE = MAX(16 / (THREAD_GROUP_SIZE * sizeof(scalar_t)), 2);
   using K_vec = typename Vec<scalar_t, VEC_SIZE>::Type;
   using Q_vec = typename Vec<scalar_t, VEC_SIZE>::Type;
 
@@ -302,30 +327,67 @@ __device__ void dynamic_paged_attention_kernel(
           k_cache + physical_block_number * kv_block_stride +
           kv_head_idx * kv_head_stride + physical_block_offset * x;
 
-#pragma unroll
-      for (int j = 0; j < NUM_VECS_PER_THREAD; j++) {
-        //loop 3: locate the vecs this thread group is dealing with.
-        //loop for each thread to load the vec one by one
-        const int vec_idx = thread_group_offset + j * THREAD_GROUP_SIZE; //vec_idx in the current token.
-        const int offset1 = (vec_idx * VEC_SIZE) / x;//offset should be equal to j
-        const int offset2 = (vec_idx * VEC_SIZE) % x;//element offset of the current group
-        scalar_t* current_k_vec = reinterpret_cast<scalar_t*>(&k_vecs[j]);
-        scalar_t current_sin_vec[VEC_SIZE / 2];
-        scalar_t current_cos_vec[VEC_SIZE / 2];
-        if constexpr (KV_DTYPE == Fp8KVCacheDataType::kAuto) {
-          std::memcpy(current_k_vec, k_ptr + offset1 * BLOCK_SIZE * x + offset2, VEC_SIZE * sizeof(scalar_t));
-          std::memcpy(current_sin_vec, r_sin_ptr + (offset1 * x + offset2)/2, VEC_SIZE / 2 * sizeof(scalar_t));
-          std::memcpy(current_cos_vec, r_cos_ptr + (offset1 * x + offset2)/2, VEC_SIZE / 2 * sizeof(scalar_t));
-          apply_local_token_rotary_embedding(current_k_vec, current_cos_vec, current_sin_vec, VEC_SIZE);
-          // TODO: when embed dim is not full size, how to make sure it.
-        } else {
-          //TODO: also add position embedding for this scenerio
-          // Vector conversion from Quant_vec to K_vec.
-          Quant_vec k_vec_quant = *reinterpret_cast<const Quant_vec*>(
-              k_ptr + offset1 * BLOCK_SIZE * x + offset2);
-          k_vecs[j] = fp8::scaled_convert<K_vec, Quant_vec, KV_DTYPE>(
-              k_vec_quant, k_scale);
-        }
+      if (USE_NEOX){
+        #pragma unroll
+            for (int j = 0; j < NUM_VECS_PER_THREAD / 2; j++) {
+              //loop 3: locate and load the vecs this thread group is dealing with. Two vecs for each step to apply neox rotary embedding
+              const int vec_idx_1 = thread_group_offset + j * THREAD_GROUP_SIZE; //vec_idx in the current token.
+              const int offset1_1 = (vec_idx_1 * VEC_SIZE) / x;//offset should be equal to j
+              const int offset2_1 = (vec_idx_1 * VEC_SIZE) % x;//element offset of the current group
+              scalar_t* current_k_vec_1 = reinterpret_cast<scalar_t*>(&k_vecs[j]);
+
+              const int vec_idx_2 = vec_idx_1 + NUM_VECS_PER_THREAD / 2; //vec_idx in the current token.
+              const int offset1_2 = (vec_idx_2 * VEC_SIZE) / x;//offset should be equal to j
+              const int offset2_2 = (vec_idx_2 * VEC_SIZE) % x;//element offset of the current group
+              scalar_t* current_k_vec_2 = reinterpret_cast<scalar_t*>(&k_vecs[j + NUM_VECS_PER_THREAD / 2]);
+
+              scalar_t current_sin_vec[VEC_SIZE];
+              scalar_t current_cos_vec[VEC_SIZE];
+              if constexpr (KV_DTYPE == Fp8KVCacheDataType::kAuto) {
+                // TODO: double check this
+                std::memcpy(current_k_vec_1, k_ptr + offset1_1 * BLOCK_SIZE * x + offset2_1, VEC_SIZE * sizeof(scalar_t));
+                std::memcpy(current_k_vec_2, k_ptr + offset1_2 * BLOCK_SIZE * x + offset2_2, VEC_SIZE * sizeof(scalar_t));
+                std::memcpy(current_sin_vec, r_sin_ptr + offset1_1 * x + offset2_1, VEC_SIZE * sizeof(scalar_t));
+                std::memcpy(current_cos_vec, r_cos_ptr + offset1_1 * x + offset2_1, VEC_SIZE * sizeof(scalar_t));
+                
+                apply_neox_rotary_embedding(current_k_vec_1, current_k_vec_2, current_cos_vec, current_sin_vec, VEC_SIZE);
+                // TODO: when embed dim is not full size, how to make sure it.
+              } else {
+                //TODO: also add position embedding for this scenerio
+                // Vector conversion from Quant_vec to K_vec.
+                Quant_vec k_vec_quant = *reinterpret_cast<const Quant_vec*>(
+                    k_ptr + offset1_2 * BLOCK_SIZE * x + offset2_2);
+                k_vecs[j] = fp8::scaled_convert<K_vec, Quant_vec, KV_DTYPE>(
+                    k_vec_quant, k_scale);
+              }
+            }
+      } else {
+          #pragma unroll
+            for (int j = 0; j < NUM_VECS_PER_THREAD; j++) {
+              //loop 3: locate and load the vecs this thread group is dealing with. Apply rotary embedding.
+              //loop for each thread to load the vec one by one
+              const int vec_idx = thread_group_offset + j * THREAD_GROUP_SIZE; //vec_idx in the current token.
+              const int offset1 = (vec_idx * VEC_SIZE) / x;//offset should be equal to j
+              const int offset2 = (vec_idx * VEC_SIZE) % x;//element offset of the current group
+              scalar_t* current_k_vec = reinterpret_cast<scalar_t*>(&k_vecs[j]);
+              scalar_t current_sin_vec[VEC_SIZE / 2];
+              scalar_t current_cos_vec[VEC_SIZE / 2];
+              if constexpr (KV_DTYPE == Fp8KVCacheDataType::kAuto) {
+                std::memcpy(current_k_vec, k_ptr + offset1 * BLOCK_SIZE * x + offset2, VEC_SIZE * sizeof(scalar_t));
+                std::memcpy(current_sin_vec, r_sin_ptr + (offset1 * x + offset2)/2, VEC_SIZE / 2 * sizeof(scalar_t));
+                std::memcpy(current_cos_vec, r_cos_ptr + (offset1 * x + offset2)/2, VEC_SIZE / 2 * sizeof(scalar_t));
+                
+                apply_gptj_rotary_embedding(current_k_vec, current_cos_vec, current_sin_vec, VEC_SIZE);
+                // TODO: when embed dim is not full size, how to make sure it.
+              } else {
+                //TODO: also add position embedding for this scenerio
+                // Vector conversion from Quant_vec to K_vec.
+                Quant_vec k_vec_quant = *reinterpret_cast<const Quant_vec*>(
+                    k_ptr + offset1 * BLOCK_SIZE * x + offset2);
+                k_vecs[j] = fp8::scaled_convert<K_vec, Quant_vec, KV_DTYPE>(
+                    k_vec_quant, k_scale);
+              }
+            }
       }
 
       // Compute dot product.
