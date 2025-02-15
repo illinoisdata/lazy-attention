@@ -34,6 +34,8 @@ pip install --verbose -e .
 You don't need to wait until it's done, which may take about 40 mins. Instead, You should be able to see the right command to use from the terminal very soon by **searching the terminal output with keyword "Print configure command"**
 But note that you'll have to specify ``-DCMAKE_INSTALL_PREFIX=..`` manually because setup.py didn't do that.
 
+If you're using vscode's cmake extension, you need to set "-DCMAKE_MAKE_PROGRAM=/u/hfang4/miniconda3/envs/vllm-env1/bin/ninja" additionally; And add "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json" to settings.json
+
 ## step 5: cmake build only the component we need!
 ``
 cmake --build . --target _C
@@ -50,3 +52,15 @@ NO_C=1 pip install -e . --no-build-isolation
 ``
 
 Note that you only need to run step 5 - 6 in the future each time you change your code. Step 1 to 4 only needs to be run once in your virtual environment's lifetime! 
+
+
+## pytest dynamic attention
+cuda unit test:
+``
+pytest -v -s tests/kernels/test_attention.py::test_dynamic_paged_attention
+``
+integration test:
+``
+pytest tests/test_decode.py
+``
+
