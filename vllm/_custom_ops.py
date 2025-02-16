@@ -120,13 +120,14 @@ def dynamic_paged_attention(
     blocksparse_vert_stride: int = 0,
     blocksparse_block_size: int = 64,
     blocksparse_head_sliding_step: int = 0,
+    use_neox: bool = True
 ) -> None:
     torch.ops._C.dynamic_paged_attention(
         out, query, key_cache, value_cache, cos_sin_cache, rot_dim, num_kv_heads, scale, block_tables,
         seq_lens, block_size, max_seq_len, alibi_slopes, kv_cache_dtype,
         k_scale, v_scale, tp_rank, blocksparse_local_blocks,
         blocksparse_vert_stride, blocksparse_block_size,
-        blocksparse_head_sliding_step)
+        blocksparse_head_sliding_step, use_neox)
 
 def paged_attention_v1(
     out: torch.Tensor,

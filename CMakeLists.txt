@@ -82,6 +82,7 @@ endif()
 # etc.
 #
 find_package(Torch REQUIRED)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 #
 # Forward the non-CUDA device extensions to external CMake scripts.

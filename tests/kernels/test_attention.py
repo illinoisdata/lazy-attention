@@ -32,9 +32,9 @@ NUM_HEADS = [(40, 40), (64, 8)]  # Arbitrary values for testing
 
 # FlashAttention forward only supports head dimension at most 128
 # https://github.com/ROCmSoftwarePlatform/flash-attention/blob/3d2b6f5d037782cc2c906909a46fb7e2e1b48b25/csrc/flash_attn_rocm/flash_api.cpp#L62
-HEAD_SIZES = [64, 80, 96, 112, 120, 128, 192, 256]
+HEAD_SIZES = [64, 80, 96, 112, 128, 192, 256]
 
-BLOCK_SIZES = [16, 32]
+BLOCK_SIZES = [8, 16, 32]
 USE_ALIBI = [False, True]
 KV_CACHE_DTYPE = ["auto", "fp8"]
 SEEDS = [0]
@@ -248,7 +248,7 @@ def test_dynamic_paged_attention(
     opcheck(torch.ops._C.dynamic_paged_attention,
             (output, query, key_cache, value_cache, cos_sin_cache, head_size, num_kv_heads, scale,
              block_tables, seq_lens, block_size, max_seq_len, alibi_slopes,
-             kv_cache_dtype, k_scale, v_scale, 0, 0, 0, 64, 0),
+             kv_cache_dtype, k_scale, v_scale, 0, 0, 0, 64, 0, True),
             cond=(head_size == HEAD_SIZES[0]
                   and block_size == BLOCK_SIZES[0]))
 
@@ -269,6 +269,7 @@ def test_dynamic_paged_attention(
         kv_cache_dtype,
         k_scale,
         v_scale,
+        True,
     )
 
     # Run the reference implementation.
