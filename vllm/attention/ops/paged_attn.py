@@ -164,7 +164,7 @@ class PagedAttention:
                 blocksparse_local_blocks,
                 blocksparse_vert_stride,
                 blocksparse_block_size,
-                blocksparse_head_sliding_step,)
+                blocksparse_head_sliding_step,True)
             return output
         # **************************** drag ends ******************************
 

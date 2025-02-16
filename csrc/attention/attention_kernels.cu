@@ -43,8 +43,6 @@ typedef __hip_bfloat16 __nv_bfloat16;
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define DIVIDE_ROUND_UP(a, b) (((a) + (b) - 1) / (b))
 
-#define USE_NEOX true
-
 namespace vllm {
 
 // Utility function for attention softmax.
@@ -145,7 +143,7 @@ __device__ void dynamic_paged_attention_kernel(
     const int q_stride, const int kv_block_stride, const int kv_head_stride,
     const float k_scale, const float v_scale, const int tp_rank,
     const int blocksparse_local_blocks, const int blocksparse_vert_stride,
-    const int blocksparse_block_size, const int blocksparse_head_sliding_step) {
+    const int blocksparse_block_size, const int blocksparse_head_sliding_step, const bool USE_NEOX) {
   const int seq_idx = blockIdx.y;
   const int partition_idx = blockIdx.z;
   const int max_num_partitions = gridDim.z;
@@ -1041,15 +1039,15 @@ __global__ void paged_attention_dynamic_kernel(
     const int q_stride, const int kv_block_stride, const int kv_head_stride,
     const float k_scale, const float v_scale, const int tp_rank,
     const int blocksparse_local_blocks, const int blocksparse_vert_stride,
-    const int blocksparse_block_size, const int blocksparse_head_sliding_step) {
+    const int blocksparse_block_size, const int blocksparse_head_sliding_step, const bool use_neox) {
   dynamic_paged_attention_kernel<scalar_t, cache_t, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS,
                          KV_DTYPE, IS_BLOCK_SPARSE>(
-      /* exp_sums */ nullptr, /* max_logits */ nullptr, out, q, k_cache,
+      /* exp_sums */ static_cast<float*>(nullptr), /* max_logits */ static_cast<float*>(nullptr), out, q, k_cache,
       v_cache, cos_sin_cache, rot_dim, num_kv_heads, scale, block_tables, seq_lens,
       max_num_blocks_per_seq, alibi_slopes, q_stride, kv_block_stride,
       kv_head_stride, k_scale, v_scale, tp_rank, blocksparse_local_blocks,
       blocksparse_vert_stride, blocksparse_block_size,
-      blocksparse_head_sliding_step);
+      blocksparse_head_sliding_step, use_neox);
 }
 
 // Grid: (num_heads, num_seqs, 1).
@@ -1242,7 +1240,7 @@ __global__ void paged_attention_v2_reduce_kernel(
           alibi_slopes_ptr, q_stride, kv_block_stride, kv_head_stride,      \
           k_scale, v_scale, tp_rank, blocksparse_local_blocks,              \
           blocksparse_vert_stride, blocksparse_block_size,                  \
-          blocksparse_head_sliding_step);
+          blocksparse_head_sliding_step, use_neox);
 
 #define LAUNCH_PAGED_ATTENTION_V1(HEAD_SIZE)                                \
   VLLM_DevFuncAttribute_SET_MaxDynamicSharedMemorySize(                     \
@@ -1271,7 +1269,7 @@ void paged_attention_dynamic_launcher(
     const c10::optional<torch::Tensor>& alibi_slopes, float k_scale,
     float v_scale, const int tp_rank, const int blocksparse_local_blocks,
     const int blocksparse_vert_stride, const int blocksparse_block_size,
-    const int blocksparse_head_sliding_step) {
+    const int blocksparse_head_sliding_step, const bool use_neox) {
   int num_seqs = query.size(0);
   int num_heads = query.size(1);
   int head_size = query.size(2);
@@ -1424,13 +1422,13 @@ void paged_attention_v1_launcher(
   }
 }
 
-#define CALL_DYNAMIC_LAUNCHER(T, CACHE_T, BLOCK_SIZE, KV_DTYPE, IS_BLOCK_SPARSE)  \
+#define CALL_DYNAMIC_LAUNCHER(T, CACHE_T, BLOCK_SIZE, KV_DTYPE, IS_BLOCK_SPARSE, USE_NEOX)  \
   paged_attention_dynamic_launcher<T, CACHE_T, BLOCK_SIZE, KV_DTYPE,              \
                               IS_BLOCK_SPARSE>(                              \
       out, query, key_cache, value_cache, cos_sin_cache, rot_dim, num_kv_heads, scale, block_tables, \
       seq_lens, max_seq_len, alibi_slopes, k_scale, v_scale, tp_rank,        \
       blocksparse_local_blocks, blocksparse_vert_stride,                     \
-      blocksparse_block_size, blocksparse_head_sliding_step);
+      blocksparse_block_size, blocksparse_head_sliding_step, USE_NEOX);
 
 #define CALL_V1_LAUNCHER(T, CACHE_T, BLOCK_SIZE, KV_DTYPE, IS_BLOCK_SPARSE)  \
   paged_attention_v1_launcher<T, CACHE_T, BLOCK_SIZE, KV_DTYPE,              \
@@ -1443,10 +1441,20 @@ void paged_attention_v1_launcher(
 #define CALL_DYNAMIC_LAUNCHER_SPARSITY(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE) \
   switch (is_block_sparse) {                                               \
     case true:                                                             \
-      CALL_DYNAMIC_LAUNCHER(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE, true);     \
+      CALL_DYNAMIC_LAUNCHER_USE_NEOX(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE, true);     \
       break;                                                               \
     case false:                                                            \
-      CALL_DYNAMIC_LAUNCHER(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE, false);    \
+      CALL_DYNAMIC_LAUNCHER_USE_NEOX(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE, false);    \
+      break;                                                               \
+  }
+
+#define CALL_DYNAMIC_LAUNCHER_USE_NEOX(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE, IS_BLOCK_SPARSE) \
+  switch (use_neox) {                                               \
+    case true:                                                             \
+      CALL_DYNAMIC_LAUNCHER(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE, IS_BLOCK_SPARSE, true);     \
+      break;                                                               \
+    case false:                                                            \
+      CALL_DYNAMIC_LAUNCHER(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE, IS_BLOCK_SPARSE, false);    \
       break;                                                               \
   }
 
@@ -1513,7 +1521,7 @@ void dynamic_paged_attention(
     const std::string& kv_cache_dtype, double k_scale, double v_scale,
     const int64_t tp_rank, const int64_t blocksparse_local_blocks,
     const int64_t blocksparse_vert_stride, const int64_t blocksparse_block_size,
-    const int64_t blocksparse_head_sliding_step) {
+    const int64_t blocksparse_head_sliding_step, const bool use_neox) {
 // choose to call the right function according to the data type and other configuration (most logic are in micro)
   const bool is_block_sparse = (blocksparse_vert_stride > 1);
 

@@ -36,7 +36,7 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
       "    str kv_cache_dtype, float k_scale, float v_scale,"
       "    int tp_rank, int blocksparse_local_blocks,"
       "    int blocksparse_vert_stride, int blocksparse_block_size,"
-      "    int blocksparse_head_sliding_step) -> ()");
+      "    int blocksparse_head_sliding_step, bool use_neox) -> ()");
   ops.impl("dynamic_paged_attention", torch::kCUDA, &dynamic_paged_attention);
 
   ops.def(
