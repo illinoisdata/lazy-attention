@@ -140,6 +140,7 @@ class PagedAttention:
 
         # TODO(haocheng): enable dynamic attention for V2
         use_v1 = True  # force use V1 for now
+        use_ref = False
         if use_dynamic_attn:
             # print("---------------------------------- invoke dynamic paged attention")
             ops.dynamic_paged_attention(

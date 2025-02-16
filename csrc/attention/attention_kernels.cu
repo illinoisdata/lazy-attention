@@ -1326,9 +1326,6 @@ void paged_attention_dynamic_launcher(
     case 112:
       LAUNCH_PAGED_ATTENTION_DYNAMIC(112);
       break;
-    case 120:
-      LAUNCH_PAGED_ATTENTION_DYNAMIC(120);
-      break;
     case 128:
       LAUNCH_PAGED_ATTENTION_DYNAMIC(128);
       break;
