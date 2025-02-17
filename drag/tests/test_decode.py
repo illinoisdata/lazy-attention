@@ -4,13 +4,13 @@ from vllm.distributed import cleanup_dist_env_and_memory
 
 from drag import DynamicRAG
 
-
+MAX_TOKENS = 10
 docs = ["Lionel Messi scored 13 goals at FIFA World Cups.",
         "Cristiano Ronaldo scored 8 goals at FIFA World Cups."]
 query = "Who scored more goals at FIFA World Cups, Messi or Ronaldo?"
 
 # only for prefilling -> generate one token
-sampling_param = SamplingParams(max_tokens=2,
+sampling_param = SamplingParams(max_tokens=MAX_TOKENS,
                                 seed=2024,
                                 temperature=0,
                                 stop=['<|im_end|>', "<|eot_id|>", "<|end_of_text|>", "<|endoftext|>"],
@@ -24,7 +24,7 @@ def prefill(docs, query):
     rag = DynamicRAG(base_llm)
     doc_ids = rag.add_cache(docs)
     outputs = rag.generate(doc_ids, query, sampling_param)
-    base_answer = outputs[1]
+    base_answer = outputs[1:MAX_TOKENS]
     del base_llm
     del rag
     cleanup_dist_env_and_memory()
@@ -37,7 +37,7 @@ def prefill(docs, query):
     rag = DynamicRAG(drag_llm)
     doc_ids = rag.add_cache(docs)
     outputs = rag.generate(doc_ids, query, sampling_param)
-    drag_answer = outputs[1]
+    drag_answer = outputs[1:MAX_TOKENS]
     del drag_llm
     cleanup_dist_env_and_memory()
     assert base_answer == drag_answer
