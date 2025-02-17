@@ -105,6 +105,7 @@ class PagedAttention:
         # **************************** drag begins ****************************
         cos_sin_cache: Optional[torch.Tensor] = None,
         rotary_dim: Optional[int] = None,
+        is_neox_style: bool = True,
         # **************************** drag ends ******************************
     ) -> torch.Tensor:
         if blocksparse_vert_stride is not None and blocksparse_vert_stride > 1:
@@ -140,7 +141,6 @@ class PagedAttention:
 
         # TODO(haocheng): enable dynamic attention for V2
         use_v1 = True  # force use V1 for now
-        use_ref = False
         if use_dynamic_attn:
             # print("---------------------------------- invoke dynamic paged attention")
             ops.dynamic_paged_attention(
@@ -164,7 +164,9 @@ class PagedAttention:
                 blocksparse_local_blocks,
                 blocksparse_vert_stride,
                 blocksparse_block_size,
-                blocksparse_head_sliding_step,True)
+                blocksparse_head_sliding_step,
+                is_neox_style,
+            )
             return output
         # **************************** drag ends ******************************
 

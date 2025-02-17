@@ -462,6 +462,7 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
         # **************************** drag begins ****************************
         cos_sin_cache: Optional[torch.Tensor] = None,
         rotary_dim: Optional[int] = None,
+        is_neox_style: bool = True,
         # **************************** drag ends ******************************
     ) -> torch.Tensor:
         """Forward pass with xFormers and PagedAttention.
@@ -653,6 +654,7 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                     # **************************** drag begins ****************************
                     cos_sin_cache=cos_sin_cache,
                     rotary_dim=rotary_dim,
+                    # TODO(haocheng): add is_neox_style
                     # **************************** drag ends ******************************
                  )
             
@@ -686,6 +688,7 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                 # **************************** drag begins ****************************
                 cos_sin_cache=cos_sin_cache,
                 rotary_dim=rotary_dim,
+                is_neox_style=is_neox_style,
                 # **************************** drag ends ******************************
             )
             if output.device != res.device:

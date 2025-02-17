@@ -211,7 +211,8 @@ class LlamaAttention(nn.Module):
         
         attn_output = self.attn(q, k, v, kv_cache, attn_metadata,
                                 cos_sin_cache=cos_sin_cache, 
-                                rotary_dim=rotary_dim)
+                                rotary_dim=rotary_dim,
+                                is_neox_style=self.rotary_emb.is_neox_style)
         # print for debug
         # print(f'DRAG: attn_output {self.use_dynamic_attn}', attn_output)
         # **************************** drag ends ******************************

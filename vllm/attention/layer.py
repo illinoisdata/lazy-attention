@@ -99,6 +99,7 @@ class Attention(nn.Module):
             # **************************** drag begins ****************************
             cos_sin_cache: Optional[torch.Tensor] = None,
             rotary_dim: Optional[int] = None,
+            is_neox_style: bool = True,
             # **************************** drag ends ******************************
     ) -> torch.Tensor:
 
@@ -106,7 +107,8 @@ class Attention(nn.Module):
                                  self._k_scale, self._v_scale,
                                  attn_type=attn_type,
                                  cos_sin_cache=cos_sin_cache,
-                                 rotary_dim=rotary_dim,)
+                                 rotary_dim=rotary_dim,
+                                 is_neox_style=is_neox_style)
 
     def extra_repr(self) -> str:
         s = f"head_size={self.impl.head_size}"  # type: ignore
