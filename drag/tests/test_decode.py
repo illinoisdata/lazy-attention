@@ -41,7 +41,10 @@ def prefill(docs, query):
     del drag_llm
     cleanup_dist_env_and_memory()
     assert base_answer == drag_answer
-
+    print('-' * 30)
+    print("base_answer: ", base_answer)
+    print("drag_answer: ", drag_answer)
+    print('-' * 30)
 
 def test_one_doc():
     prefill(docs[:1], query)

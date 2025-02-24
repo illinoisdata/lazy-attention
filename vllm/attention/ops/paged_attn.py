@@ -135,6 +135,7 @@ class PagedAttention:
         # **************************** drag begins ****************************
         if (cos_sin_cache is not None) and (rotary_dim is not None):
             use_dynamic_attn = True
+            # assert max_num_partitions == 1, "dynamic attention only support single partition"
         else:
             use_dynamic_attn = False
         # print(f'---------------------------------- decoding use_dynamic_attn: {use_dynamic_attn}')

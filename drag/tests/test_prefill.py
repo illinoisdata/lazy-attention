@@ -40,6 +40,10 @@ def prefill(docs, query):
     drag_answer = outputs[0]
     del drag_llm
     cleanup_dist_env_and_memory()
+    print('-' * 30)
+    print("base_answer: ", base_answer)
+    print("drag_answer: ", drag_answer)
+    print('-' * 30)
     assert base_answer == drag_answer
 
 

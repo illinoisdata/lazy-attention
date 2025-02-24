@@ -113,7 +113,7 @@ inline __device__ void apply_neox_rotary_embedding(
 // Grid: (num_heads, num_seqs, max_num_partitions).
 template <typename scalar_t, typename cache_t, int HEAD_SIZE, int BLOCK_SIZE,
           int NUM_THREADS, vllm::Fp8KVCacheDataType KV_DTYPE,
-          bool IS_BLOCK_SPARSE,
+          bool IS_BLOCK_SPARSE, bool IS_NEOX,
           int PARTITION_SIZE = 0>  // Zero means no partitioning.
 __device__ void dynamic_paged_attention_kernel(
     float* __restrict__ exp_sums,  // [num_seqs, num_heads, max_num_partitions]
@@ -143,7 +143,7 @@ __device__ void dynamic_paged_attention_kernel(
     const int q_stride, const int kv_block_stride, const int kv_head_stride,
     const float k_scale, const float v_scale, const int tp_rank,
     const int blocksparse_local_blocks, const int blocksparse_vert_stride,
-    const int blocksparse_block_size, const int blocksparse_head_sliding_step, const bool USE_NEOX) {
+    const int blocksparse_block_size, const int blocksparse_head_sliding_step) {
   const int seq_idx = blockIdx.y;
   const int partition_idx = blockIdx.z;
   const int max_num_partitions = gridDim.z;
@@ -176,10 +176,7 @@ __device__ void dynamic_paged_attention_kernel(
       NUM_THREADS / THREAD_GROUP_SIZE;  // Note: This assumes THREAD_GROUP_SIZE
                                         // divides NUM_THREADS
   assert(NUM_THREADS % THREAD_GROUP_SIZE == 0);
-  if (USE_NEOX){
-    assert(rot_dim % 2 == 0); // for neox, the rotary dimension must be an even number
-    assert((rot_dim / 2) % THREAD_GROUP_SIZE == 0); // for neox, the first element of the first half and the first element of the second half must belong to the same thread
-  }
+
   constexpr int NUM_TOKENS_PER_THREAD_GROUP =
       DIVIDE_ROUND_UP(BLOCK_SIZE, WARP_SIZE);
   constexpr int NUM_WARPS = NUM_THREADS / WARP_SIZE;
@@ -198,15 +195,10 @@ __device__ void dynamic_paged_attention_kernel(
   // The vector size is configured in such a way that the threads in a thread
   // group fetch or compute 16 bytes at a time. For example, if the size of a
   // thread group is 4 and the data type is half, then the vector size is 16 /
-  // (4 * sizeof(half)) == 2.
-  // if (!USE_NEOX){
-  //   constexpr int VEC_SIZE = MAX(16 / (THREAD_GROUP_SIZE * sizeof(scalar_t)), 2); // For gpt-j position embedding, vec_size we deal with each time needs to be at least 2.
-  // }
-  // constexpr int VEC_SIZE = MAX(16 / (THREAD_GROUP_SIZE * sizeof(scalar_t)), 1); 
-  constexpr int VEC_SIZE = MAX(16 / (THREAD_GROUP_SIZE * sizeof(scalar_t)), 2);
+  constexpr int VEC_SIZE = MAX(16 / (THREAD_GROUP_SIZE * sizeof(scalar_t)), 1); 
+
   using K_vec = typename Vec<scalar_t, VEC_SIZE>::Type;
   using Q_vec = typename Vec<scalar_t, VEC_SIZE>::Type;
-
   using Quant_vec = typename Vec<cache_t, VEC_SIZE>::Type;
 
   constexpr int NUM_ELEMS_PER_THREAD = HEAD_SIZE / THREAD_GROUP_SIZE;
@@ -319,73 +311,131 @@ __device__ void dynamic_paged_attention_kernel(
           (thread_group_idx + i * WARP_SIZE) % BLOCK_SIZE; //% to make sure won't exceed the block size
       const int token_idx = block_idx * BLOCK_SIZE + physical_block_offset; // the token's index in the whole sequence
       K_vec k_vecs[NUM_VECS_PER_THREAD]; // k_vecs for this thread to deal with.
-      const cache_t* r_cos_ptr = cos_sin_cache + token_idx * rot_dim;
-      const cache_t* r_sin_ptr = r_cos_ptr + rot_dim / 2;
-      const cache_t* k_ptr =
+
+      const cache_t* cache_ptr = cos_sin_cache + token_idx * rot_dim;
+      const int embed_dim = rot_dim / 2;
+      const cache_t* cos_ptr = cache_ptr;
+      const cache_t* sin_ptr = cache_ptr + embed_dim;
+
+/***************** rotation for drag *****************/
+#pragma unroll
+      for (int j = 0; j < NUM_VECS_PER_THREAD; j++) {
+        //loop 3: locate the vecs this thread group is dealing with.
+        //loop for each thread to load the vec one by one
+        // k: num_blocks, num_kv_heads, head_size/x, block_size, x]
+        const cache_t* k_ptr =
           k_cache + physical_block_number * kv_block_stride +
           kv_head_idx * kv_head_stride + physical_block_offset * x;
-
-      if (USE_NEOX){
-        #pragma unroll
-            for (int j = 0; j < NUM_VECS_PER_THREAD / 2; j++) {
-              //loop 3: locate and load the vecs this thread group is dealing with. Two vecs for each step to apply neox rotary embedding
-              const int vec_idx_1 = thread_group_offset + j * THREAD_GROUP_SIZE; //vec_idx in the current token.
-              const int offset1_1 = (vec_idx_1 * VEC_SIZE) / x;//offset should be equal to j
-              const int offset2_1 = (vec_idx_1 * VEC_SIZE) % x;//element offset of the current group
-              scalar_t* current_k_vec_1 = reinterpret_cast<scalar_t*>(&k_vecs[j]);
-
-              const int vec_idx_2 = vec_idx_1 + NUM_VECS_PER_THREAD / 2; //vec_idx in the current token.
-              const int offset1_2 = (vec_idx_2 * VEC_SIZE) / x;//offset should be equal to j
-              const int offset2_2 = (vec_idx_2 * VEC_SIZE) % x;//element offset of the current group
-              scalar_t* current_k_vec_2 = reinterpret_cast<scalar_t*>(&k_vecs[j + NUM_VECS_PER_THREAD / 2]);
-
-              scalar_t current_sin_vec[VEC_SIZE];
-              scalar_t current_cos_vec[VEC_SIZE];
-              if constexpr (KV_DTYPE == Fp8KVCacheDataType::kAuto) {
-                // TODO: double check this
-                std::memcpy(current_k_vec_1, k_ptr + offset1_1 * BLOCK_SIZE * x + offset2_1, VEC_SIZE * sizeof(scalar_t));
-                std::memcpy(current_k_vec_2, k_ptr + offset1_2 * BLOCK_SIZE * x + offset2_2, VEC_SIZE * sizeof(scalar_t));
-                std::memcpy(current_sin_vec, r_sin_ptr + offset1_1 * x + offset2_1, VEC_SIZE * sizeof(scalar_t));
-                std::memcpy(current_cos_vec, r_cos_ptr + offset1_1 * x + offset2_1, VEC_SIZE * sizeof(scalar_t));
-                
-                apply_neox_rotary_embedding(current_k_vec_1, current_k_vec_2, current_cos_vec, current_sin_vec, VEC_SIZE);
-                // TODO: when embed dim is not full size, how to make sure it.
+        const int vec_idx = thread_group_offset + j * THREAD_GROUP_SIZE;
+        // [num_blocks, num_kv_heads, head_size/x, block_size, x]
+        //                            |- offest1 
+        //                                                     |- offset2
+        const int offset1 = (vec_idx * VEC_SIZE) / x;
+        const int offset2 = (vec_idx * VEC_SIZE) % x;
+        if constexpr (KV_DTYPE == Fp8KVCacheDataType::kAuto){
+          // TODO(haocheng): utilize SIMD, now without SIMD for clear logic
+          for (int vj = 0; vj < VEC_SIZE; vj++){
+              const int scalar_idx = vec_idx * VEC_SIZE + vj; // scalar_idx in the current head
+              int k0_index, k1_index;
+              scalar_t cos, sin, k0, k1;
+              scalar_t* k_vec_ptr = reinterpret_cast<scalar_t*>(&k_vecs[j]);
+            if (IS_NEOX){
+              // GPT-NeoX style rotary embedding.
+              if (scalar_idx < embed_dim){
+                // front half: cos - sin
+                k0_index = scalar_idx;
+                k1_index = scalar_idx + embed_dim;
+                // load cos and sin
+                cos = *reinterpret_cast<const scalar_t*>(cos_ptr + k0_index);
+                sin = *reinterpret_cast<const scalar_t*>(sin_ptr + k0_index);
+                // load k0 and k1
+                const int offset1_k0 = k0_index / x;
+                const int offset2_k0 = k0_index % x;
+                k0 = *reinterpret_cast<const scalar_t*>(k_ptr 
+                                                        + offset1_k0 * BLOCK_SIZE * x 
+                                                        + offset2_k0);
+                const int offset1_k1 = k1_index / x;
+                const int offset2_k1 = k1_index % x;
+                k1 = *reinterpret_cast<const scalar_t*>(k_ptr 
+                                                        + offset1_k1 * BLOCK_SIZE * x 
+                                                        + offset2_k1);
+                // apply rotation
+                k_vec_ptr[vj] = k0 * cos - k1 * sin;
               } else {
-                //TODO: also add position embedding for this scenerio
-                // Vector conversion from Quant_vec to K_vec.
-                Quant_vec k_vec_quant = *reinterpret_cast<const Quant_vec*>(
-                    k_ptr + offset1_2 * BLOCK_SIZE * x + offset2_2);
-                k_vecs[j] = fp8::scaled_convert<K_vec, Quant_vec, KV_DTYPE>(
-                    k_vec_quant, k_scale);
+                // back half: sin + cos
+                k0_index = scalar_idx - embed_dim;
+                k1_index = scalar_idx;
+                // load cos and sin
+                cos = *reinterpret_cast<const scalar_t*>(cos_ptr + k0_index);
+                sin = *reinterpret_cast<const scalar_t*>(sin_ptr + k0_index);
+                // load k0 and k1
+                const int offset1_k0 = k0_index / x;
+                const int offset2_k0 = k0_index % x;
+                k0 = *reinterpret_cast<const scalar_t*>(k_ptr 
+                                                        + offset1_k0 * BLOCK_SIZE * x 
+                                                        + offset2_k0);
+                const int offset1_k1 = k1_index / x;
+                const int offset2_k1 = k1_index % x;
+                k1 = *reinterpret_cast<const scalar_t*>(k_ptr 
+                                                        + offset1_k1 * BLOCK_SIZE * x 
+                                                        + offset2_k1);
+                // apply rotation
+                k_vec_ptr[vj] = k1 * cos + k0 * sin;
+              }
+            } else {
+              // GPT-J style rotary embedding.
+              if (scalar_idx % 2 == 0){
+                // front half: cos - sin
+                k0_index = scalar_idx;
+                k1_index = scalar_idx + 1;
+                // load cos and sin
+                cos = *reinterpret_cast<const scalar_t*>(cos_ptr + k0_index / 2);
+                sin = *reinterpret_cast<const scalar_t*>(sin_ptr + k0_index / 2);
+                // load k0 and k1
+                const int offset1_k0 = k0_index / x;
+                const int offset2_k0 = k0_index % x;
+                k0 = *reinterpret_cast<const scalar_t*>(k_ptr 
+                                                        + offset1_k0 * BLOCK_SIZE * x 
+                                                        + offset2_k0);
+                const int offset1_k1 = k1_index / x;
+                const int offset2_k1 = k1_index % x;
+                k1 = *reinterpret_cast<const scalar_t*>(k_ptr 
+                                                        + offset1_k1 * BLOCK_SIZE * x 
+                                                        + offset2_k1);
+                // apply rotation
+                k_vec_ptr[vj] = k0 * cos - k1 * sin;
+              } else {
+                // back half: sin + cos
+                k0_index = scalar_idx - 1;
+                k1_index = scalar_idx;
+                // load cos and sin
+                cos = *reinterpret_cast<const scalar_t*>(cos_ptr + k0_index / 2);
+                sin = *reinterpret_cast<const scalar_t*>(sin_ptr + k0_index / 2);
+                // load k0 and k1
+                const int offset1_k0 = k0_index / x;
+                const int offset2_k0 = k0_index % x;
+                k0 = *reinterpret_cast<const scalar_t*>(k_ptr 
+                                                        + offset1_k0 * BLOCK_SIZE * x 
+                                                        + offset2_k0);
+                const int offset1_k1 = k1_index / x;
+                const int offset2_k1 = k1_index % x;
+                k1 = *reinterpret_cast<const scalar_t*>(k_ptr 
+                                                        + offset1_k1 * BLOCK_SIZE * x 
+                                                        + offset2_k1);
+                // apply rotation
+                k_vec_ptr[vj] = k1 * cos + k0 * sin;
               }
             }
-      } else {
-          #pragma unroll
-            for (int j = 0; j < NUM_VECS_PER_THREAD; j++) {
-              //loop 3: locate and load the vecs this thread group is dealing with. Apply rotary embedding.
-              //loop for each thread to load the vec one by one
-              const int vec_idx = thread_group_offset + j * THREAD_GROUP_SIZE; //vec_idx in the current token.
-              const int offset1 = (vec_idx * VEC_SIZE) / x;//offset should be equal to j
-              const int offset2 = (vec_idx * VEC_SIZE) % x;//element offset of the current group
-              scalar_t* current_k_vec = reinterpret_cast<scalar_t*>(&k_vecs[j]);
-              scalar_t current_sin_vec[VEC_SIZE / 2];
-              scalar_t current_cos_vec[VEC_SIZE / 2];
-              if constexpr (KV_DTYPE == Fp8KVCacheDataType::kAuto) {
-                std::memcpy(current_k_vec, k_ptr + offset1 * BLOCK_SIZE * x + offset2, VEC_SIZE * sizeof(scalar_t));
-                std::memcpy(current_sin_vec, r_sin_ptr + (offset1 * x + offset2)/2, VEC_SIZE / 2 * sizeof(scalar_t));
-                std::memcpy(current_cos_vec, r_cos_ptr + (offset1 * x + offset2)/2, VEC_SIZE / 2 * sizeof(scalar_t));
-                
-                apply_gptj_rotary_embedding(current_k_vec, current_cos_vec, current_sin_vec, VEC_SIZE);
-                // TODO: when embed dim is not full size, how to make sure it.
-              } else {
-                //TODO: also add position embedding for this scenerio
-                // Vector conversion from Quant_vec to K_vec.
-                Quant_vec k_vec_quant = *reinterpret_cast<const Quant_vec*>(
-                    k_ptr + offset1 * BLOCK_SIZE * x + offset2);
-                k_vecs[j] = fp8::scaled_convert<K_vec, Quant_vec, KV_DTYPE>(
-                    k_vec_quant, k_scale);
-              }
-            }
+          } 
+        } else {
+            // TODO(haocheng): implement fp8 rotation
+            // printf("ERROR: FP8 rotation is not implemented! ThreadIdx: %d, BlockIdx: %d\n", threadIdx.x, blockIdx.x);
+            // Vector conversion from Quant_vec to K_vec.
+            Quant_vec k_vec_quant = *reinterpret_cast<const Quant_vec*>(
+                k_ptr + offset1 * BLOCK_SIZE * x + offset2);
+            k_vecs[j] = fp8::scaled_convert<K_vec, Quant_vec, KV_DTYPE>(
+                k_vec_quant, k_scale);
+        }
       }
 
       // Compute dot product.
@@ -1020,7 +1070,7 @@ __device__ void paged_attention_kernel(
 // Grid: (num_heads, num_seqs, 1).
 template <typename scalar_t, typename cache_t, int HEAD_SIZE, int BLOCK_SIZE,
           int NUM_THREADS, vllm::Fp8KVCacheDataType KV_DTYPE,
-          bool IS_BLOCK_SPARSE>
+          bool IS_BLOCK_SPARSE, bool IS_NEOX>
 __global__ void paged_attention_dynamic_kernel(
     scalar_t* __restrict__ out,           // [num_seqs, num_heads, head_size]
     const scalar_t* __restrict__ q,       // [num_seqs, num_heads, head_size]
@@ -1028,7 +1078,7 @@ __global__ void paged_attention_dynamic_kernel(
                                           // head_size/x, block_size, x]
     const cache_t* __restrict__ v_cache,  // [num_blocks, num_kv_heads,
                                           // head_size, block_size]
-    const cache_t* __restrict__ cos_sin_cache,
+    const cache_t* __restrict__ cos_sin_cache,  // [max_position, rot_dim]
     const int rot_dim,
     const int num_kv_heads,               // [num_heads]
     const float scale,
@@ -1039,15 +1089,15 @@ __global__ void paged_attention_dynamic_kernel(
     const int q_stride, const int kv_block_stride, const int kv_head_stride,
     const float k_scale, const float v_scale, const int tp_rank,
     const int blocksparse_local_blocks, const int blocksparse_vert_stride,
-    const int blocksparse_block_size, const int blocksparse_head_sliding_step, const bool use_neox) {
+    const int blocksparse_block_size, const int blocksparse_head_sliding_step) {
   dynamic_paged_attention_kernel<scalar_t, cache_t, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS,
-                         KV_DTYPE, IS_BLOCK_SPARSE>(
-      /* exp_sums */ static_cast<float*>(nullptr), /* max_logits */ static_cast<float*>(nullptr), out, q, k_cache,
+                         KV_DTYPE, IS_BLOCK_SPARSE, IS_NEOX>(
+      /* exp_sums */ nullptr, /* max_logits */ nullptr, out, q, k_cache,
       v_cache, cos_sin_cache, rot_dim, num_kv_heads, scale, block_tables, seq_lens,
       max_num_blocks_per_seq, alibi_slopes, q_stride, kv_block_stride,
       kv_head_stride, k_scale, v_scale, tp_rank, blocksparse_local_blocks,
       blocksparse_vert_stride, blocksparse_block_size,
-      blocksparse_head_sliding_step, use_neox);
+      blocksparse_head_sliding_step);
 }
 
 // Grid: (num_heads, num_seqs, 1).
@@ -1225,22 +1275,25 @@ __global__ void paged_attention_v2_reduce_kernel(
 
 }  // namespace vllm
 
-#define LAUNCH_PAGED_ATTENTION_DYNAMIC(HEAD_SIZE)                                \
-  VLLM_DevFuncAttribute_SET_MaxDynamicSharedMemorySize(                     \
-      ((void*)vllm::paged_attention_dynamic_kernel<T, CACHE_T, HEAD_SIZE,        \
-                                              BLOCK_SIZE, NUM_THREADS,      \
-                                              KV_DTYPE, IS_BLOCK_SPARSE>),  \
-      shared_mem_size);                                                     \
-  vllm::paged_attention_dynamic_kernel<T, CACHE_T, HEAD_SIZE, BLOCK_SIZE,        \
-                                  NUM_THREADS, KV_DTYPE, IS_BLOCK_SPARSE>   \
-      <<<grid, block, shared_mem_size, stream>>>(                           \
-          out_ptr, query_ptr, key_cache_ptr, value_cache_ptr,                    \
-          cos_sin_cache_ptr, rot_dim, num_kv_heads, \
-          scale, block_tables_ptr, seq_lens_ptr, max_num_blocks_per_seq,    \
-          alibi_slopes_ptr, q_stride, kv_block_stride, kv_head_stride,      \
-          k_scale, v_scale, tp_rank, blocksparse_local_blocks,              \
-          blocksparse_vert_stride, blocksparse_block_size,                  \
-          blocksparse_head_sliding_step, use_neox);
+#define LAUNCH_PAGED_ATTENTION_DYNAMIC(HEAD_SIZE)                              \
+  VLLM_DevFuncAttribute_SET_MaxDynamicSharedMemorySize(                        \
+      ((void*)vllm::paged_attention_dynamic_kernel<T, CACHE_T, HEAD_SIZE,      \
+                                                   BLOCK_SIZE, NUM_THREADS,    \
+                                                   KV_DTYPE, IS_BLOCK_SPARSE,  \
+                                                   IS_NEOX>),                  \
+      shared_mem_size);                                                        \
+  vllm::paged_attention_dynamic_kernel<T, CACHE_T, HEAD_SIZE, BLOCK_SIZE,      \
+                                       NUM_THREADS, KV_DTYPE, IS_BLOCK_SPARSE, \
+                                       IS_NEOX>                                \
+      <<<grid, block, shared_mem_size, stream>>>(                              \
+          out_ptr, query_ptr, key_cache_ptr, value_cache_ptr,                  \
+          cos_sin_cache_ptr, rot_dim,                                          \
+          num_kv_heads,                                                        \
+          scale, block_tables_ptr, seq_lens_ptr, max_num_blocks_per_seq,       \
+          alibi_slopes_ptr, q_stride, kv_block_stride, kv_head_stride,         \
+          k_scale, v_scale, tp_rank, blocksparse_local_blocks,                 \
+          blocksparse_vert_stride, blocksparse_block_size,                     \
+          blocksparse_head_sliding_step);
 
 #define LAUNCH_PAGED_ATTENTION_V1(HEAD_SIZE)                                \
   VLLM_DevFuncAttribute_SET_MaxDynamicSharedMemorySize(                     \
@@ -1259,17 +1312,18 @@ __global__ void paged_attention_v2_reduce_kernel(
           blocksparse_head_sliding_step);
 
 template <typename T, typename CACHE_T, int BLOCK_SIZE,
-          vllm::Fp8KVCacheDataType KV_DTYPE, bool IS_BLOCK_SPARSE,
+          vllm::Fp8KVCacheDataType KV_DTYPE, bool IS_BLOCK_SPARSE, bool IS_NEOX,
           int NUM_THREADS = 128>
 void paged_attention_dynamic_launcher(
     torch::Tensor& out, torch::Tensor& query, torch::Tensor& key_cache,
-    torch::Tensor& value_cache, torch::Tensor& cos_sin_cache,
-    int64_t rot_dim, int num_kv_heads, float scale,
+    torch::Tensor& value_cache, 
+    torch::Tensor& cos_sin_cache, int64_t rot_dim, // used for rotary embedding
+    int num_kv_heads, float scale,
     torch::Tensor& block_tables, torch::Tensor& seq_lens, int max_seq_len,
     const c10::optional<torch::Tensor>& alibi_slopes, float k_scale,
     float v_scale, const int tp_rank, const int blocksparse_local_blocks,
     const int blocksparse_vert_stride, const int blocksparse_block_size,
-    const int blocksparse_head_sliding_step, const bool use_neox) {
+    const int blocksparse_head_sliding_step) {
   int num_seqs = query.size(0);
   int num_heads = query.size(1);
   int head_size = query.size(2);
@@ -1323,6 +1377,9 @@ void paged_attention_dynamic_launcher(
       break;
     case 112:
       LAUNCH_PAGED_ATTENTION_DYNAMIC(112);
+      break;
+    case 120:
+      LAUNCH_PAGED_ATTENTION_DYNAMIC(120);
       break;
     case 128:
       LAUNCH_PAGED_ATTENTION_DYNAMIC(128);
@@ -1422,13 +1479,13 @@ void paged_attention_v1_launcher(
   }
 }
 
-#define CALL_DYNAMIC_LAUNCHER(T, CACHE_T, BLOCK_SIZE, KV_DTYPE, IS_BLOCK_SPARSE, USE_NEOX)  \
-  paged_attention_dynamic_launcher<T, CACHE_T, BLOCK_SIZE, KV_DTYPE,              \
-                              IS_BLOCK_SPARSE>(                              \
+#define CALL_DYNAMIC_LAUNCHER(T, CACHE_T, BLOCK_SIZE, KV_DTYPE, IS_BLOCK_SPARSE, IS_NEOX)            \
+  paged_attention_dynamic_launcher<T, CACHE_T, BLOCK_SIZE, KV_DTYPE,                                 \
+                                   IS_BLOCK_SPARSE, IS_NEOX>(                                        \
       out, query, key_cache, value_cache, cos_sin_cache, rot_dim, num_kv_heads, scale, block_tables, \
-      seq_lens, max_seq_len, alibi_slopes, k_scale, v_scale, tp_rank,        \
-      blocksparse_local_blocks, blocksparse_vert_stride,                     \
-      blocksparse_block_size, blocksparse_head_sliding_step, USE_NEOX);
+      seq_lens, max_seq_len, alibi_slopes, k_scale, v_scale, tp_rank,                                \
+      blocksparse_local_blocks, blocksparse_vert_stride,                                             \
+      blocksparse_block_size, blocksparse_head_sliding_step);
 
 #define CALL_V1_LAUNCHER(T, CACHE_T, BLOCK_SIZE, KV_DTYPE, IS_BLOCK_SPARSE)  \
   paged_attention_v1_launcher<T, CACHE_T, BLOCK_SIZE, KV_DTYPE,              \
@@ -1438,24 +1495,24 @@ void paged_attention_v1_launcher(
       blocksparse_local_blocks, blocksparse_vert_stride,                     \
       blocksparse_block_size, blocksparse_head_sliding_step);
 
-#define CALL_DYNAMIC_LAUNCHER_SPARSITY(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE) \
-  switch (is_block_sparse) {                                               \
-    case true:                                                             \
-      CALL_DYNAMIC_LAUNCHER_USE_NEOX(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE, true);     \
-      break;                                                               \
-    case false:                                                            \
-      CALL_DYNAMIC_LAUNCHER_USE_NEOX(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE, false);    \
-      break;                                                               \
+#define CALL_DYNAMIC_LAUNCHER_IS_NEOX(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE, IS_BLOCK_SPARSE)  \
+  switch (is_neox) {                                                                             \
+    case true:                                                                                   \
+      CALL_DYNAMIC_LAUNCHER(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE, IS_BLOCK_SPARSE, true);     \
+      break;                                                                                     \
+    case false:                                                                                  \
+      CALL_DYNAMIC_LAUNCHER(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE, IS_BLOCK_SPARSE, false);    \
+      break;                                                                                     \
   }
 
-#define CALL_DYNAMIC_LAUNCHER_USE_NEOX(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE, IS_BLOCK_SPARSE) \
-  switch (use_neox) {                                               \
-    case true:                                                             \
-      CALL_DYNAMIC_LAUNCHER(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE, IS_BLOCK_SPARSE, true);     \
-      break;                                                               \
-    case false:                                                            \
-      CALL_DYNAMIC_LAUNCHER(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE, IS_BLOCK_SPARSE, false);    \
-      break;                                                               \
+#define CALL_DYNAMIC_LAUNCHER_SPARSITY(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE)        \
+  switch (is_block_sparse) {                                                           \
+    case true:                                                                         \
+      CALL_DYNAMIC_LAUNCHER_IS_NEOX(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE, true);    \
+      break;                                                                           \
+    case false:                                                                        \
+      CALL_DYNAMIC_LAUNCHER_IS_NEOX(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE, false);   \
+      break;                                                                           \
   }
 
 #define CALL_V1_LAUNCHER_SPARSITY(T, CACHE_T, BLOCK_SIZE, IS_FP8_KV_CACHE) \
@@ -1471,19 +1528,19 @@ void paged_attention_v1_launcher(
 // NOTE(woosuk): To reduce the compilation time, we omitted block sizes
 // 1, 2, 4, 64, 128, 256.
 #define CALL_DYNAMIC_LAUNCHER_BLOCK_SIZE(T, CACHE_T, KV_DTYPE)         \
-  switch (block_size) {                                           \
-    case 8:                                                       \
+  switch (block_size) {                                                \
+    case 8:                                                            \
       CALL_DYNAMIC_LAUNCHER_SPARSITY(T, CACHE_T, 8, KV_DTYPE);         \
-      break;                                                      \
-    case 16:                                                      \
+      break;                                                           \
+    case 16:                                                           \
       CALL_DYNAMIC_LAUNCHER_SPARSITY(T, CACHE_T, 16, KV_DTYPE);        \
-      break;                                                      \
-    case 32:                                                      \
+      break;                                                           \
+    case 32:                                                           \
       CALL_DYNAMIC_LAUNCHER_SPARSITY(T, CACHE_T, 32, KV_DTYPE);        \
-      break;                                                      \
-    default:                                                      \
-      TORCH_CHECK(false, "Unsupported block size: ", block_size); \
-      break;                                                      \
+      break;                                                           \
+    default:                                                           \
+      TORCH_CHECK(false, "Unsupported block size: ", block_size);      \
+      break;                                                           \
   }
 
 #define CALL_V1_LAUNCHER_BLOCK_SIZE(T, CACHE_T, KV_DTYPE)         \
@@ -1502,6 +1559,7 @@ void paged_attention_v1_launcher(
       break;                                                      \
   }
 
+/* Adapted from paged_attention_v1 */
 void dynamic_paged_attention(
     torch::Tensor& out,    // [num_seqs, num_heads, head_size]
     torch::Tensor& query,  // [num_seqs, num_heads, head_size]
@@ -1521,8 +1579,9 @@ void dynamic_paged_attention(
     const std::string& kv_cache_dtype, double k_scale, double v_scale,
     const int64_t tp_rank, const int64_t blocksparse_local_blocks,
     const int64_t blocksparse_vert_stride, const int64_t blocksparse_block_size,
-    const int64_t blocksparse_head_sliding_step, const bool use_neox) {
-// choose to call the right function according to the data type and other configuration (most logic are in micro)
+    const int64_t blocksparse_head_sliding_step, 
+    const bool is_neox) {
+  // choose to call the right function according to the data type and other configuration (most logic are in micro)
   const bool is_block_sparse = (blocksparse_vert_stride > 1);
 
   DISPATCH_BY_KV_CACHE_DTYPE(query.dtype(), kv_cache_dtype,
