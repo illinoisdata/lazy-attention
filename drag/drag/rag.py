@@ -3,6 +3,7 @@
 import asyncio
 import dataclasses
 import sys
+import time
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from typing import Any, AsyncGenerator, Dict, FrozenSet, List, Optional, Tuple
@@ -754,12 +755,31 @@ class DynamicOutput:
 class DynamicRAG(RAG):
     _count: int = -1
 
-    def __init__(self, llm: LLM):
+    def __init__(self, llm: LLM, profiling: bool = True):
+        # TODO(haocheng): support switch profiling
         RAG.__init__(self)
         self.llm = llm  # LLM instance frmo vllm
         self.model = get_model_runner(self.llm).model
         self.tokenizer = get_tokenizer(self.llm)
         self.generator = torch.Generator(device="cuda:0").manual_seed(2024)
+        self.profiling = profiling
+        self.profiling_stat = None
+
+        if profiling:
+            self.profiling_stat = {
+                "prefill": {
+                    "forward": [],
+                    "compute_logits": [],
+                    "sample_token": [],
+                    "step": []
+                },
+                "decode": {
+                    "forward": [],
+                    "compute_logits": [],
+                    "sample_token": [],
+                    "step": []
+                }
+            }
 
         self.block_size = get_block_size(self.llm)
         self.kv_cache = get_gpu_cache(self.llm)[0]
@@ -837,12 +857,17 @@ class DynamicRAG(RAG):
             block_table=block_table,
         )
 
+        begin_time = time.time()
         hidden_states = self.model(
             input_ids=input_ids,
             positions=position_ids,
             kv_caches=self.kv_cache,
             attn_metadata=attn_metadata,
         )
+        end_time = time.time()
+        if self.profiling:
+            self.profiling_stat['prefill']['forward'].append(end_time - begin_time)
+
 
         # get a new token after prefill
         prompt_token_ids.extend(query_token_ids)
@@ -859,9 +884,18 @@ class DynamicRAG(RAG):
         )
 
         # TODO(haocheng): return logits instead of token
+        begin_time = time.time()
         logits = self.model.compute_logits(hidden_states, sampling_metadata)
+        end_time = time.time()
+        if self.profiling:
+            self.profiling_stat['prefill']['compute_logits'].append(end_time - begin_time)
+
+        begin_time = time.time()
         logprobs = torch.log_softmax(logits, dim=-1, dtype=torch.float)
         next_token_id = int(torch.argmax(logprobs, dim=-1).cpu())
+        end_time = time.time()
+        if self.profiling:
+            self.profiling_stat['prefill']['sample_token'].append(end_time - begin_time)
 
         block_table.extend(query_block_ids)
         self.set_used_blocks.update(query_block_ids)
@@ -910,12 +944,16 @@ class DynamicRAG(RAG):
             block_table=block_table,
         )
 
+        begin_time = time.time()
         hidden_states = self.model(
             input_ids=input_ids,
             positions=position_ids,
             kv_caches=self.kv_cache,
             attn_metadata=attn_metadata,
         )
+        end_time = time.time()
+        if self.profiling:
+            self.profiling_stat['decode']['forward'].append(end_time - begin_time)
 
         seq_data = SequenceData.from_seqs(prompt_token_ids=prompt_token_ids, output_token_ids=output_token_ids)
 
@@ -932,9 +970,18 @@ class DynamicRAG(RAG):
         )
 
         # TODO(haocheng): return logits instead of token
+        begin_time = time.time()
         logits = self.model.compute_logits(hidden_states, sampling_metadata)
+        end_time = time.time()
+        if self.profiling:
+            self.profiling_stat['decode']['compute_logits'].append(end_time - begin_time)
+
+        begin_time = time.time()
         logprobs = torch.log_softmax(logits, dim=-1, dtype=torch.float)
         next_token_id = int(torch.argmax(logprobs, dim=-1).cpu())
+        end_time = time.time()
+        if self.profiling:
+            self.profiling_stat['decode']['sample_token'].append(end_time - begin_time)
 
         # if new_block_ids is not None:
         #     block_table.extend(new_block_ids)
@@ -955,13 +1002,16 @@ class DynamicRAG(RAG):
         """
         Generate one token each step
         """
-
+        begin_time = time.time()
         if stage == "prefill":
             outputs = self.prefill(seq_id, prompt_token_ids, query_token_ids, block_table, output_token_ids, sampling_params)
         elif stage == "decode":
             outputs = self.decode(seq_id, prompt_token_ids, block_table, output_token_ids, sampling_params)
         else:
             raise ValueError("Invalid generate stage.")
+        end_time = time.time()
+        if self.profiling:
+            self.profiling_stat[stage]['step'].append(end_time - begin_time)
         return outputs
 
     async def iter_generate(

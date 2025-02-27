@@ -171,8 +171,15 @@ class RotaryEmbedding(CustomOp):
         self.cos_sin_cache = self.cos_sin_cache.to(query.device,
                                                    dtype=query.dtype)
         # **************************** drag begins ****************************
-        unrotated_key = torch.clone(key) if use_dynamic_attn else None
-        # TODO(haocheng): do not rotate key if use_dynamic_attn is True
+        if use_dynamic_attn:
+            if offsets is not None:
+                ops.batched_rotary_embedding_q(positions, query, self.head_size,
+                                                self.cos_sin_cache, self.is_neox_style,
+                                                self.rotary_dim, offsets)
+            else:
+                ops.rotary_embedding_q(positions, query, self.head_size,
+                                        self.cos_sin_cache, self.is_neox_style)
+            return query, key, self.cos_sin_cache, self.rotary_dim
         # **************************** drag ends ******************************
         
         # ops.rotary_embedding()/batched_rotary_embedding()
@@ -185,13 +192,7 @@ class RotaryEmbedding(CustomOp):
         else:
             ops.rotary_embedding(positions, query, key, self.head_size,
                                  self.cos_sin_cache, self.is_neox_style)
-            
-        # **************************** drag begins ****************************
-        if use_dynamic_attn:
-            return query, unrotated_key, self.cos_sin_cache, self.rotary_dim
-        else:
-            return query, key, None, None
-        # **************************** drag ends ******************************
+        return query, key, None, None # TODO(haocheng): param number changed, make it compatible
 
 
     def forward_xpu(

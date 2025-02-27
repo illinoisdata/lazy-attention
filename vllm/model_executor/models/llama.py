@@ -194,26 +194,26 @@ class LlamaAttention(nn.Module):
         # if use_dynamic_attn is True, then cos_sin_cache and rotary_dim are not None, q is rotated and k is not rotated
         # if use_dynamic_attn is False, then cos_sin_cache and rotary_dim are None, q and k are both rotated
 
-        unrotated_k = torch.clone(k)
-        q, k, cos_sin_cache, rotary_dim = self.rotary_emb(positions, q, k,
+        # unrotated_k = torch.clone(k)
+        q, k, cos_sin_cache, rotary_dim = self.rotary_emb(positions, 
+                                                          q, 
+                                                          k,
                                                           use_dynamic_attn=self.use_dynamic_attn)
-        assert q is not None
-        assert k is not None
-        
-        if self.use_dynamic_attn:
-            assert cos_sin_cache is not None
-            assert rotary_dim is not None
-            assert torch.allclose(unrotated_k, k)
-        else:
-            assert cos_sin_cache is None
-            assert rotary_dim is None
-            assert not torch.allclose(unrotated_k, k)
+        # assert q is not None
+        # assert k is not None
+        # if self.use_dynamic_attn:
+        #     assert cos_sin_cache is not None
+        #     assert rotary_dim is not None
+        #     assert torch.allclose(unrotated_k, k)
+        # else:
+        #     assert cos_sin_cache is None
+        #     assert rotary_dim is None
+        #     assert not torch.allclose(unrotated_k, k)
         
         attn_output = self.attn(q, k, v, kv_cache, attn_metadata,
                                 cos_sin_cache=cos_sin_cache, 
                                 rotary_dim=rotary_dim,
                                 is_neox_style=self.rotary_emb.is_neox_style)
-        # print for debug
         # print(f'DRAG: attn_output {self.use_dynamic_attn}', attn_output)
         # **************************** drag ends ******************************
         output, _ = self.o_proj(attn_output)

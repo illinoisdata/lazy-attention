@@ -278,8 +278,59 @@ class PagedAttention:
             # **************************** drag begins ****************************
             cos_sin_cache=cos_sin_cache,
             rotary_dim=rotary_dim,
+            provider='triton', # for benchmark
             # **************************** drag ends ******************************
         )
+
+        # **************************** drag begins (bench) ****************************
+        # import triton
+        # import time
+        # @triton.testing.perf_report(
+        #         triton.testing.Benchmark(
+        #             # argument names to use as an x-axis for the plot
+        #             x_names=['N'],
+        #             x_vals=[1,2,3,4,5],  # different possible values for `x_name`
+        #             line_arg='provider',
+        #             # argument name whose value corresponds to a different line in the plot
+        #             # possible values for `line_arg``
+        #             line_vals=['triton', 'original'],
+        #             # label name for the lines
+        #             line_names=["Triton", "Original"],
+        #             # line styles
+        #             styles=[('green', '-'), ('blue', '-')],
+        #             ylabel="runtime(ms)",  # label name for the y-axis
+        #             plot_name="context-attention-fwd-performance"+time.strftime("%Y-%m-%d-%H-%M-%S"),
+        #             # name for the plot. Used also as a file name for saving the plot.
+        #             args={},
+        #         ))
+        # def benchmark(N, provider):
+        #     quantiles = [0.5, 0.2, 0.8]
+        #     ms, min_ms, max_ms = triton.testing.do_bench(
+        #     lambda: context_attention_fwd(
+        #             q=query,
+        #             k=key,
+        #             v=value,
+        #             o=output,
+        #             kv_cache_dtype=kv_cache_dtype,
+        #             k_cache=key_cache,
+        #             v_cache=value_cache,
+        #             b_loc=block_tables,
+        #             # query_start_loc is (batch_size + 1,)
+        #             b_start_loc=query_start_loc[:-1],
+        #             b_seq_len=seq_lens_tensor,
+        #             b_ctx_len=context_lens,
+        #             max_input_len=max_query_len,
+        #             k_scale=k_scale,
+        #             v_scale=v_scale,
+        #             alibi_slopes=alibi_slopes,
+        #             sliding_window=sliding_window,
+        #             cos_sin_cache=cos_sin_cache,
+        #             rotary_dim=rotary_dim,
+        #             provider=provider,
+        #         ), quantiles=quantiles, warmup=5, rep=10)
+        #     return ms, max_ms, min_ms
+        # benchmark.run(show_plots=False, print_data=True, save_path='/projects/bdjx/hxia3/DynamicRAG/')
+        # **************************** drag ends (bench) ****************************
         return output
 
     @staticmethod
