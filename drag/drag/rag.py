@@ -17,7 +17,7 @@ from transformers.cache_utils import DynamicCache
 
 from drag.document import Document
 from drag.logging import logger
-from drag.utils import get_block_size, get_evictor, get_gpu_cache, get_model_runner, get_tokenizer
+from drag.utils import get_block_size, get_evictor, get_gpu_cache, get_model_runner, get_tokenizer, gpu_timer_block
 from vllm import LLM
 from vllm.engine.arg_utils import AsyncEngineArgs, EngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
@@ -856,17 +856,24 @@ class DynamicRAG(RAG):
             seq_lens=seq_lens,
             block_table=block_table,
         )
-
-        begin_time = time.time()
-        hidden_states = self.model(
-            input_ids=input_ids,
-            positions=position_ids,
-            kv_caches=self.kv_cache,
-            attn_metadata=attn_metadata,
-        )
-        end_time = time.time()
         if self.profiling:
+            begin_time = time.time()
+            with gpu_timer_block("prefill", "forward"):
+                hidden_states = self.model(
+                    input_ids=input_ids,
+                    positions=position_ids,
+                    kv_caches=self.kv_cache,
+                    attn_metadata=attn_metadata,
+                )
+            end_time = time.time()
             self.profiling_stat['prefill']['forward'].append(end_time - begin_time)
+        else:
+            hidden_states = self.model(
+                input_ids=input_ids,
+                positions=position_ids,
+                kv_caches=self.kv_cache,
+                attn_metadata=attn_metadata,
+            )
 
 
         # get a new token after prefill
@@ -944,16 +951,24 @@ class DynamicRAG(RAG):
             block_table=block_table,
         )
 
-        begin_time = time.time()
-        hidden_states = self.model(
-            input_ids=input_ids,
-            positions=position_ids,
-            kv_caches=self.kv_cache,
-            attn_metadata=attn_metadata,
-        )
-        end_time = time.time()
         if self.profiling:
+            begin_time = time.time()
+            with gpu_timer_block("decode", "forward"):
+                hidden_states = self.model(
+                    input_ids=input_ids,
+                    positions=position_ids,
+                    kv_caches=self.kv_cache,
+                    attn_metadata=attn_metadata,
+                )
+            end_time = time.time()
             self.profiling_stat['decode']['forward'].append(end_time - begin_time)
+        else:
+            hidden_states = self.model(
+                input_ids=input_ids,
+                positions=position_ids,
+                kv_caches=self.kv_cache,
+                attn_metadata=attn_metadata,
+            )
 
         seq_data = SequenceData.from_seqs(prompt_token_ids=prompt_token_ids, output_token_ids=output_token_ids)
 

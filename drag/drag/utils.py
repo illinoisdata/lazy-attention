@@ -1,6 +1,6 @@
 import io
 import sys
-from typing import Optional
+from typing import Optional, Dict
 
 import numpy as np
 
@@ -142,3 +142,65 @@ def capture_output(func, *args, **kwargs):
         sys.stdout = sys.__stdout__
 
     return captured_output.getvalue()
+
+
+# ////////////////////////////////////////////////////////////////////////////////
+# GPU timing
+# ////////////////////////////////////////////////////////////////////////////////
+import time
+import functools
+import torch
+from typing import Optional, Callable, Any
+from contextlib import contextmanager
+
+def gpu_timer(stage: str, operation: str, stats_dict: Optional[Dict] = None):
+    """GPU timing decorator with stats recording
+    
+    Args:
+        stage: Stage name (e.g. 'prefill', 'decode')
+        operation: Operation name (e.g. 'forward', 'compute_logits')
+        stats_dict: Dictionary to store timing statistics
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            torch.cuda.synchronize()
+            start = time.perf_counter()
+            
+            try:
+                result = func(*args, **kwargs)
+            finally:
+                torch.cuda.synchronize()
+                end = time.perf_counter()
+                duration = (end - start) * 1000  # Convert to milliseconds
+                
+                # Record stats if dictionary provided
+                if stats_dict is not None and stage in stats_dict:
+                    if operation in stats_dict[stage]:
+                        stats_dict[stage][operation].append(duration)
+                # if logger:
+                #     name = prefix or func.__name__
+                #     logger(f"{name} execution time: {duration:.2f}ms")
+
+            return result
+        return wrapper
+    return decorator
+
+
+# Context manager version for code block timing
+@contextmanager
+def gpu_timer_block(stage: str, operation: str, stats_dict: Optional[Dict] = None):
+    """GPU timing context manager with stats recording"""
+    torch.cuda.synchronize()
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        torch.cuda.synchronize()
+        end = time.perf_counter()
+        duration = (end - start) * 1000
+        
+        # Record stats if dictionary provided
+        if stats_dict is not None and stage in stats_dict:
+            if operation in stats_dict[stage]:
+                stats_dict[stage][operation].append(duration)
