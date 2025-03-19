@@ -8,7 +8,7 @@ from vllm import LLM
 class Document:
     _count = -1
 
-    def __init__(self, text: str, llm: LLM):
+    def __init__(self, text: str, llm: LLM, prefill = True):
         self.doc_id = Document.next()
 
         self.text = text
@@ -29,7 +29,9 @@ class Document:
         self.block_table = None
 
         self.encode_and_padding()  # padding to fit with block size
-        self.prefilling()  # prefilling the cache block and keep them in cache
+        if prefill:
+            # if using the newer RAGEngine, no need to prefill documents in advance
+            self.prefilling()  # prefilling the cache block and keep them in cache
 
     def encode_and_padding(self):
         """
