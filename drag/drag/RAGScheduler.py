@@ -60,6 +60,9 @@ class RAGScheduler:
         self.req_id_to_slot_mapping:dict[int, List[int]] = {}
         self.req_id_to_new_block_ids:dict[int, List[int]] = {}
 
+        # update before and after running
+        self.docs_to_be_filled_next:set[int] = set()
+
         # update after running
         self.req_id_to_phase:dict[int, RAGRequestPhase] = {}
         self.req_id_to_block_table:dict[int, List[int]] = {}
@@ -168,18 +171,21 @@ class RAGScheduler:
 
 
         
-        # step 3: allocate slots for all doc_cache requests and add them to the running list if not already cached
+        # step 3: allocate slots for all doc_cache requests and add them to the running list if not already cached/added to running list
         all_doc_cached = True
         for i, req in enumerate(reqs[:-1]):
             assert req.get_type() == RAGRequestType.CACHE_DOC
             if num_computed_blocks_list[i] == num_needed_blocks_list[i]:
                 self.kv_cache_manager.allocate_slots(req,0)
+                if cast(CacheDocRequest, req).doc_id in self.docs_to_be_filled_next:
+                    all_doc_cached = False # the doc is added to running list by another sequence, but it's not cached yet.
             else:
                 all_doc_cached = False
                 slot_mapping, new_block_ids = self.kv_cache_manager.allocate_slots(req, cast(CacheDocRequest, req).doc_length - num_computed_blocks_list[i] * self.kv_cache_manager.BLOCK_SIZE)
                 assert slot_mapping is not None # since we have checked the gpu memory is enough
                 self.req_id_to_slot_mapping[req.request_id] = slot_mapping
                 self.req_id_to_new_block_ids[req.request_id] = new_block_ids
+                self.docs_to_be_filled_next.add(cast(CacheDocRequest, req).doc_id)
                 self.running_list.append(req)
 
         # step 4: allocate slots for the query request and add it to the running list
@@ -189,7 +195,8 @@ class RAGScheduler:
             assert all_doc_cached #if the query's prefill is cached, all docs it needs must already be cached
             #if already prefilled, add to running list as decode phase
             self.kv_cache_manager.allocate_slots(req, 0)
-                # reserve more space for the request to run in this step
+            # TODO: If we also consider prefix caching for query, it's possible the query is already in the running list, but not prefilled yet. In this case, we should not add the query of decoding phase into the running list directly. we need to add it to the prio_wait_list
+            # reserve more space for the request to run in this step
             slot_mapping, new_block_ids = self.kv_cache_manager.append_slots(req, self.NUM_DECODE_TOKEN_PER_STEP) # TODO: this may generate error because we only checked if the gpu memory is enough for encoding. But since #computed blocks >= #needed blocks inherently means that previously the query was preempted due to lack of gpu memory in decoding phase, the same error may happen again.
             self.req_id_to_slot_mapping[req.request_id] = slot_mapping
             self.req_id_to_new_block_ids[req.request_id] = new_block_ids
@@ -287,6 +294,7 @@ class RAGScheduler:
                 self.req_id_to_phase[req.request_id] == RAGRequestPhase.DECODE
             if req.get_type() == RAGRequestType.CACHE_DOC:
                 self.running_list.remove(req)
+                self.docs_to_be_filled_next.remove(cast(CacheDocRequest, req).doc_id)
 
 
         
