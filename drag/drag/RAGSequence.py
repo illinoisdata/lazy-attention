@@ -4,6 +4,7 @@ from dataclasses import dataclass
 class RAGSequence:
     sequence_id: int
     doc_ids: list[int]
+    query_text: str
     query_token_ids: list[int]
     doc_token_ids: list[list[int]]
     generated_token_ids: list[int]

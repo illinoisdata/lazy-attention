@@ -21,10 +21,7 @@ class RAGSchedulerOutput:
     batch_block_tables: List[List[int]] # block ids of the already computed kv_cache
     batch_slot_mapping: List[List[int]] # slot ids of the new kv_cache to be computed
     batch_output_token_ids: List[List[int]] # the generated output token ids of the requests in decoding phase
-    rag_req_id: List[int] # the RAGRequest id, an original sequence may generate multiple CacheDocRequest and one QueryRequest
-    rag_seq_id: List[int] # the RAGSequence id, an original sequence may generate multiple CacheDocRequest and one QueryRequest
-                        #note that the seq is not equal to the seq in beam_search of vllm
-
+    rag_req: List[RAGRequest] # the RAGRequest id, an original sequence may generate multiple CacheDocRequest and one QueryRequest
 
 @dataclass
 class PrefillRAGSchedulerOutput(RAGSchedulerOutput):
@@ -123,16 +120,9 @@ class RAGScheduler:
         self.seq_id_to_seqs.update({seq.sequence_id: seq for seq in seqs})
 
 
-    def finish_query_request(self, reqs: List[QueryRequest]) -> None:
-        for req in reqs:
-            assert req in self.running_list
-            self.running_list.remove(req)
+    def finish_seq(self, seq_id: int) -> None:
+        for req in self.seq_id_to_request[seq_id]:
             self.kv_cache_manager.free(req)
-
-            # free the corresponding doc reqs
-            seq_id = req.sequence_id
-            for req in self.seq_id_to_request[seq_id]:
-                self.kv_cache_manager.free(req)
 
 
     def has_unfinished_seqs(self) -> bool:
@@ -244,8 +234,7 @@ class RAGScheduler:
                 "batch_block_tables": [],
                 "batch_slot_mapping": [],
                 "batch_output_token_ids": [],
-                "rag_req_id": [],
-                "rag_seq_id": []
+                "rag_req": []
             }
         
         prefill_data = initialize_batch()
@@ -263,8 +252,7 @@ class RAGScheduler:
             batch["batch_num_prefill_tokens"].append(batch["batch_query_lens"][-1] if batch is prefill_data else 0)
             batch["batch_block_tables"].append(self.req_id_to_block_table[req.request_id])
             batch["batch_slot_mapping"].append(self.req_id_to_slot_mapping[req.request_id])
-            batch["rag_req_id"].append(req.request_id)
-            batch["rag_seq_id"].append(req.sequence_id)
+            batch["rag_req"].append(req)
 
             if req.get_type() == RAGRequestType.CACHE_DOC:
                 token_ids = cast(CacheDocRequest, req).doc_token_ids

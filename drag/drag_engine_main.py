@@ -1,6 +1,6 @@
 import argparse
 from drag.document import Document
-from drag.drag import RAGEngine
+from drag.RAGEngine import RAGEngine
 from vllm import LLM, SamplingParams
 
 docs = ["Lionel Messi scored 13 goals at FIFA World Cups.",
@@ -44,8 +44,12 @@ def attn(llm: LLM):
 
     for output in outputs:
         prompt = output.prompt
-        generated_text = output.outputs[0].text
-        print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
+        doc_ids = output.doc_ids
+        generated_text = output.generated_text
+        print(f"Prompt: {prompt}")
+        print(f"Doc IDs: {doc_ids}")
+        print(f"Generated Text: {generated_text}")
+        print("")
 
 
 def main():

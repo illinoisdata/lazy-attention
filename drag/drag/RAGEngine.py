@@ -1,4 +1,5 @@
-from typing import List
+from dataclasses import dataclass
+from typing import AsyncGenerator, List, Tuple
 
 import torch
 from drag.document import Document
@@ -13,6 +14,19 @@ from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.sampling_params import SamplingParams
 from vllm.transformers_utils.tokenizer import get_tokenizer
 
+@dataclass
+class RAGRequestOutput:
+    # the output for one step execution of the RAGRequest
+    req: RAGRequest
+    origin_seq: RAGSequence
+    req_finished: bool
+
+@dataclass
+class RAGgenerateOutput:
+    prompt:str
+    doc_ids:List[int]
+    generated_text:str
+
 
 class RAGEngine(object):
     def __init__(self, docDB: dict[int, Document], llm: LLM, sampling_params: SamplingParams):
@@ -25,23 +39,41 @@ class RAGEngine(object):
         self.model_runner = get_model_runner(self.llm)
         self.generator = torch.Generator(device="cuda:0").manual_seed(2024)
 
-    def generate(self, queries: List[str], query_doc_ids:List[List[int]]) -> List[Output]:
+    def generate(self, queries: List[str], query_doc_ids:List[List[int]]) -> List[RAGgenerateOutput]:
         query_token_ids: List[List[int]] = [self.tokenizer.encode(query) for query in queries]
         
-        outputs = []
+        gen_output:Tuple[str,list[int],str] = []
         seqs:RAGSequence = []
-        for doc_ids, query in zip(query_doc_ids, query_token_ids):
+        for doc_ids, query_token, query in zip(query_doc_ids, query_token_ids, queries):
             doc_token_ids = [self.documents[doc_id].token_ids for doc_id in doc_ids]
-            seqs.append(RAGSequence(self.seq_id_counter, doc_ids, query, doc_token_ids,[]))
+            seqs.append(RAGSequence(self.seq_id_counter, doc_ids, query, query_token, doc_token_ids,[]))
         
         self.scheduler.add_sequence(seqs)
+        finished_seqs: List[RAGSequence] = []
         while self.scheduler.has_unfinished_seqs():
             output = self._step()
+            for out in output:
+                if out.req_finished and out.req.get_type() == "QUERY":
+                    finished_seqs.append(out.origin_seq)
+
+        for seq in finished_seqs:
+            generated_text = self.tokenizer.decode(seq.generated_token_ids)
+            gen_output.append(RAGgenerateOutput(seq.query_text, seq.doc_ids, generated_text))
+        return gen_output
+        
+
+    async def iter_generate(self, queries: List[str], query_doc_ids:List[List[int]]) -> AsyncGenerator[List[RAGgenerateOutput]]:
+        #todo: implement async version of generate
+        pass
+
 
 
     
-    def _step(self):
+    def _step(self) -> List[RAGRequestOutput]:
+        output:List[RAGRequestOutput] = []
+
         prefill_reqs, decode_reqs = self.scheduler.schedule()
+
         # execute the prefill reqs
         prefill_model_input = self._build_batch_model_input(
             prefill_reqs
@@ -52,9 +84,26 @@ class RAGEngine(object):
             intermediate_tensors=None,
             num_steps=1,
         )
-        # decode tokens to text
 
-        # update the seq token ids info
+        # decode tokens to text
+        batch_next_token_ids = [output.sampled_token_ids[0] for output in prefill_output]
+
+        # update the seq generated token ids info (prefilling phase's generated token won't be the exit token)
+        for i in range(len(prefill_reqs)):
+            seq_id = prefill_reqs.rag_req[i].original_seq_id
+            seq = self.scheduler.seq_id_to_seqs[seq_id]
+            if prefill_reqs.rag_req[i].get_type() == "QUERY":
+                if batch_next_token_ids[i] == self.sample_params.stop:
+                    self.scheduler.finish_seq(seq_id)
+                else:
+                    seq.generated_token_ids.append(batch_next_token_ids[i])
+                output.append(RAGRequestOutput(prefill_reqs.rag_req[i], seq, batch_next_token_ids[i] == self.sample_params.stop))
+
+            else:
+                output.append(RAGRequestOutput(prefill_reqs.rag_req[i], seq, True)) #we're not supporting chunked prefilling, so all prefilling doc_cache requests are finished
+                
+
+
         
         # execute the decode reqs
         decode_model_input = self._build_batch_model_input(
@@ -66,15 +115,26 @@ class RAGEngine(object):
             intermediate_tensors=None,
             num_steps=1,
         )
-        # TODO:
-        # update the seq token ids info
+
 
         # decode tokens to text
+        batch_next_token_ids = [output.sampled_token_ids[0] for output in decode_output]
         
 
         # tell scheduler to end seqs that have reached the exit tokens
+        for i in range(len(decode_reqs)):
+            assert decode_reqs.rag_req[i].get_type() == "QUERY"
+            seq_id = decode_reqs.rag_req[i].original_seq_id
+            seq = self.scheduler.seq_id_to_seqs[seq_id]
+            if batch_next_token_ids[i] == self.sample_params.stop:
+                self.scheduler.finish_seq(seq_id)
+            else:
+                seq.generated_token_ids.append(batch_next_token_ids[i])
+            output.append(RAGRequestOutput(decode_reqs.rag_req[i], seq, batch_next_token_ids[i] == self.sample_params.stop))
 
-        # output the generated text
+        # output the generated text 
+        return output
+
 
  
     
