@@ -4,11 +4,10 @@ from typing import AsyncGenerator, List, Tuple
 import torch
 from drag.document import Document
 from drag.RAGRequest import RAGRequest
-from drag.KV_cache_manager import KV_Cache_Manager
-from drag.RAGScheduler import PrefillRAGSchedulerOutput, RAGScheduler, RAGSchedulerOutput
+from drag.RAGScheduler import  RAGScheduler, RAGSchedulerOutput
 from drag.RAGSequence import RAGSequence
-from drag.rag import DynamicRAG
 from drag.utils import get_model_runner
+from drag.VllmMetadataBuilder import VllmMetadataBuilder
 from vllm import LLM
 from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.sampling_params import SamplingParams
@@ -75,7 +74,7 @@ class RAGEngine(object):
         prefill_reqs, decode_reqs = self.scheduler.schedule()
 
         # execute the prefill reqs
-        prefill_model_input = self._build_batch_model_input(
+        prefill_model_input = self._scheduler_output_to_batch_model_input(
             prefill_reqs
         )
         prefill_output: List[SamplerOutput] = self.model_runner.execute_model(
@@ -106,7 +105,7 @@ class RAGEngine(object):
 
         
         # execute the decode reqs
-        decode_model_input = self._build_batch_model_input(
+        decode_model_input = self._scheduler_output_to_batch_model_input(
             decode_reqs
         )
         decode_output: List[SamplerOutput] = self.model_runner.execute_model(
@@ -138,8 +137,8 @@ class RAGEngine(object):
 
  
     
-    def _build_batch_model_input(self, schedulerOutput: RAGSchedulerOutput) -> dict:
-        model_input = DynamicRAG._build_batch_model_input(
+    def _scheduler_output_to_batch_model_input(self, schedulerOutput: RAGSchedulerOutput) -> dict:
+        model_input = VllmMetadataBuilder.build_batch_model_input(
             batch_size = schedulerOutput.batch_size,
             batch_query_lens = schedulerOutput.batch_query_lens,
             batch_context_lens = schedulerOutput.batch_context_lens,
