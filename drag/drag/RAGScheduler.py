@@ -55,7 +55,7 @@ class RAGScheduler:
         self.running_list:List[RAGRequest] = []
         self.prio_wait_list:List[QueryRequest] = []
 
-        # update before adding to running list
+        # update before adding to running list # NOTE (mihir): but you update these dicts after adding to running_list
         self.req_id_to_slot_mapping:dict[int, List[int]] = {}
         self.req_id_to_new_block_ids:dict[int, List[int]] = {}
 

@@ -45,7 +45,7 @@ class RAGEngine(object):
         seqs:RAGSequence = []
         for doc_ids, query_token, query in zip(query_doc_ids, query_token_ids, queries):
             doc_token_ids = [self.documents[doc_id].token_ids for doc_id in doc_ids]
-            seqs.append(RAGSequence(self.seq_id_counter, doc_ids, query, query_token, doc_token_ids,[]))
+            seqs.append(RAGSequence(self.seq_id_counter, doc_ids, query, query_token, doc_token_ids,[])) 
         
         self.scheduler.add_sequence(seqs)
         finished_seqs: List[RAGSequence] = []
