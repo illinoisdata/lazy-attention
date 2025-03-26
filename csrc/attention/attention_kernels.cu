@@ -95,27 +95,14 @@ inline __device__ void apply_gptj_rotary_embedding(
   }
 }
 
-template <typename scalar_t>
-inline __device__ void apply_neox_rotary_embedding(
-    scalar_t* __restrict__ arr1, scalar_t* __restrict__ arr2,
-    const scalar_t* __restrict__ cos_ptr,
-    const scalar_t* __restrict__ sin_ptr, int vetor_size) {
-  scalar_t x;
-  scalar_t y;
-  for (int i = 0; i < vetor_size; i ++){
-    x = arr1[i];
-    y = arr2[i];
-    arr1[i] = x * cos_ptr[i] - y * sin_ptr[i];
-    arr2[i] = y * cos_ptr[i] + x * sin_ptr[i];
-  }
-}
+#include "dynamic_kernels_load.cu"
 
 // Grid: (num_heads, num_seqs, max_num_partitions).
 template <typename scalar_t, typename cache_t, int HEAD_SIZE, int BLOCK_SIZE,
           int NUM_THREADS, vllm::Fp8KVCacheDataType KV_DTYPE,
           bool IS_BLOCK_SPARSE, bool IS_NEOX,
           int PARTITION_SIZE = 0>  // Zero means no partitioning.
-__device__ void dynamic_paged_attention_kernel(
+__device__ void dynamic_paged_attention_kernel_v0(
     float* __restrict__ exp_sums,  // [num_seqs, num_heads, max_num_partitions]
     float* __restrict__ max_logits,  // [num_seqs, num_heads,
                                                 // max_num_partitions]

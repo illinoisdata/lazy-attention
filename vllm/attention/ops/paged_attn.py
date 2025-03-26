@@ -5,7 +5,7 @@ import torch
 
 from vllm import _custom_ops as ops
 from vllm.triton_utils import HAS_TRITON
-
+import time
 
 if HAS_TRITON:
     from vllm.attention.ops.prefix_prefill import context_attention_fwd
@@ -144,6 +144,8 @@ class PagedAttention:
         use_v1 = True  # force use V1 for now
         if use_dynamic_attn:
             # print("---------------------------------- invoke dynamic paged attention")
+            # torch.cuda.synchronize()
+            # start_time = time.perf_counter()
             ops.dynamic_paged_attention(
                 output,
                 query,
@@ -168,11 +170,16 @@ class PagedAttention:
                 blocksparse_head_sliding_step,
                 is_neox_style,
             )
+            # torch.cuda.synchronize()
+            # end_time = time.perf_counter()
+            # print(f"Dynamic Paged Attention Time: {end_time - start_time} seconds")
             return output
         # **************************** drag ends ******************************
 
         if use_v1:
             # Run PagedAttention V1.
+            # torch.cuda.synchronize()
+            # start_time = time.perf_counter()
             ops.paged_attention_v1(
                 output,
                 query,
@@ -194,6 +201,9 @@ class PagedAttention:
                 blocksparse_block_size,
                 blocksparse_head_sliding_step,
             )
+            # torch.cuda.synchronize()
+            # end_time = time.perf_counter()
+            # print(f"PagedAttention V1 Time: {end_time - start_time} seconds")
         else:
             # Run PagedAttention V2.
             assert _PARTITION_SIZE % block_size == 0

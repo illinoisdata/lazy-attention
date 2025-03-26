@@ -26,6 +26,7 @@ def dynamic_attn() -> Dict:
               enforce_eager=True,
               enable_prefix_caching=True,
               use_dynamic_attn=True,)
+              # enable_chunked_prefill=False)
     rag = DynamicRAG(llm)
     doc_ids = rag.add_cache(docs)  # validated
     outputs = rag.generate(doc_ids, query, sampling_param)
@@ -43,6 +44,7 @@ def static_attn() -> Dict:
               gpu_memory_utilization=0.9,
               enforce_eager=True,
               enable_prefix_caching=True,)
+              # enable_chunked_prefill=False)
     rag = DynamicRAG(llm)
     doc_ids = rag.add_cache(docs)  # validated
     outputs = rag.generate(doc_ids, query, sampling_param)

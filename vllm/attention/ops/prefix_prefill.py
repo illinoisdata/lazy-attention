@@ -241,7 +241,7 @@ if triton.__version__ >= "2.1.0":
                              ((start_n + offs_n[:, None]) < cur_batch_ctx_len),
                              other=0.0)  # [N,D]
             if v_load.dtype.is_fp8():
-                v = (v_load.to(tl.float32) * v_scale).to(q.dtype)
+                v = (v_load.to(tl.float32) * v_scale).to(q_1.dtype)
             else:
                 v = v_load
             p = p.to(v.dtype)
