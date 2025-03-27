@@ -1,10 +1,13 @@
 from typing import List, Tuple
 
 from torch import Tensor
+
+from torch import Tensor
 from drag import RAGRequest
 
 
 class KV_Cache_Manager:
+    BLOCK_SIZE = 16 #number of tokens in a block
     BLOCK_SIZE = 16 #number of tokens in a block
     enable_swap_in_cpu_blocks = False
     def __init__(self, block_size: int, gpu_kv_cache: List[Tensor], cpu_kv_cache: List[Tensor], num_gpu_blocks: int, num_cpu_blocks: int):
@@ -16,6 +19,43 @@ class KV_Cache_Manager:
         slot_mapping = []
         new_block_ids = []
         pass
+
+    def __init__(self, total_blocks=0):
+
+        # track GPU blocks (free and allocated)
+        self._free_gpu_blocks = list(range(total_blocks))
+
+        # track blocks stored in CPU memory
+        self._cpu_blocks = {}
+
+        # track allocated blocks for each request
+        self._request_blocks = {}
+
+        # track slot mappings for each request
+        self._request_slots = {}
+
+        # total number of GPU blocks available
+        self._total_gpu_blocks = total_blocks
+    
+
+    def free(self,request: RAGRequest) -> None:
+        request_id = request.request_id
+        
+        if request_id not in self._request_blocks:
+            return  # request not registered or already freed
+        
+        # return allocated blocks to the free pool
+        self._free_gpu_blocks.extend(self._request_blocks[request_id])
+        
+        # clean up request data
+        del self._request_blocks[request_id]
+        if request_id in self._request_slots:
+            del self._request_slots[request_id]
+        if request_id in self._cpu_blocks:
+            del self._cpu_blocks[request_id]
+        pass
+
+    def append_slots(self, request: RAGRequest, num_new_tokens: int) -> List[int]:
         #return the slot mapping for the new tokens
         # throw error if not enough free blocks to allocate the new tokens. This means scheduler has logical error because it should've checked the free blocks before sending the request.
         return slot_mapping, new_block_ids
