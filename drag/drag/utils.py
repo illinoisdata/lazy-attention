@@ -1,14 +1,23 @@
 import io
 import sys
-from typing import Optional, Dict
+from typing import List, Optional, Union, Dict
 
 import numpy as np
+from torch import Tensor
 
 from vllm import LLM, SamplingParams
+from vllm.engine.llm_engine import LLMEngine
+from vllm.executor.executor_base import ExecutorBase
+from vllm.executor.gpu_executor import GPUExecutor
+from vllm.transformers_utils.tokenizer import AnyTokenizer
 from vllm.utils import Device
+from vllm.worker.model_runner_base import ModelRunnerBase
+from vllm.worker.worker import Worker
+from vllm.worker.worker_base import WorkerBase
 
 
 def get_block_size(llm: LLM) -> int:
+    # return: Size of a cache block in number of tokens.
     return llm.llm_engine.cache_config.block_size
 
 
@@ -16,7 +25,7 @@ def get_tokenizer_grp(llm: LLM):
     return llm.llm_engine.tokenizer
 
 
-def get_tokenizer(llm: LLM):
+def get_tokenizer(llm: LLM) -> AnyTokenizer:
     return llm.llm_engine.tokenizer.tokenizer
 
 
@@ -24,28 +33,28 @@ def get_ctx(llm: LLM):
     return llm.llm_engine.scheduler_contexts[0]
 
 
-def get_llm_engine(llm: LLM):
+def get_llm_engine(llm: LLM) -> LLMEngine:
     """
     Get the llm engine.
     """
     return llm.llm_engine
 
 
-def get_model_executor(llm: LLM):
+def get_model_executor(llm: LLM) -> GPUExecutor:
     """
     Get the model executor.
     """
     return get_llm_engine(llm).model_executor
 
 
-def get_worker(llm: LLM):
+def get_worker(llm: LLM) -> Worker:
     """
     Get the worker.
     """
     return get_model_executor(llm).driver_worker
 
 
-def get_model_runner(llm: LLM):
+def get_model_runner(llm: LLM) -> ModelRunnerBase:
     """
     Get the model runner.
     """
@@ -84,11 +93,11 @@ def get_seq_grp_metadata(llm: LLM, context_id: int = 0):
     return get_scheduler_context(llm, context_id).seq_grp_metadata
 
 
-def get_gpu_cache(llm: LLM):
+def get_gpu_cache(llm: LLM) -> Union[List[List[Tensor]], None]:
     """
     Get the whole gpu cache.
     """
-    return llm.llm_engine.model_executor.driver_worker.gpu_cache
+    return get_worker(llm).gpu_cache
 
 
 def get_block_allocator(llm: LLM):
