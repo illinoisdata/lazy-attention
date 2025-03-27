@@ -8,6 +8,10 @@ class RAGRequestPhase(Enum):
     PREFILL = 0
     DECODE = 1
 
+class RAGRequestType(Enum):
+    CACHE_DOC = 0
+    QUERY = 1
+
 # Abstract Base Class
 class RAGRequest(ABC):
     def __init__(self, request_id: int, original_seq_id: int):
@@ -27,18 +31,18 @@ class CacheDocRequest(RAGRequest):
         self.doc_token_ids:List[int] = doc.token_ids
         self.doc_length = len(doc.token_ids)
 
-    def get_type(self) -> str:
-        return "CACHE_DOC"
+    def get_type(self) -> RAGRequestType:
+        return RAGRequestType.CACHE_DOC
 
 # Subclass for QUERY requests
 class QueryRequest(RAGRequest):
-    def __init__(self, request_id: int, prompt: str, doc_ids: List[int], original_seq_id:int):
-        super().__init__(request_id)
-        self.prompt_ids:list[int] = prompt
+    def __init__(self, request_id: int, prompt_ids: int, doc_ids: List[int], original_seq_id:int):
+        super().__init__(request_id, original_seq_id)
+        self.prompt_ids:list[int] = prompt_ids
         self.doc_ids:List[int] = doc_ids
 
-    def get_type(self) -> str:
-        return "QUERY"
+    def get_type(self) -> RAGRequestType:
+        return RAGRequestType.QUERY
     
   
 
