@@ -6,12 +6,12 @@ from drag.document import Document
 from drag.RAGRequest import RAGRequest
 from drag.RAGScheduler import  RAGScheduler, RAGSchedulerOutput
 from drag.RAGSequence import RAGSequence
-from drag.utils import get_model_runner
+from drag.KV_cache_manager import KV_Cache_Manager
+from drag.utils import get_block_size, get_cpu_cache, get_gpu_cache, get_llm_engine, get_model_runner, get_num_cpu_blocks, get_num_gpu_blocks, get_tokenizer
 from drag.VllmMetadataBuilder import VllmMetadataBuilder
 from vllm import LLM
 from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.sampling_params import SamplingParams
-from vllm.transformers_utils.tokenizer import get_tokenizer
 
 @dataclass
 class RAGRequestOutput:
@@ -32,7 +32,7 @@ class RAGEngine(object):
         self.sample_params = sampling_params
         self.documents = docDB
         self.llm = llm
-        self.scheduler = RAGScheduler(512,docDB)
+        self.scheduler = self._init_scheduler()
         self.seq_id_counter = 0
         self.tokenizer = get_tokenizer(self.llm)
         self.model_runner = get_model_runner(self.llm)
@@ -61,12 +61,17 @@ class RAGEngine(object):
         return gen_output
         
 
-    async def iter_generate(self, queries: List[str], query_doc_ids:List[List[int]]) -> AsyncGenerator[List[RAGgenerateOutput]]:
-        #todo: implement async version of generate
-        pass
-
-
-
+    # async def iter_generate(self, queries: List[str], query_doc_ids:List[List[int]]) -> AsyncGenerator[List[RAGgenerateOutput]]:
+    #     #todo: implement async version of generate
+    #     pass
+    def _init_scheduler(self) -> RAGScheduler:
+        block_size = get_block_size(self.llm)
+        gpu_kv_cache = get_gpu_cache(self.llm)[0]
+        cpu_kv_cache = get_cpu_cache(self.llm)[0]
+        num_gpu_blocks = get_num_gpu_blocks(self.llm)
+        num_cpu_blocks = get_num_cpu_blocks(self.llm)
+        kv_cache_manager = KV_Cache_Manager(block_size, gpu_kv_cache, cpu_kv_cache, num_gpu_blocks, num_cpu_blocks)
+        return RAGScheduler(512,self.documents,kv_cache_manager)
     
     def _step(self) -> List[RAGRequestOutput]:
         output:List[RAGRequestOutput] = []
@@ -134,8 +139,6 @@ class RAGEngine(object):
         # output the generated text 
         return output
 
-
- 
     
     def _scheduler_output_to_batch_model_input(self, schedulerOutput: RAGSchedulerOutput) -> dict:
         model_input = VllmMetadataBuilder.build_batch_model_input(

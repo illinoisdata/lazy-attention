@@ -1,17 +1,24 @@
 from typing import List, Tuple
+
+from torch import Tensor
 from drag import RAGRequest
 
 
 class KV_Cache_Manager:
-    BLOCK_SIZE = 128 #number of tokens in a block
+    BLOCK_SIZE = 16 #number of tokens in a block
     enable_swap_in_cpu_blocks = False
+    def __init__(self, block_size: int, gpu_kv_cache: List[Tensor], cpu_kv_cache: List[Tensor], num_gpu_blocks: int, num_cpu_blocks: int):
+        pass
     def free(request: RAGRequest) -> None:
         pass
 
-    def append_slots(request: RAGRequest, num_new_tokens: int) -> List[int]:
+    def append_slots(request: RAGRequest, num_new_tokens: int) -> Tuple[List[int], List[int]]:
+        slot_mapping = []
+        new_block_ids = []
         pass
         #return the slot mapping for the new tokens
-        # return non if not enough free blocks to allocate the new tokens.
+        # throw error if not enough free blocks to allocate the new tokens. This means scheduler has logical error because it should've checked the free blocks before sending the request.
+        return slot_mapping, new_block_ids
 
     def get_computed_gpu_blocks(request: RAGRequest, swap_in_cpu_blocks=False) -> List[int]:
         pass

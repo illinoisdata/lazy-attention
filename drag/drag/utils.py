@@ -20,6 +20,14 @@ def get_block_size(llm: LLM) -> int:
     # return: Size of a cache block in number of tokens.
     return llm.llm_engine.cache_config.block_size
 
+def get_num_gpu_blocks(llm: LLM) -> int:
+    # return: Number of GPU cache blocks.
+    return llm.llm_engine.cache_config.num_gpu_blocks
+
+def get_num_cpu_blocks(llm: LLM) -> int:
+    # return: Number of CPU cache blocks.
+    return llm.llm_engine.cache_config.num_cpu_blocks
+
 
 def get_tokenizer_grp(llm: LLM):
     return llm.llm_engine.tokenizer
@@ -98,6 +106,16 @@ def get_gpu_cache(llm: LLM) -> Union[List[List[Tensor]], None]:
     Get the whole gpu cache.
     """
     return get_worker(llm).gpu_cache
+
+def get_cpu_cache(llm: LLM) -> Union[List[List[Tensor]], None]:
+    """
+    Get the whole cpu cache.
+    """
+    cpu_cache = [
+            get_worker(llm).cache_engine[ve].gpu_cache
+            for ve in range(get_worker(llm).parallel_config.pipeline_parallel_size)
+        ]
+    return cpu_cache
 
 
 def get_block_allocator(llm: LLM):

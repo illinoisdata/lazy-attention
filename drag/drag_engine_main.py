@@ -24,13 +24,6 @@ sampling_param = SamplingParams(max_tokens=10,
                                 stop_token_ids=[128008, 128001])
 
 def attn(llm: LLM):
-    llm = LLM(model="meta-llama/Llama-3.1-8B-Instruct",
-              gpu_memory_utilization=0.9,
-              enforce_eager=True,
-              enable_prefix_caching=True,
-              use_dynamic_attn=False,
-              )
-
     # initialize the doc db, currently it's a simple dict structure
     # will change in the future to be a in memory db to handle large number of docs
     docDB: dict[int, Document] = {}
@@ -39,8 +32,8 @@ def attn(llm: LLM):
         doc = Document(doc, llm, prefill=False) # no need to prefill in advance
         docDB[doc.doc_id] = doc
 
-    ragEngine = RAGEngine(docDB, llm)
-    outputs = ragEngine.generate(queries, query_doc_ids, sampling_param)
+    ragEngine = RAGEngine(docDB, llm, sampling_param)
+    outputs = ragEngine.generate(queries, query_doc_ids)
 
     for output in outputs:
         prompt = output.prompt
