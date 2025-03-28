@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from enum import Enum
 from typing import List
 from abc import ABC, abstractmethod
@@ -13,37 +14,45 @@ class RAGRequestType(Enum):
     QUERY = 1
 
 # Abstract Base Class
+@dataclass
 class RAGRequest(ABC):
-    def __init__(self, request_id: int, original_seq_id: int):
-        self.request_id = request_id
-        self.original_seq_id = original_seq_id
+    request_id: int
+    original_seq_id: int
 
     @abstractmethod
-    def get_type(self) -> str:
+    def get_type(self) -> RAGRequestType:
         """Abstract method to get request type"""
         pass
 
 # Subclass for CACHE_DOC requests
+@dataclass
 class CacheDocRequest(RAGRequest):
-    def __init__(self, request_id: int, doc_id:int, doc: Document, original_seq_id: int):
-        super().__init__(request_id, original_seq_id)
-        self.doc_id:int = doc_id
-        self.doc_token_ids:List[int] = doc.token_ids
-        self.doc_length = len(doc.token_ids)
+    doc_id: int
+    doc_token_ids: List[int]
+    doc_length: int
+    
+    @classmethod
+    def from_document(cls, request_id: int, doc_id: int, doc: Document, original_seq_id: int):
+        return cls(
+            request_id=request_id,
+            original_seq_id=original_seq_id,
+            doc_id=doc_id,
+            doc_token_ids=doc.token_ids,
+            doc_length=len(doc.token_ids)
+        )
 
     def get_type(self) -> RAGRequestType:
         return RAGRequestType.CACHE_DOC
 
 # Subclass for QUERY requests
+@dataclass
 class QueryRequest(RAGRequest):
-    def __init__(self, request_id: int, prompt_ids: int, doc_ids: List[int], original_seq_id:int):
-        super().__init__(request_id, original_seq_id)
-        self.prompt_ids:list[int] = prompt_ids
-        self.doc_ids:List[int] = doc_ids
+    prompt_ids: List[int]
+    doc_ids: List[int]
 
     def get_type(self) -> RAGRequestType:
         return RAGRequestType.QUERY
-    
-  
+
+
 
 
