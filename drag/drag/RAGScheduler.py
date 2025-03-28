@@ -69,7 +69,7 @@ class RAGScheduler:
 
 
     def schedule(self) -> tuple[PrefillRAGSchedulerOutput, DecodeRAGSchedulerOutput]:
-        for req in self.running_list:
+        for req in self.running_list[:]:
             # all prefill requests (including doc cache requests) from the previous step should have already finished
             assert req.get_type() == RAGRequestType.QUERY
             assert self.req_id_to_phase[req.request_id] == RAGRequestPhase.DECODE
@@ -92,7 +92,7 @@ class RAGScheduler:
                     self.kv_cache_manager.free(req_in_seq)
                     self.running_list.remove(req_in_seq)
 
-        for req in self.prio_wait_list:
+        for req in self.prio_wait_list[:]:
             # the only reason for a request to enter prio_wait_list is that in last step, there's pending dependant doc_cache requests
             # the slots for the requests in prio_wait_list is already preserved
             assert self.req_id_to_phase[req.request_id] == RAGRequestPhase.PREFILL
@@ -100,12 +100,11 @@ class RAGScheduler:
             self.running_list.append(req)
             self.prio_wait_list.remove(req)
 
-        for seq in self.preempt_seq_list:
+        for seq in self.preempt_seq_list[:]:
             if self._try_add_seq_to_running_list(self.seq_id_to_request[seq.sequence_id]):
                 self.preempt_seq_list.remove(seq)
                 
-                
-        for seq in self.new_seq_list:
+        for seq in self.new_seq_list[:]:
             if not seq.sequence_id in self.seq_id_to_request:
                 self._seq_to_reqs(seq)
             if self._try_add_seq_to_running_list(seq.sequence_id):
@@ -121,28 +120,35 @@ class RAGScheduler:
         self.seq_id_to_seqs.update({seq.sequence_id: seq for seq in seqs})
 
 
+    def cache_doc(self, doc_id: int) -> None:
+        #TODO: support cache doc only without a query.
+        pass
+
+
     def finish_seq(self, seq_id: int) -> None:
         seq = self.seq_id_to_seqs[seq_id]
 
         # delete reqs
         for req in self.seq_id_to_request[seq_id]:
             self.kv_cache_manager.free(req)
-            if req in self.running_list:
+            if req in self.running_list[:]:
                 self.running_list.remove(req)
-            if req in self.prio_wait_list:
+            if req in self.prio_wait_list[:]:
                 self.prio_wait_list.remove(req)
             #delete metadata
-            del self.req_id_to_slot_mapping[req.request_id]
-            del self.req_id_to_new_block_ids[req.request_id]
+            # if request is reusing all the blocks from previous request, it may not have slot_mapping/new_block_ids
+            if req.request_id in self.req_id_to_new_block_ids:
+                del self.req_id_to_slot_mapping[req.request_id]
+                del self.req_id_to_new_block_ids[req.request_id]
             if req.get_type() == RAGRequestType.QUERY:
                 del self.req_id_to_phase[req.request_id]
             del self.req_id_to_block_table[req.request_id]
             del self.req_id_to_num_cached_token[req.request_id]
         
         # delete seq if it's not converted to requests or is preempted
-        if seq_id in self.new_seq_list:
+        if seq_id in self.new_seq_list[:]:
             self.new_seq_list.remove(seq)
-        if seq_id in self.preempt_seq_list:
+        if seq_id in self.preempt_seq_list[:]:
             self.preempt_seq_list.remove(seq)
 
         # delete seq metadata
@@ -191,16 +197,17 @@ class RAGScheduler:
             assert req.get_type() == RAGRequestType.CACHE_DOC
             if num_computed_blocks_list[i] == num_needed_blocks_list[i]:
                 self.kv_cache_manager.allocate_slots(req,0)
-                if cast(CacheDocRequest, req).doc_id in self.docs_to_be_filled_next:
-                    all_doc_cached = False # the doc is added to running list by another sequence, but it's not cached yet.
             else:
                 all_doc_cached = False
-                slot_mapping, new_block_ids = self.kv_cache_manager.allocate_slots(req, cast(CacheDocRequest, req).doc_length - num_computed_blocks_list[i] * self.kv_cache_manager.BLOCK_SIZE)
-                assert slot_mapping is not None # since we have checked the gpu memory is enough
-                self.req_id_to_slot_mapping[req.request_id] = slot_mapping
-                self.req_id_to_new_block_ids[req.request_id] = new_block_ids
-                self.docs_to_be_filled_next.add(cast(CacheDocRequest, req).doc_id)
-                self.running_list.append(req)
+                if cast(CacheDocRequest, req).doc_id not in self.docs_to_be_filled_next:
+                    slot_mapping, new_block_ids = self.kv_cache_manager.allocate_slots(req, cast(CacheDocRequest, req).doc_length - num_computed_blocks_list[i] * self.kv_cache_manager.BLOCK_SIZE)
+                    assert slot_mapping is not None # since we have checked the gpu memory is enough
+                    self.req_id_to_slot_mapping[req.request_id] = slot_mapping
+                    self.req_id_to_new_block_ids[req.request_id] = new_block_ids
+                    self.docs_to_be_filled_next.add(cast(CacheDocRequest, req).doc_id)
+                    self.running_list.append(req)
+                else:
+                    self.kv_cache_manager.allocate_slots(req, 0) # still register with kv_cache_manager to increase the block reference counter
 
         # step 4: allocate slots for the query request and add it to the running list
         req = reqs[-1]
@@ -242,9 +249,9 @@ class RAGScheduler:
             return
         self.seq_id_to_request[seq.sequence_id] = []
         for doc_id in seq.doc_ids:
-            self.seq_id_to_request[seq.sequence_id].append(CacheDocRequest(self.RequestCounter, doc_id, self.docDB[doc_id], seq.sequence_id))
+            self.seq_id_to_request[seq.sequence_id].append(CacheDocRequest.from_document(self.RequestCounter, doc_id, self.docDB[doc_id], seq.sequence_id))
             self.RequestCounter += 1
-        self.seq_id_to_request[seq.sequence_id].append(QueryRequest(self.RequestCounter, seq.query_token_ids, seq.doc_ids, seq.sequence_id))
+        self.seq_id_to_request[seq.sequence_id].append(QueryRequest(self.RequestCounter, seq.sequence_id, seq.query_token_ids, seq.doc_ids))
         self.RequestCounter += 1
 
 
@@ -326,8 +333,7 @@ class RAGScheduler:
     
 
     def _update_request_state(self):
-
-        for req in self.running_list:
+        for req in self.running_list[:]:
             # change the prefill queryRequests to decode phase, and remove the cache_doc requests from running_list because they are done after this round.
             self.req_id_to_block_table[req.request_id].extend(self.req_id_to_new_block_ids[req.request_id])
             self.req_id_to_num_cached_token[req.request_id] += len(self.req_id_to_slot_mapping[req.request_id])
@@ -336,7 +342,6 @@ class RAGScheduler:
             if req.get_type() == RAGRequestType.CACHE_DOC:
                 self.running_list.remove(req)
                 self.docs_to_be_filled_next.remove(cast(CacheDocRequest, req).doc_id)
-    
 
 
 

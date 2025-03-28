@@ -1,39 +1,50 @@
 # unit test of the RAGScheduler class.
 import math
-from typing import List, Tuple
+from typing import List, Tuple, cast
 import pytest
 from unittest.mock import MagicMock
 from drag.RAGScheduler import RAGScheduler, RAGSequence
 from drag.KV_cache_manager import KV_Cache_Manager
 from drag.document import Document
-from drag.RAGRequest import RAGRequest, RAGRequestType
+from drag.RAGRequest import CacheDocRequest, RAGRequest, RAGRequestType
 from drag.utils import get_tokenizer
 from vllm.entrypoints.llm import LLM
 from transformers import AutoTokenizer
 
 class MockKVCacheManager:
-    def __init__(self, num_free_blocks=float("inf"), computed_blocks={}):
+    def __init__(self, num_free_blocks=65535, computed_blocks={}):
         self.BLOCK_SIZE = 16
         self.enable_swap_in_cpu_blocks = False
-        self.num_free_blocks_value = num_free_blocks
+        self.num_free_gpu_blocks = num_free_blocks
         self.computed_blocks = computed_blocks
+        self.doc_to_blocks = {}
+        self.request_id_to_blocks = {}
 
     def num_free_blocks(self) -> int:
-        return self.num_free_blocks_value
+        return self.num_free_gpu_blocks
 
     def get_computed_gpu_blocks(self, request: RAGRequest, swap_in_cpu_blocks=False) -> List[int]:
+        if request.get_type() == RAGRequestType.CACHE_DOC and cast(CacheDocRequest, request).doc_id in self.doc_to_blocks:
+            return self.doc_to_blocks[cast(CacheDocRequest, request).doc_id]
         return self.computed_blocks.get(request.request_id, [])
 
     def append_slots(self, request: RAGRequest, num_new_tokens: int) -> Tuple[List[int], List[int]]:
-        # Simulate slot allocation logic
-        num_required_blocks = math.ceil(num_new_tokens / self.BLOCK_SIZE)
-        return list(range(num_new_tokens)),list(range(num_required_blocks))  # Mock allocated slots
+        # Simulate slot append logic(for decoding phase)
+        if request.get_type() == RAGRequestType.CACHE_DOC:
+            doc_id = cast(CacheDocRequest, request).doc_id
+            self.doc_to_blocks[doc_id].extend(list(range(1))) 
+        return list(range(num_new_tokens)),[]  # Mock allocated slots
 
     def allocate_slots(self, request: RAGRequest, num_new_tokens: int) -> Tuple[List[int], List[int]]:
-        return self.append_slots(request, num_new_tokens)
+        # Simulate slot initialization logic
+        self.num_free_gpu_blocks -= 1  # all requests for testing will only occupy one block.
+        if request.get_type() == RAGRequestType.CACHE_DOC:
+            doc_id = cast(CacheDocRequest, request).doc_id
+            self.doc_to_blocks[doc_id] = list(range(1))
+        return list(range(num_new_tokens)),list(range(1))  # Mock allocated slots
 
     def free(self, request: RAGRequest) -> None:
-        pass  # Simulate freeing resources
+        self.num_free_gpu_blocks += 1 # all requests for testing will only occupy one block.
 
 @pytest.fixture
 def kv_cache_manager_infinite_blocks():
@@ -79,6 +90,12 @@ def docDB(mocked_llm):
 @pytest.fixture
 def single_seq(docDB, mocked_llm):
     return RAGSequence.make_RAGSequence(1, "test prompt", [1], docDB, get_tokenizer(mocked_llm))
+
+@pytest.fixture
+def multiple_seq(docDB, mocked_llm):
+    return [RAGSequence.make_RAGSequence(1, "test prompt", [1], docDB, get_tokenizer(mocked_llm)),
+            RAGSequence.make_RAGSequence(2, "test prompt", [2,1], docDB, get_tokenizer(mocked_llm)),
+            RAGSequence.make_RAGSequence(3, "test prompt", [0], docDB, get_tokenizer(mocked_llm))]
 
 
 def test_add_seq(single_seq: RAGSequence, docDB: dict[int,Document], kv_cache_manager_infinite_blocks: KV_Cache_Manager):
@@ -156,4 +173,243 @@ def test_schedule_single_seq(single_seq: RAGSequence, docDB: dict[int,Document],
     scheduler.finish_seq(single_seq.sequence_id)
     assert scheduler.has_unfinished_seqs() == False
 
+
+def test_schedule_multiple_seqs(multiple_seq: List[RAGSequence], docDB: dict[int,Document], kv_cache_manager_infinite_blocks: KV_Cache_Manager):
+    # test scheduling multiple requests sharing partially the same documents
+
+    # the first step will only schedule CacheDocRequest.
+    scheduler = RAGScheduler(10, docDB, kv_cache_manager_infinite_blocks)
+    scheduler.add_sequence(multiple_seq)
+    prefill_plan, decode_plan = scheduler.schedule()
+
+    # Verify CacheDocRequest prefill phase
+    assert prefill_plan.batch_size == 3
+    assert len(prefill_plan.rag_req) == 3
+    
+    # Check all requests are CacheDocRequests
+    for req in prefill_plan.rag_req:
+        assert req.get_type() == RAGRequestType.CACHE_DOC
+    
+    # Verify doc_ids are loaded correctly (1, 2, 0)
+    assert prefill_plan.rag_req[0].doc_id == 1
+    assert prefill_plan.rag_req[1].doc_id == 2
+    assert prefill_plan.rag_req[2].doc_id == 0
+    
+    # Check batch context setup
+    assert all(ctx_len == 0 for ctx_len in prefill_plan.batch_context_lens)
+    assert all(len(ctx_tokens) == 0 for ctx_tokens in prefill_plan.batch_ctx_token_ids)
+    assert all(len(block_table) == 0 for block_table in prefill_plan.batch_block_tables)
+    
+    # Check query lengths match document lengths
+    assert all(query_len == 16 for query_len in prefill_plan.batch_query_lens)
+    assert all(seq_len == 16 for seq_len in prefill_plan.batch_seq_lens)
+    assert all(prefill_tokens == 16 for prefill_tokens in prefill_plan.batch_num_prefill_tokens)
+    
+    # No decode batch in first step
+    assert decode_plan.batch_size == 0
+
+    # the second step will schedule QueryRequest in the prefill phase.
+    prefill_plan, decode_plan = scheduler.schedule()
+    
+    # Verify QueryRequest prefill phase
+    assert prefill_plan.batch_size == 3
+    assert len(prefill_plan.rag_req) == 3
+    
+    # Check all requests are QueryRequests
+    for req in prefill_plan.rag_req:
+        assert req.get_type() == RAGRequestType.QUERY
+    
+    # Check prompt lengths and sequence-to-original mappings
+    assert all(query_len == 3 for query_len in prefill_plan.batch_query_lens)
+    assert prefill_plan.rag_req[0].original_seq_id == 1
+    assert prefill_plan.rag_req[1].original_seq_id == 2
+    assert prefill_plan.rag_req[2].original_seq_id == 3
+    
+    # Check context lengths (first has doc1, second has doc2+doc1, third has doc0)
+    assert prefill_plan.batch_context_lens[0] == 16  # doc1
+    assert prefill_plan.batch_context_lens[1] == 32  # doc2 + doc1
+    assert prefill_plan.batch_context_lens[2] == 16  # doc0
+    
+    # Check sequence lengths (context + prompt)
+    assert prefill_plan.batch_seq_lens[0] == 19  # 16 + 3
+    assert prefill_plan.batch_seq_lens[1] == 35  # 32 + 3
+    assert prefill_plan.batch_seq_lens[2] == 19  # 16 + 3
+    
+    # Check block tables based on document count
+    assert len(prefill_plan.batch_block_tables[0]) == 1  # One document
+    assert len(prefill_plan.batch_block_tables[1]) == 2  # Two documents
+    assert len(prefill_plan.batch_block_tables[2]) == 1  # One document
+    
+    # Check document IDs for each sequence
+    assert prefill_plan.rag_req[0].doc_ids == [1]
+    assert prefill_plan.rag_req[1].doc_ids == [2, 1]
+    assert prefill_plan.rag_req[2].doc_ids == [0]
+    
+    # No decode batch in second step
+    assert decode_plan.batch_size == 0
+
+    # mock the generated token id of the QueryRequest prefill phase
+    for seq in multiple_seq:
+        seq.generated_token_ids = [123]
+
+    # the third step will schedule the QueryRequest in the decode phase.
+    prefill_plan, decode_plan = scheduler.schedule()
+    
+    # No prefill batch in third step
+    assert prefill_plan.batch_size == 0
+    
+    # Verify QueryRequest decode phase
+    assert decode_plan.batch_size == 3
+    assert len(decode_plan.rag_req) == 3
+    
+    # Check all requests are QueryRequests  
+    for req in decode_plan.rag_req:
+        assert req.get_type() == RAGRequestType.QUERY
+    
+    # Check query lengths are all 1 (one token each)
+    assert all(query_len == 1 for query_len in decode_plan.batch_query_lens)
+    
+    # Check context lengths include documents + prompt
+    assert decode_plan.batch_context_lens[0] == 19  # doc1 + prompt
+    assert decode_plan.batch_context_lens[1] == 35  # doc2 + doc1 + prompt
+    assert decode_plan.batch_context_lens[2] == 19  # doc0 + prompt
+    
+    # Check sequence lengths (context + generated token)
+    assert decode_plan.batch_seq_lens[0] == 20  # 19 + 1
+    assert decode_plan.batch_seq_lens[1] == 36  # 35 + 1
+    assert decode_plan.batch_seq_lens[2] == 20  # 19 + 1
+    
+    # Check block tables based on documents + prompt
+    assert len(decode_plan.batch_block_tables[0]) == 2  # One document + prompt
+    assert len(decode_plan.batch_block_tables[1]) == 3  # Two documents + prompt
+    assert len(decode_plan.batch_block_tables[2]) == 2  # One document + prompt
+    
+    # Verify output tokens are included
+    assert all(output_tokens == [123] for output_tokens in decode_plan.batch_output_token_ids)
+
+
+def test_schedule_multiple_seqs_memory_restricted(multiple_seq: List[RAGSequence], docDB: dict[int,Document], mocked_llm):
+    # Test scheduling with memory restrictions (limited blocks force sequential execution)
+    
+    # Create a KV cache manager with only 3 free blocks
+    # This is just enough for one sequence at a time, forcing sequential scheduling
+    kv_cache_manager = MockKVCacheManager(num_free_blocks=3)
+    
+    scheduler = RAGScheduler(10, docDB, kv_cache_manager)
+    scheduler.add_sequence(multiple_seq)
+    
+    # PHASE 1: First Document Cache Request Round
+    prefill_plan, decode_plan = scheduler.schedule()
+    
+    # Should schedule only one document (first doc from first sequence) due to memory constraints
+    assert prefill_plan.batch_size == 1
+    assert len(prefill_plan.rag_req) == 1
+    assert prefill_plan.rag_req[0].get_type() == RAGRequestType.CACHE_DOC
+    assert prefill_plan.rag_req[0].doc_id == 1  # First sequence needs doc1
+    
+    # Verify there's no decode plan yet
+    assert decode_plan.batch_size == 0
+    
+    # PHASE 2: First Query Prefill
+    prefill_plan, decode_plan = scheduler.schedule()
+    
+    # Should schedule query for first sequence
+    assert prefill_plan.batch_size == 1
+    assert prefill_plan.rag_req[0].get_type() == RAGRequestType.QUERY
+    assert prefill_plan.rag_req[0].original_seq_id == 1
+    assert prefill_plan.batch_context_lens[0] == 16  # doc1
+    
+    # Mock generated token
+    multiple_seq[0].generated_token_ids = [123]
+    
+    # PHASE 3: First Sequence Decode
+    prefill_plan, decode_plan = scheduler.schedule()
+    
+    assert prefill_plan.batch_size == 0
+    assert decode_plan.batch_size == 1
+    assert decode_plan.rag_req[0].original_seq_id == 1
+    
+    # Finish sequence 1 to free up memory
+    scheduler.finish_seq(1)
+    assert kv_cache_manager.num_free_blocks() == 3  # Should have 3 free blocks now
+    
+    # PHASE 4: Second Document Cache Request Round (should start handling sequence 2)
+    prefill_plan, decode_plan = scheduler.schedule()
+    
+    # Should now schedule second sequence's first document (doc2, because doc1 is already cached)
+    assert prefill_plan.batch_size == 1
+    assert prefill_plan.rag_req[0].get_type() == RAGRequestType.CACHE_DOC
+    assert prefill_plan.rag_req[0].doc_id == 2
+    
+    # PHASE 5: Should now schedule second sequence's query
+    prefill_plan, decode_plan = scheduler.schedule()
+    
+    assert prefill_plan.batch_size == 1
+    assert prefill_plan.rag_req[0].get_type() == RAGRequestType.QUERY
+    assert prefill_plan.rag_req[0].original_seq_id == 2
+    assert prefill_plan.rag_req[0].doc_ids == [2, 1]  # Checks that correct docs are referenced
+    
+    # Mock generated token
+    multiple_seq[1].generated_token_ids = [123]
+    
+    # PHASE 6: Second Sequence Decode
+    prefill_plan, decode_plan = scheduler.schedule()
+    
+    assert prefill_plan.batch_size == 0
+    assert decode_plan.batch_size == 1
+    assert decode_plan.rag_req[0].original_seq_id == 2
+    
+    # Finish sequence 2 to free up memory
+    scheduler.finish_seq(2)
+
+    assert kv_cache_manager.num_free_blocks() == 3  # Should have 3 free blocks now
+    
+    # PHASE 7: Third Document Cache Request
+    prefill_plan, decode_plan = scheduler.schedule()
+    
+    # Should now schedule third sequence's document (doc0)
+    assert prefill_plan.batch_size == 1
+    assert prefill_plan.rag_req[0].get_type() == RAGRequestType.CACHE_DOC
+    assert prefill_plan.rag_req[0].doc_id == 0
+    
+    # PHASE 8: Third Sequence Query
+    prefill_plan, decode_plan = scheduler.schedule()
+    
+    assert prefill_plan.batch_size == 1
+    assert prefill_plan.rag_req[0].get_type() == RAGRequestType.QUERY
+    assert prefill_plan.rag_req[0].original_seq_id == 3
+    assert prefill_plan.rag_req[0].doc_ids == [0]
+    
+    # Mock generated token
+    multiple_seq[2].generated_token_ids = [123]
+    
+    # PHASE 9: Third Sequence Decode
+    prefill_plan, decode_plan = scheduler.schedule()
+    
+    assert prefill_plan.batch_size == 0
+    assert decode_plan.batch_size == 1
+    assert decode_plan.rag_req[0].original_seq_id == 3
+    
+    # Finish sequence 3
+    scheduler.finish_seq(3)
+
+    assert kv_cache_manager.num_free_blocks() == 3  # Should have 3 free blocks now
+    
+    # All sequences should be completed now
+    assert not scheduler.has_unfinished_seqs()
+    
+    # PHASE 10: No more sequences
+    prefill_plan, decode_plan = scheduler.schedule()
+    assert prefill_plan.batch_size == 0
+    assert decode_plan.batch_size == 0
+
+def test_schedule_single_seq_with_pre_computed_prefix_caches():
+    # Test scheduling with pre-computed prefix caches for queries
+    pass
+    # TOOD: test this feature
+
+def test_async_schedule():
+    # Instead of put all requests in the same batch, we can put them in different batches and schedule them asynchronously.
+    pass
+    # TOOD: test this feature
 
