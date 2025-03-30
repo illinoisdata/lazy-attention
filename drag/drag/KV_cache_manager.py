@@ -33,77 +33,112 @@ class KV_Cache_Manager:
         self._doc_to_blocks: Dict[int, List[int]] = {} 
         self._doc_to_req: Dict[int, int] = {} # maintains mapping of a doc being used for which requests {doc_id: [req_id,..]}
 
-        # running requests i.e. docs related to running reqs that must not be evicted
-        self._running_requests: Set[int] = set() #TODO(mihir): need to come from scheduler
-
     def free(self, request: RAGRequest) -> None:
-        """Release all allocated blocks (GPU and CPU) for the given request."""
+        """
+        Mark the request as finished by decrementing the reference count of each block
+        allocated to this request. Blocks are  not immediately returned to the free pool;
+        they will be reclaimed later via the eviction process.
+        """
         request_id = request.request_id
         if request_id not in self._request_blocks:
             return  # already freed or not registered
 
-        self._free_gpu_blocks.extend(self._request_blocks[request_id])
+        # decrement ref_count for each allocated block
         for block in self._request_blocks[request_id]:
             if block in self._block_info:
-                del self._block_info[block]
+                # Decrement the ref count but never below zero
+                self._block_info[block]["ref_count"] = max(0, self._block_info[block]["ref_count"] - 1)
+
         del self._request_blocks[request_id]
-
-        if request_id in self._cpu_blocks:
-            self._free_cpu_blocks.extend(self._cpu_blocks[request_id])
-            del self._cpu_blocks[request_id]
-
         if request_id in self._request_slots:
             del self._request_slots[request_id]
-
-        # if the request is caching a document, remove its entry from _doc_to_blocks.
-        if request.get_type() == RAGRequestType.CACHE_DOC:
-            cache_req = request  # type: CacheDocRequest
-            if cache_req.doc_id in self._doc_to_blocks:
-                del self._doc_to_blocks[cache_req.doc_id]
-            if cache_req.doc_id in self._doc_to_req:
-                del self._doc_to_req[cache_req.doc_id]
+        if request_id in self._cpu_blocks:
+            del self._cpu_blocks[request_id]
 
     def append_slots(self, request: RAGRequest, num_new_tokens: int) -> Tuple[Optional[List[int]], Optional[List[int]]]:
         """
-        Reserve additional GPU blocks (and create a slot mapping) for new tokens.
-        Typically used during the decode phase.
-        
-        Returns a tuple (slot_mapping, new_block_ids). If not enough free GPU blocks are available,
-        returns (None, None) to signal failure.
+        Reserve additional GPU slots for new tokens, reusing any existing allocated capacity first.
+        This is typically used during the decode phase.
+
+        If some blocks have already been allocated but not fully used, the method will
+        assign tokens to the remaining capacity. If that capacity is insufficient, it will allocate
+        additional blocks from the free pool.
+
+        Returns:
+            A tuple (slot_mapping, new_block_ids). If not enough free GPU blocks are available,
+            returns (None, None) to signal failure. If no new blocks are allocated, new_block_ids will be [].
         """
         if num_new_tokens <= 0:
             return ([], [])
 
         request_id = request.request_id
-        needed_blocks = (num_new_tokens + self.block_size - 1) // self.block_size
 
-        if needed_blocks > len(self._free_gpu_blocks):
-            return (None, None)  # not enough free GPU blocks
+        if request_id in self._request_blocks:
+            current_blocks = self._request_blocks[request_id]
+            current_slots = self._request_slots[request_id]
+        else: 
+            self._request_blocks.setdefault(request_id, [])
+            self._request_slots.setdefault(request_id, [])
+            current_blocks = self._request_blocks[request_id]
+            current_slots = self._request_slots[request_id]
 
-        self._request_blocks.setdefault(request_id, [])
-        self._request_slots.setdefault(request_id, [])
+        # check avail slots 
+        capacity = len(current_blocks) * self.block_size  # total slots available
+        used = len(current_slots)                          # slots already assigned
+        available = capacity - used                        # free slots in already allocated blocks
+
+        slot_mapping: List[int] = []
+        new_block_ids: List[int] = []
+
+        # case 1: sufficient free capacity in already allocated blocks
+        if available >= num_new_tokens:
+            for i in range(num_new_tokens):
+                global_index = used + i  # next free slot index
+                block_index = global_index // self.block_size
+                offset = global_index % self.block_size
+                block_id = current_blocks[block_index]
+                slot_mapping.append(block_id * self.block_size + offset)
+            current_slots.extend(slot_mapping)
+            return (slot_mapping, [])
+
+        # case 2: use up available capacity first
+        if available > 0:
+            for i in range(available):
+                global_index = used + i
+                block_index = global_index // self.block_size
+                offset = global_index % self.block_size
+                block_id = current_blocks[block_index]
+                slot_mapping.append(block_id * self.block_size + offset)
+        remaining_tokens = num_new_tokens - available
+
+        # check how many new blocks are required for the remaining tokens
+        needed_new_blocks = (remaining_tokens + self.block_size - 1) // self.block_size
+        if needed_new_blocks > len(self._free_gpu_blocks):
+            return (None, None)  # Not enough free GPU blocks available
 
         # allocate new blocks
-        new_blocks = self._free_gpu_blocks[:needed_blocks]
-        self._free_gpu_blocks = self._free_gpu_blocks[needed_blocks:]
+        new_blocks = self._free_gpu_blocks[:needed_new_blocks]
+        self._free_gpu_blocks = self._free_gpu_blocks[needed_new_blocks:]
         self._request_blocks[request_id].extend(new_blocks)
+        new_block_ids = new_blocks  # these are the new blocks allocated
 
         now = time.time()
         for block in new_blocks:
             self._block_info[block] = {"ref_count": 1, "last_used": now}
 
-        slot_mapping: List[int] = []
-        tokens_assigned = 0
-        for block_id in new_blocks:
-            tokens_in_block = min(self.block_size, num_new_tokens - tokens_assigned)
-            for i in range(tokens_in_block):
-                slot_mapping.append(block_id * self.block_size + i)
-                tokens_assigned += 1
-            if tokens_assigned >= num_new_tokens:
-                break
+        # new total capacity after allocation
+        old_capacity = capacity  # capacity before new blocks were allocated
+        # new slots start from the old capacity index
+        for i in range(remaining_tokens):
+            global_index = old_capacity + i
+            block_index = global_index // self.block_size
+            offset = global_index % self.block_size
+            block_id = self._request_blocks[request_id][block_index]
+            slot_mapping.append(block_id * self.block_size + offset)
 
-        self._request_slots[request_id].extend(slot_mapping)
-        return (slot_mapping, new_blocks)
+        current_slots.extend(slot_mapping)
+        return (slot_mapping, new_block_ids)
+
 
     def allocate_slots(self, request: RAGRequest, num_new_tokens: int) -> Tuple[List[int], List[int]]:
         """
@@ -124,8 +159,8 @@ class KV_Cache_Manager:
 
         needed_blocks = (num_new_tokens + self.block_size - 1) // self.block_size
 
-        # for document caching, if insufficient free blocks exist, we do eviction
-        if request.get_type() == RAGRequestType.CACHE_DOC and needed_blocks > len(self._free_gpu_blocks):
+        # if insufficient free blocks exist, we do eviction
+        if needed_blocks > len(self._free_gpu_blocks):
             self._evict_blocks(needed_blocks - len(self._free_gpu_blocks))
 
         if needed_blocks > len(self._free_gpu_blocks):
@@ -218,10 +253,6 @@ class KV_Cache_Manager:
             candidate_doc = None
             candidate_score = None
             for doc_id, block_list in self._doc_to_blocks.items():
-                req_id = self._doc_to_req.get(doc_id)
-                # skip eviction if the document's request is currently running
-                if req_id in self._running_requests:
-                    continue
                 total_ref = 0
                 min_time = float('inf')
                 count = 0
