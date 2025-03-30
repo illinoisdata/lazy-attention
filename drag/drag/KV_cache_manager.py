@@ -5,16 +5,6 @@ from drag.RAGRequest import RAGRequest, CacheDocRequest, QueryRequest, RAGReques
 
 class KV_Cache_Manager:
     enable_swap_in_cpu_blocks = False
-    def __init__(self, block_size: int, gpu_kv_cache: List[Tensor], cpu_kv_cache: List[Tensor], num_gpu_blocks: int, num_cpu_blocks: int):
-        pass
-    def free(request: RAGRequest) -> None:
-        pass
-
-    def append_slots(request: RAGRequest, num_new_tokens: int) -> Tuple[List[int], List[int]]:
-        slot_mapping = []
-        new_block_ids = []
-        pass
-
     def __init__(self, block_size: int, gpu_kv_cache: List[Tensor], cpu_kv_cache: List[Tensor],
                  num_gpu_blocks: int, num_cpu_blocks: int):
         self.block_size = block_size
@@ -44,14 +34,7 @@ class KV_Cache_Manager:
         self._doc_to_req: Dict[int, int] = {} # maintains mapping of a doc being used for which requests {doc_id: [req_id,..]}
 
         # running requests i.e. docs related to running reqs that must not be evicted
-        self._running_requests: Set[int] = set()
-
-    def update_running_requests(self, running_req_ids: List[int]) -> None:
-        """
-        Update the set of request IDs that are currently running and whose blocks
-        should not be evicted.
-        """
-        self._running_requests = set(running_req_ids)
+        self._running_requests: Set[int] = set() #TODO(mihir): need to come from scheduler
 
     def free(self, request: RAGRequest) -> None:
         """Release all allocated blocks (GPU and CPU) for the given request."""
