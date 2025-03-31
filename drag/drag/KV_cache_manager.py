@@ -72,15 +72,11 @@ class KV_Cache_Manager:
             return ([], [])
 
         request_id = request.request_id
-
-        if request_id in self._request_blocks:
-            current_blocks = self._request_blocks[request_id]
-            current_slots = self._request_slots[request_id]
-        else: 
-            self._request_blocks.setdefault(request_id, [])
-            self._request_slots.setdefault(request_id, [])
-            current_blocks = self._request_blocks[request_id]
-            current_slots = self._request_slots[request_id]
+    
+        self._request_blocks.setdefault(request_id, [])
+        self._request_slots.setdefault(request_id, [])
+        current_blocks = self._request_blocks[request_id]
+        current_slots = self._request_slots[request_id]
 
         # check avail slots 
         capacity = len(current_blocks) * self.block_size  # total slots available
@@ -157,6 +153,16 @@ class KV_Cache_Manager:
         self._request_blocks.setdefault(request_id, [])
         self._request_slots.setdefault(request_id, [])
 
+        now = time.time()
+        for block in self._request_blocks[request_id]:
+            if block in self._block_info:
+                self._block_info[block]["last_used"] = now
+                self._block_info[block]["ref_count"] += 1
+
+        # if num_new_tokens is zero, no new allocation is needed
+        if num_new_tokens == 0:
+            return ([], [])
+
         needed_blocks = (num_new_tokens + self.block_size - 1) // self.block_size
 
         # if insufficient free blocks exist, we do eviction
@@ -170,7 +176,6 @@ class KV_Cache_Manager:
         self._free_gpu_blocks = self._free_gpu_blocks[needed_blocks:]
         self._request_blocks[request_id].extend(new_block_ids)
 
-        now = time.time()
         for block in new_block_ids:
             self._block_info[block] = {"ref_count": 1, "last_used": now}
 
@@ -211,7 +216,6 @@ class KV_Cache_Manager:
                 for block in blocks:
                     if block in self._block_info:
                         self._block_info[block]["last_used"] = now
-                        self._block_info[block]["ref_count"] += 1
                 return blocks
 
         if request.request_id not in self._request_blocks:
@@ -220,7 +224,6 @@ class KV_Cache_Manager:
         for block in gpu_blocks:
             if block in self._block_info:
                 self._block_info[block]["last_used"] = now
-                self._block_info[block]["ref_count"] += 1
 
         # if swapping is enabled
         if swap_in_cpu_blocks and self.enable_swap_in_cpu_blocks and request.request_id in self._cpu_blocks:
@@ -236,7 +239,6 @@ class KV_Cache_Manager:
             for block in new_gpu_blocks:
                 if block in self._block_info:
                     self._block_info[block]["last_used"] = now
-                    self._block_info[block]["ref_count"] += 1
         return gpu_blocks
 
     def num_free_blocks(self) -> int:
