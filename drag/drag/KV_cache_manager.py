@@ -49,6 +49,10 @@ class KV_Cache_Manager:
                 # Decrement the ref count but never below zero
                 self._block_info[block]["ref_count"] = max(0, self._block_info[block]["ref_count"] - 1)
 
+        for block in self._request_blocks[request_id]:
+            if block in self._block_info and self._block_info[block]["ref_count"] == 0:
+                self._free_gpu_blocks.append(block)
+
         del self._request_blocks[request_id]
         if request_id in self._request_slots:
             del self._request_slots[request_id]
@@ -109,8 +113,12 @@ class KV_Cache_Manager:
 
         # check how many new blocks are required for the remaining tokens
         needed_new_blocks = (remaining_tokens + self.block_size - 1) // self.block_size
+
         if needed_new_blocks > len(self._free_gpu_blocks):
-            return (None, None)  # Not enough free GPU blocks available
+            self._evict_blocks(needed_new_blocks - len(self._free_gpu_blocks))
+
+        if needed_new_blocks > len(self._free_gpu_blocks):
+            raise RuntimeError(f"Not enough free blocks even after eviction. Needed {needed_new_blocks}, have {len(self._free_gpu_blocks)}")
 
         # allocate new blocks
         new_blocks = self._free_gpu_blocks[:needed_new_blocks]
@@ -184,7 +192,7 @@ class KV_Cache_Manager:
             tokens_in_block = min(self.block_size, num_new_tokens - tokens_assigned)
             for i in range(tokens_in_block):
                 slot_mapping.append(block_id * self.block_size + i)
-                tokens_assigned += 1  #TODO: optimize code to avoid appending one by one
+                tokens_assigned += 1  #TODO: optimize code to avoid appending one by one (try block-wise)
             if tokens_assigned >= num_new_tokens:
                 break
 
@@ -216,7 +224,7 @@ class KV_Cache_Manager:
         if request.request_id not in self._request_blocks:
             return []
         
-         # TODO: the other case is for prefix check. if two requests have different ids but the same prefix, they should share the same blocks
+         # TODO: the other case is for prefix check. if two requests have different req ids but the same prefix, they should share the same blocks; logic to handle  pre-empted blocks
         
         gpu_blocks = self._request_blocks[request.request_id].copy()
 
@@ -238,6 +246,10 @@ class KV_Cache_Manager:
         """Return the number of free GPU blocks."""
         return len(self._free_gpu_blocks)
 
+    # TODO: evict == overwrite == remove the evicted blocks from others' _request_blocks, _request_slots, doc_to_blocks etc.
+    # technically, all blocks with ref_count == 1 can be evicted
+     # but it's better to evict blocks for non-cache doc requests first
+     #update eviction to be block wise
     def _evict_blocks(self, num_required: int) -> None:
         """
         Evict blocks from cached documents until at least num_required free GPU blocks are available.
@@ -288,6 +300,4 @@ class KV_Cache_Manager:
         if doc_id in self._doc_to_req:
             del self._doc_to_req[doc_id]
 
-        # TODO: evict == overwrite == remove the evicted blocks from others' _request_blocks, _request_slots, doc_to_blocks etc.
-        # technically, all blocks with ref_count == 1 can be evicted
-        # but it's better to evict blocks for non-cache doc requests first??
+
