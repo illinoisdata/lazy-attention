@@ -184,7 +184,7 @@ class KV_Cache_Manager:
             tokens_in_block = min(self.block_size, num_new_tokens - tokens_assigned)
             for i in range(tokens_in_block):
                 slot_mapping.append(block_id * self.block_size + i)
-                tokens_assigned += 1
+                tokens_assigned += 1  #TODO: optimize code to avoid appending one by one
             if tokens_assigned >= num_new_tokens:
                 break
 
@@ -194,7 +194,6 @@ class KV_Cache_Manager:
         if request.get_type() == RAGRequestType.CACHE_DOC:
             cache_req = request  # type: CacheDocRequest
             self._doc_to_blocks[cache_req.doc_id] = self._request_blocks[request_id].copy()
-            self._doc_to_req[cache_req.doc_id] = request_id
 
         return (slot_mapping, new_block_ids)
 
@@ -207,23 +206,20 @@ class KV_Cache_Manager:
         
         In either case, each returned block has its last_used timestamp updated and its ref_count incremented.
         """
-        now = time.time()
         # for CacheDocRequests, check our internal doc mapping first
         if request.get_type() == RAGRequestType.CACHE_DOC:
             cache_req = request  # type: CacheDocRequest
             if cache_req.doc_id in self._doc_to_blocks:
                 blocks = self._doc_to_blocks[cache_req.doc_id].copy()
-                for block in blocks:
-                    if block in self._block_info:
-                        self._block_info[block]["last_used"] = now
                 return blocks
 
         if request.request_id not in self._request_blocks:
             return []
+        
+         # TODO: the other case is for prefix check. if two requests have different ids but the same prefix, they should share the same blocks
+        
         gpu_blocks = self._request_blocks[request.request_id].copy()
-        for block in gpu_blocks:
-            if block in self._block_info:
-                self._block_info[block]["last_used"] = now
+
 
         # if swapping is enabled
         if swap_in_cpu_blocks and self.enable_swap_in_cpu_blocks and request.request_id in self._cpu_blocks:
@@ -236,9 +232,6 @@ class KV_Cache_Manager:
             gpu_blocks.extend(new_gpu_blocks)
             self._free_cpu_blocks.extend(cpu_blocks)
             del self._cpu_blocks[request.request_id]
-            for block in new_gpu_blocks:
-                if block in self._block_info:
-                    self._block_info[block]["last_used"] = now
         return gpu_blocks
 
     def num_free_blocks(self) -> int:
@@ -248,8 +241,7 @@ class KV_Cache_Manager:
     def _evict_blocks(self, num_required: int) -> None:
         """
         Evict blocks from cached documents until at least num_required free GPU blocks are available.
-        The eviction policy selects documents based on the lowest average reference count and oldest usage,
-        but only considers candidates whose associated request is not in the protected (running) set.
+        The eviction policy selects documents based on the lowest average reference count and oldest usage.
         """
         while len(self._free_gpu_blocks) < num_required and self._doc_to_blocks:
             candidate_doc = None
@@ -295,3 +287,7 @@ class KV_Cache_Manager:
             del self._doc_to_blocks[doc_id]
         if doc_id in self._doc_to_req:
             del self._doc_to_req[doc_id]
+
+        # TODO: evict == overwrite == remove the evicted blocks from others' _request_blocks, _request_slots, doc_to_blocks etc.
+        # technically, all blocks with ref_count == 1 can be evicted
+        # but it's better to evict blocks for non-cache doc requests first??
