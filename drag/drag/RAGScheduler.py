@@ -57,9 +57,13 @@ class RAGScheduler:
         self.running_list:List[RAGRequest] = []
         self.prio_wait_list:List[QueryRequest] = []
 
-        # update before adding to running list # NOTE (mihir): but you update these dicts after adding to running_list
+        # update before adding to running list
         self.req_id_to_slot_mapping:dict[int, List[int]] = {}
-        self.req_id_to_block_table:dict[int, List[int]] = {} # for QueryRequest, this doesn't include the block table of the documents it depends on.
+        # NOTE: For QueryRequest, req_id_to_block_table here doesn't include the block table of the documents it depends on. 
+        # This is to simplify the memory management logic of the kv_cache_manager.
+        # In the end, the _gen_scheduler_output function will concatenate the block tables of the documents it depends on 
+        # to the block table of the query request to make sure the logic is consistent with vllm's block_table.
+        self.req_id_to_block_table:dict[int, List[int]] = {} 
 
         # update before and after running
         self.docs_to_be_filled_next:set[int] = set()
