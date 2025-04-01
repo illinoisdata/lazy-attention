@@ -8,6 +8,7 @@ from drag.RAGRequest import CacheDocRequest, QueryRequest, RAGRequest, RAGReques
 from drag.RAGRequest import RAGRequestPhase
 from drag.KV_cache_manager import KV_Cache_Manager
 from drag.document import Document
+from vllm.sequence import SequenceData
 
 
 @dataclass
@@ -16,13 +17,14 @@ class RAGSchedulerOutput:
     batch_query_lens: List[int] # length of kv_cache to be computed (i.e., length of tokens to be processed) in this step
     batch_context_lens: List[int] # length of already-computed kv_cache
     batch_seq_lens: List[int] # for encoding, query_lens + documents' length. # for decoding, query_lens + documents' length + generated tokens length
-    batch_ctx_token_ids: List[List[int]]
+    batch_prompt_token_ids: List[List[int]]
     batch_query_token_ids: List[List[int]]
     batch_num_prefill_tokens: List[int] # for decode, all 0. for prefill, the number of tokens to be prefilled.
     batch_block_tables: List[List[int]] # block ids of the already computed kv_cache
     batch_slot_mapping: List[List[int]] # slot ids of the new kv_cache to be computed
     batch_output_token_ids: List[List[int]] # the generated output token ids of the requests in decoding phase
-    rag_req: List[RAGRequest] # the RAGRequest id, an original sequence may generate multiple CacheDocRequest and one QueryRequest
+    batch_rag_reqs: List[RAGRequest] # the RAGRequest id, an original sequence may generate multiple CacheDocRequest and one QueryRequest
+    batch_rag_seqs: List[RAGSequence] # the RAGSequence id
 
 
 @dataclass
@@ -49,7 +51,7 @@ class RAGScheduler:
         self.new_seq_list:List[RAGSequence] = []
         self.seq_id_to_seqs:dict[int, RAGSequence] = {}
 
-        # update when trying to add new sequences to running list
+        # update when trying to convert new sequences to requests
         self.seq_id_to_request:dict[int, List[RAGRequest]] = {}
 
         self.running_list:List[RAGRequest] = []
@@ -57,14 +59,13 @@ class RAGScheduler:
 
         # update before adding to running list # NOTE (mihir): but you update these dicts after adding to running_list
         self.req_id_to_slot_mapping:dict[int, List[int]] = {}
-        self.req_id_to_new_block_ids:dict[int, List[int]] = {}
+        self.req_id_to_block_table:dict[int, List[int]] = {} # for QueryRequest, this doesn't include the block table of the documents it depends on.
 
         # update before and after running
         self.docs_to_be_filled_next:set[int] = set()
 
         # update after running
         self.req_id_to_phase:dict[int, RAGRequestPhase] = {}
-        self.req_id_to_block_table:dict[int, List[int]] = {} # for QueryRequest, this doesn't include the block table of the documents it depends on.
         self.req_id_to_num_cached_token:dict[int, int] = {}
 
 
@@ -75,15 +76,15 @@ class RAGScheduler:
             assert self.req_id_to_phase[req.request_id] == RAGRequestPhase.DECODE
             
             if len(self.seq_id_to_seqs[req.original_seq_id].generated_token_ids) >= self.MAX_TOKEN_PER_SEQ:
-                self.running_list.remove(req)
-                #TODO: raise warning if the request is added to the error list
+                self.finish_seq(req.original_seq_id)
 
             # reserve more space for the request to run in this step
             slot_mapping,new_block_ids = self.kv_cache_manager.append_slots(req, self.NUM_DECODE_TOKEN_PER_STEP)
             # update req slot mapping for the new tokens to be generated
             if slot_mapping is not None:
                 self.req_id_to_slot_mapping[req.request_id] = slot_mapping
-                self.req_id_to_new_block_ids[req.request_id] = new_block_ids
+                self.req_id_to_block_table[req.request_id].extend(new_block_ids)
+                # self.req_id_to_new_block_ids[req.request_id] = new_block_ids
             else:
                 seq_id = req.sequence_id
                 seq = self.seq_id_to_seqs[seq_id]
@@ -136,10 +137,10 @@ class RAGScheduler:
             if req in self.prio_wait_list[:]:
                 self.prio_wait_list.remove(req)
             #delete metadata
-            # if request is reusing all the blocks from previous request, it may not have slot_mapping/new_block_ids
-            if req.request_id in self.req_id_to_new_block_ids:
+            # if request is reusing all the blocks from previous request, it may not have slot_mapping
+            if req.request_id in self.req_id_to_slot_mapping:
                 del self.req_id_to_slot_mapping[req.request_id]
-                del self.req_id_to_new_block_ids[req.request_id]
+                # del self.req_id_to_new_block_ids[req.request_id]
             if req.get_type() == RAGRequestType.QUERY:
                 del self.req_id_to_phase[req.request_id]
             del self.req_id_to_block_table[req.request_id]
@@ -174,9 +175,9 @@ class RAGScheduler:
         total_num_needed_blocks = 0 # total num of blocks needed for prefilling
         for req in reqs:
             if req.get_type() == RAGRequestType.CACHE_DOC:
-                num_needed_blocks = math.ceil(cast(CacheDocRequest, req).doc_length/self.kv_cache_manager.BLOCK_SIZE)
+                num_needed_blocks = math.ceil(cast(CacheDocRequest, req).doc_length/self.kv_cache_manager.block_size)
             else:
-                num_needed_blocks = math.ceil(len(cast(QueryRequest, req).prompt_ids)/self.kv_cache_manager.BLOCK_SIZE)
+                num_needed_blocks = math.ceil(len(cast(QueryRequest, req).prompt_ids)/self.kv_cache_manager.block_size)
             num_needed_blocks_list.append(num_needed_blocks)
             total_num_needed_blocks += num_needed_blocks
         total_num_needed_blocks += 1
@@ -196,19 +197,20 @@ class RAGScheduler:
         for i, req in enumerate(reqs[:-1]):
             assert req.get_type() == RAGRequestType.CACHE_DOC
             if num_computed_blocks_list[i] == num_needed_blocks_list[i]:
+                # this can be either the doc is already cached(i.e., computed) or the doc is already in the running list
                 self.kv_cache_manager.allocate_slots(req,0)
+                if cast(CacheDocRequest, req).doc_id in self.docs_to_be_filled_next:
+                    all_doc_cached = False
             else:
                 all_doc_cached = False
-                if cast(CacheDocRequest, req).doc_id not in self.docs_to_be_filled_next:
-                    slot_mapping, new_block_ids = self.kv_cache_manager.allocate_slots(req, cast(CacheDocRequest, req).doc_length - num_computed_blocks_list[i] * self.kv_cache_manager.BLOCK_SIZE)
-                    assert slot_mapping is not None # since we have checked the gpu memory is enough
-                    self.req_id_to_slot_mapping[req.request_id] = slot_mapping
-                    self.req_id_to_new_block_ids[req.request_id] = new_block_ids
-                    self.docs_to_be_filled_next.add(cast(CacheDocRequest, req).doc_id)
-                    self.running_list.append(req)
-                else:
-                    self.kv_cache_manager.allocate_slots(req, 0) # still register with kv_cache_manager to increase the block reference counter
-
+                slot_mapping, new_block_ids = self.kv_cache_manager.allocate_slots(req, cast(CacheDocRequest, req).doc_length - num_computed_blocks_list[i] * self.kv_cache_manager.block_size)
+                assert slot_mapping is not None # since we have checked the gpu memory is enough
+                self.req_id_to_slot_mapping[req.request_id] = slot_mapping
+                self.req_id_to_block_table[req.request_id].extend(new_block_ids)
+                # self.req_id_to_new_block_ids[req.request_id] = new_block_ids
+                self.docs_to_be_filled_next.add(cast(CacheDocRequest, req).doc_id)
+                self.running_list.append(req)
+            
         # step 4: allocate slots for the query request and add it to the running list
         req = reqs[-1]
         assert req.get_type() == RAGRequestType.QUERY
@@ -220,15 +222,17 @@ class RAGScheduler:
             # reserve more space for the request to run in this step
             slot_mapping, new_block_ids = self.kv_cache_manager.append_slots(req, self.NUM_DECODE_TOKEN_PER_STEP) # TODO: this may generate error because we only checked if the gpu memory is enough for encoding. But since #computed blocks >= #needed blocks inherently means that previously the query was preempted due to lack of gpu memory in decoding phase, the same error may happen again.
             self.req_id_to_slot_mapping[req.request_id] = slot_mapping
-            self.req_id_to_new_block_ids[req.request_id] = new_block_ids
+            # self.req_id_to_new_block_ids[req.request_id] = new_block_ids
+            self.req_id_to_block_table[req.request_id].extend(new_block_ids)
             self.req_id_to_phase[req.request_id] = RAGRequestPhase.DECODE
             self.running_list.append(req)
         
         else:
-            slot_mapping, new_block_ids = self.kv_cache_manager.allocate_slots(req, len(cast(QueryRequest, req).prompt_ids) - num_computed_blocks_list[-1] * self.kv_cache_manager.BLOCK_SIZE)
+            slot_mapping, new_block_ids = self.kv_cache_manager.allocate_slots(req, len(cast(QueryRequest, req).prompt_ids) - num_computed_blocks_list[-1] * self.kv_cache_manager.block_size)
             assert slot_mapping is not None
             self.req_id_to_slot_mapping[req.request_id] = slot_mapping
-            self.req_id_to_new_block_ids[req.request_id] = new_block_ids
+            # self.req_id_to_new_block_ids[req.request_id] = new_block_ids
+            self.req_id_to_block_table[req.request_id].extend(new_block_ids)
             self.req_id_to_phase[req.request_id] = RAGRequestPhase.PREFILL  
             if all_doc_cached:
                 self.running_list.append(req)
@@ -241,7 +245,7 @@ class RAGScheduler:
     def _init_request_id_to_block_table(self, reqs:List[RAGRequest], swap_in_cpu_blocks=False) -> None:
         for req in reqs:
             self.req_id_to_block_table[req.request_id] = self.kv_cache_manager.get_computed_gpu_blocks(req, swap_in_cpu_blocks)
-            self.req_id_to_num_cached_token[req.request_id] = len(self.req_id_to_block_table[req.request_id]) * self.kv_cache_manager.BLOCK_SIZE
+            self.req_id_to_num_cached_token[req.request_id] = len(self.req_id_to_block_table[req.request_id]) * self.kv_cache_manager.block_size
         
 
     def _seq_to_reqs(self, seq: RAGSequence) -> None:
@@ -262,13 +266,14 @@ class RAGScheduler:
                 "batch_query_lens": [],
                 "batch_context_lens": [],
                 "batch_seq_lens": [],
-                "batch_ctx_token_ids": [],
+                "batch_prompt_token_ids": [],
                 "batch_query_token_ids": [],
                 "batch_num_prefill_tokens": [],
                 "batch_block_tables": [],
                 "batch_slot_mapping": [],
                 "batch_output_token_ids": [],
-                "rag_req": []
+                "batch_rag_reqs": [],
+                "batch_rag_seqs": []
             }
         
         prefill_data = initialize_batch()
@@ -283,13 +288,14 @@ class RAGScheduler:
                 batch["batch_context_lens"].append(self.req_id_to_num_cached_token[req.request_id])
                 batch["batch_seq_lens"].append(cast(CacheDocRequest, req).doc_length)
                 batch["batch_num_prefill_tokens"].append(batch["batch_query_lens"][-1])
-                batch["batch_block_tables"].append(self.req_id_to_block_table[req.request_id].copy())# copy the list to take a snapshot of the current state
+                batch["batch_block_tables"].append(self.req_id_to_block_table[req.request_id])
                 batch["batch_slot_mapping"].append(self.req_id_to_slot_mapping[req.request_id])
-                batch["rag_req"].append(req)
+                batch["batch_rag_reqs"].append(req)
+                batch["batch_rag_seqs"].append(self.seq_id_to_seqs[req.original_seq_id])
 
                 # fill the token ids relavent information
                 token_ids = cast(CacheDocRequest, req).doc_token_ids
-                batch["batch_ctx_token_ids"].append(token_ids[:self.req_id_to_num_cached_token[req.request_id]])
+                batch["batch_prompt_token_ids"].append(token_ids)
                 batch["batch_query_token_ids"].append(token_ids[self.req_id_to_num_cached_token[req.request_id]:])
                 batch["batch_output_token_ids"].append([])
 
@@ -306,15 +312,13 @@ class RAGScheduler:
 
                 seq = self.seq_id_to_seqs[req.original_seq_id]
                 doc_token_ids = list(chain.from_iterable(doc_req.doc_token_ids for doc_req in dept_doc_reqs))
+                batch["batch_prompt_token_ids"].append(doc_token_ids + seq.query_token_ids)
                 if self.req_id_to_phase[req.request_id] == RAGRequestPhase.PREFILL:
-                    ctx_token_ids = doc_token_ids + seq.query_token_ids[:self.req_id_to_num_cached_token[req.request_id]]
                     query_token_ids = seq.query_token_ids[self.req_id_to_num_cached_token[req.request_id]:]
                     num_prefill_tokens = len(query_token_ids)
                 else:
-                    ctx_token_ids = doc_token_ids + seq.query_token_ids + seq.generated_token_ids[:-1]
                     query_token_ids = [seq.generated_token_ids[-1]]
                     num_prefill_tokens = 0
-                batch["batch_ctx_token_ids"].append(ctx_token_ids)
                 batch["batch_query_token_ids"].append(query_token_ids)
                 batch["batch_num_prefill_tokens"].append(num_prefill_tokens)
 
@@ -323,7 +327,8 @@ class RAGScheduler:
                 batch["batch_block_tables"].append(dept_doc_block_tables + self.req_id_to_block_table[req.request_id])
                 batch["batch_slot_mapping"].append(self.req_id_to_slot_mapping[req.request_id])
                 batch["batch_output_token_ids"].append(seq.generated_token_ids)
-                batch["rag_req"].append(req)
+                batch["batch_rag_reqs"].append(req)
+                batch["batch_rag_seqs"].append(seq)
                 
         return PrefillRAGSchedulerOutput(**prefill_data), DecodeRAGSchedulerOutput(**decode_data)
 
@@ -335,7 +340,7 @@ class RAGScheduler:
     def _update_request_state(self):
         for req in self.running_list[:]:
             # change the prefill queryRequests to decode phase, and remove the cache_doc requests from running_list because they are done after this round.
-            self.req_id_to_block_table[req.request_id].extend(self.req_id_to_new_block_ids[req.request_id])
+            # self.req_id_to_block_table[req.request_id].extend(self.req_id_to_new_block_ids[req.request_id])
             self.req_id_to_num_cached_token[req.request_id] += len(self.req_id_to_slot_mapping[req.request_id])
             if req.get_type() == RAGRequestType.QUERY and self.req_id_to_phase[req.request_id] == RAGRequestPhase.PREFILL:
                 self.req_id_to_phase[req.request_id] = RAGRequestPhase.DECODE

@@ -13,7 +13,7 @@ from transformers import AutoTokenizer
 
 class MockKVCacheManager:
     def __init__(self, num_free_blocks=65535, computed_blocks={}):
-        self.BLOCK_SIZE = 16
+        self.block_size = 16
         self.enable_swap_in_cpu_blocks = False
         self.num_free_gpu_blocks = num_free_blocks
         self.computed_blocks = computed_blocks
@@ -127,10 +127,9 @@ def test_schedule_single_seq(single_seq: RAGSequence, docDB: dict[int,Document],
     assert prefill_plan.batch_num_prefill_tokens[0] == len(docDB[1].token_ids)
 
     assert prefill_plan.batch_context_lens[0] == 0
-    assert prefill_plan.batch_ctx_token_ids[0] == []
-    assert len(prefill_plan.batch_block_tables[0]) == 0
+    assert len(prefill_plan.batch_block_tables[0]) == 1
 
-    assert prefill_plan.rag_req[0].get_type() == RAGRequestType.CACHE_DOC
+    assert prefill_plan.batch_rag_reqs[0].get_type() == RAGRequestType.CACHE_DOC
 
     assert decode_plan.batch_size == 0
 
@@ -143,15 +142,15 @@ def test_schedule_single_seq(single_seq: RAGSequence, docDB: dict[int,Document],
     assert prefill_plan.batch_num_prefill_tokens[0] == len(single_seq.query_token_ids)
 
     assert prefill_plan.batch_context_lens[0] == len(docDB[1].token_ids) # the same as the cached doc length
-    assert prefill_plan.batch_ctx_token_ids[0] == docDB[1].token_ids
-    assert len(prefill_plan.batch_block_tables[0]) == len(docDB[1].token_ids) / kv_cache_manager_infinite_blocks.BLOCK_SIZE
+    assert len(prefill_plan.batch_block_tables[0]) == len(docDB[1].token_ids) / kv_cache_manager_infinite_blocks.block_size + \
+        math.ceil(len(single_seq.query_token_ids)/kv_cache_manager_infinite_blocks.block_size)
 
-    assert prefill_plan.rag_req[0].get_type() == RAGRequestType.QUERY
+    assert prefill_plan.batch_rag_reqs[0].get_type() == RAGRequestType.QUERY
 
     assert decode_plan.batch_size == 0
 
     # mock the generated token id of the QueryRequest prefill phase
-    single_seq.generated_token_ids = [123]
+    single_seq.append_generated_token(123, 0.0)
 
     # the third step will schedule the QueryRequest in the decode phase.
     prefill_plan, decode_plan = scheduler.schedule()
@@ -162,11 +161,10 @@ def test_schedule_single_seq(single_seq: RAGSequence, docDB: dict[int,Document],
     assert decode_plan.batch_seq_lens[0] == len(single_seq.query_token_ids) + len(docDB[1].token_ids) + 1
     assert decode_plan.batch_num_prefill_tokens[0] == 0
 
-    assert decode_plan.batch_ctx_token_ids[0] == docDB[1].token_ids + single_seq.query_token_ids
     assert decode_plan.batch_context_lens[0] == len(docDB[1].token_ids) + len(single_seq.query_token_ids)
-    assert len(decode_plan.batch_block_tables[0]) == len(docDB[1].token_ids) / kv_cache_manager_infinite_blocks.BLOCK_SIZE + math.ceil(len(single_seq.query_token_ids) / kv_cache_manager_infinite_blocks.BLOCK_SIZE)
+    assert len(decode_plan.batch_block_tables[0]) == len(docDB[1].token_ids) / kv_cache_manager_infinite_blocks.block_size + math.ceil(len(single_seq.query_token_ids) / kv_cache_manager_infinite_blocks.block_size)
 
-    assert decode_plan.rag_req[0].get_type() == RAGRequestType.QUERY
+    assert decode_plan.batch_rag_reqs[0].get_type() == RAGRequestType.QUERY
     
     assert prefill_plan.batch_size == 0
 
@@ -184,21 +182,21 @@ def test_schedule_multiple_seqs(multiple_seq: List[RAGSequence], docDB: dict[int
 
     # Verify CacheDocRequest prefill phase
     assert prefill_plan.batch_size == 3
-    assert len(prefill_plan.rag_req) == 3
+    assert len(prefill_plan.batch_rag_reqs) == 3
     
     # Check all requests are CacheDocRequests
-    for req in prefill_plan.rag_req:
+    for req in prefill_plan.batch_rag_reqs:
         assert req.get_type() == RAGRequestType.CACHE_DOC
     
     # Verify doc_ids are loaded correctly (1, 2, 0)
-    assert prefill_plan.rag_req[0].doc_id == 1
-    assert prefill_plan.rag_req[1].doc_id == 2
-    assert prefill_plan.rag_req[2].doc_id == 0
+    assert prefill_plan.batch_rag_reqs[0].doc_id == 1
+    assert prefill_plan.batch_rag_reqs[1].doc_id == 2
+    assert prefill_plan.batch_rag_reqs[2].doc_id == 0
     
     # Check batch context setup
     assert all(ctx_len == 0 for ctx_len in prefill_plan.batch_context_lens)
-    assert all(len(ctx_tokens) == 0 for ctx_tokens in prefill_plan.batch_ctx_token_ids)
-    assert all(len(block_table) == 0 for block_table in prefill_plan.batch_block_tables)
+
+    assert all(len(block_table) == 1 for block_table in prefill_plan.batch_block_tables)
     
     # Check query lengths match document lengths
     assert all(query_len == 16 for query_len in prefill_plan.batch_query_lens)
@@ -213,17 +211,17 @@ def test_schedule_multiple_seqs(multiple_seq: List[RAGSequence], docDB: dict[int
     
     # Verify QueryRequest prefill phase
     assert prefill_plan.batch_size == 3
-    assert len(prefill_plan.rag_req) == 3
+    assert len(prefill_plan.batch_rag_reqs) == 3
     
     # Check all requests are QueryRequests
-    for req in prefill_plan.rag_req:
+    for req in prefill_plan.batch_rag_reqs:
         assert req.get_type() == RAGRequestType.QUERY
     
     # Check prompt lengths and sequence-to-original mappings
     assert all(query_len == 3 for query_len in prefill_plan.batch_query_lens)
-    assert prefill_plan.rag_req[0].original_seq_id == 1
-    assert prefill_plan.rag_req[1].original_seq_id == 2
-    assert prefill_plan.rag_req[2].original_seq_id == 3
+    assert prefill_plan.batch_rag_reqs[0].original_seq_id == 1
+    assert prefill_plan.batch_rag_reqs[1].original_seq_id == 2
+    assert prefill_plan.batch_rag_reqs[2].original_seq_id == 3
     
     # Check context lengths (first has doc1, second has doc2+doc1, third has doc0)
     assert prefill_plan.batch_context_lens[0] == 16  # doc1
@@ -236,21 +234,21 @@ def test_schedule_multiple_seqs(multiple_seq: List[RAGSequence], docDB: dict[int
     assert prefill_plan.batch_seq_lens[2] == 19  # 16 + 3
     
     # Check block tables based on document count
-    assert len(prefill_plan.batch_block_tables[0]) == 1  # One document
-    assert len(prefill_plan.batch_block_tables[1]) == 2  # Two documents
-    assert len(prefill_plan.batch_block_tables[2]) == 1  # One document
+    assert len(prefill_plan.batch_block_tables[0]) == 2  # One document + prompt
+    assert len(prefill_plan.batch_block_tables[1]) == 3  # Two documents + prompt
+    assert len(prefill_plan.batch_block_tables[2]) == 2  # One document + prompt
     
     # Check document IDs for each sequence
-    assert prefill_plan.rag_req[0].doc_ids == [1]
-    assert prefill_plan.rag_req[1].doc_ids == [2, 1]
-    assert prefill_plan.rag_req[2].doc_ids == [0]
+    assert prefill_plan.batch_rag_reqs[0].doc_ids == [1]
+    assert prefill_plan.batch_rag_reqs[1].doc_ids == [2, 1]
+    assert prefill_plan.batch_rag_reqs[2].doc_ids == [0]
     
     # No decode batch in second step
     assert decode_plan.batch_size == 0
 
     # mock the generated token id of the QueryRequest prefill phase
     for seq in multiple_seq:
-        seq.generated_token_ids = [123]
+        seq.append_generated_token(123, 0.0)
 
     # the third step will schedule the QueryRequest in the decode phase.
     prefill_plan, decode_plan = scheduler.schedule()
@@ -260,10 +258,10 @@ def test_schedule_multiple_seqs(multiple_seq: List[RAGSequence], docDB: dict[int
     
     # Verify QueryRequest decode phase
     assert decode_plan.batch_size == 3
-    assert len(decode_plan.rag_req) == 3
+    assert len(decode_plan.batch_rag_reqs) == 3
     
     # Check all requests are QueryRequests  
-    for req in decode_plan.rag_req:
+    for req in decode_plan.batch_rag_reqs:
         assert req.get_type() == RAGRequestType.QUERY
     
     # Check query lengths are all 1 (one token each)
@@ -303,9 +301,9 @@ def test_schedule_multiple_seqs_memory_restricted(multiple_seq: List[RAGSequence
     
     # Should schedule only one document (first doc from first sequence) due to memory constraints
     assert prefill_plan.batch_size == 1
-    assert len(prefill_plan.rag_req) == 1
-    assert prefill_plan.rag_req[0].get_type() == RAGRequestType.CACHE_DOC
-    assert prefill_plan.rag_req[0].doc_id == 1  # First sequence needs doc1
+    assert len(prefill_plan.batch_rag_reqs) == 1
+    assert prefill_plan.batch_rag_reqs[0].get_type() == RAGRequestType.CACHE_DOC
+    assert prefill_plan.batch_rag_reqs[0].doc_id == 1  # First sequence needs doc1
     
     # Verify there's no decode plan yet
     assert decode_plan.batch_size == 0
@@ -315,19 +313,19 @@ def test_schedule_multiple_seqs_memory_restricted(multiple_seq: List[RAGSequence
     
     # Should schedule query for first sequence
     assert prefill_plan.batch_size == 1
-    assert prefill_plan.rag_req[0].get_type() == RAGRequestType.QUERY
-    assert prefill_plan.rag_req[0].original_seq_id == 1
+    assert prefill_plan.batch_rag_reqs[0].get_type() == RAGRequestType.QUERY
+    assert prefill_plan.batch_rag_reqs[0].original_seq_id == 1
     assert prefill_plan.batch_context_lens[0] == 16  # doc1
     
     # Mock generated token
-    multiple_seq[0].generated_token_ids = [123]
+    multiple_seq[0].append_generated_token(123, 0.0)
     
     # PHASE 3: First Sequence Decode
     prefill_plan, decode_plan = scheduler.schedule()
     
     assert prefill_plan.batch_size == 0
     assert decode_plan.batch_size == 1
-    assert decode_plan.rag_req[0].original_seq_id == 1
+    assert decode_plan.batch_rag_reqs[0].original_seq_id == 1
     
     # Finish sequence 1 to free up memory
     scheduler.finish_seq(1)
@@ -338,26 +336,26 @@ def test_schedule_multiple_seqs_memory_restricted(multiple_seq: List[RAGSequence
     
     # Should now schedule second sequence's first document (doc2, because doc1 is already cached)
     assert prefill_plan.batch_size == 1
-    assert prefill_plan.rag_req[0].get_type() == RAGRequestType.CACHE_DOC
-    assert prefill_plan.rag_req[0].doc_id == 2
+    assert prefill_plan.batch_rag_reqs[0].get_type() == RAGRequestType.CACHE_DOC
+    assert prefill_plan.batch_rag_reqs[0].doc_id == 2
     
     # PHASE 5: Should now schedule second sequence's query
     prefill_plan, decode_plan = scheduler.schedule()
     
     assert prefill_plan.batch_size == 1
-    assert prefill_plan.rag_req[0].get_type() == RAGRequestType.QUERY
-    assert prefill_plan.rag_req[0].original_seq_id == 2
-    assert prefill_plan.rag_req[0].doc_ids == [2, 1]  # Checks that correct docs are referenced
+    assert prefill_plan.batch_rag_reqs[0].get_type() == RAGRequestType.QUERY
+    assert prefill_plan.batch_rag_reqs[0].original_seq_id == 2
+    assert prefill_plan.batch_rag_reqs[0].doc_ids == [2, 1]  # Checks that correct docs are referenced
     
     # Mock generated token
-    multiple_seq[1].generated_token_ids = [123]
+    multiple_seq[1].append_generated_token(123, 0.0)
     
     # PHASE 6: Second Sequence Decode
     prefill_plan, decode_plan = scheduler.schedule()
     
     assert prefill_plan.batch_size == 0
     assert decode_plan.batch_size == 1
-    assert decode_plan.rag_req[0].original_seq_id == 2
+    assert decode_plan.batch_rag_reqs[0].original_seq_id == 2
     
     # Finish sequence 2 to free up memory
     scheduler.finish_seq(2)
@@ -369,26 +367,26 @@ def test_schedule_multiple_seqs_memory_restricted(multiple_seq: List[RAGSequence
     
     # Should now schedule third sequence's document (doc0)
     assert prefill_plan.batch_size == 1
-    assert prefill_plan.rag_req[0].get_type() == RAGRequestType.CACHE_DOC
-    assert prefill_plan.rag_req[0].doc_id == 0
+    assert prefill_plan.batch_rag_reqs[0].get_type() == RAGRequestType.CACHE_DOC
+    assert prefill_plan.batch_rag_reqs[0].doc_id == 0
     
     # PHASE 8: Third Sequence Query
     prefill_plan, decode_plan = scheduler.schedule()
     
     assert prefill_plan.batch_size == 1
-    assert prefill_plan.rag_req[0].get_type() == RAGRequestType.QUERY
-    assert prefill_plan.rag_req[0].original_seq_id == 3
-    assert prefill_plan.rag_req[0].doc_ids == [0]
+    assert prefill_plan.batch_rag_reqs[0].get_type() == RAGRequestType.QUERY
+    assert prefill_plan.batch_rag_reqs[0].original_seq_id == 3
+    assert prefill_plan.batch_rag_reqs[0].doc_ids == [0]
     
     # Mock generated token
-    multiple_seq[2].generated_token_ids = [123]
+    multiple_seq[2].append_generated_token(123, 0.0)
     
     # PHASE 9: Third Sequence Decode
     prefill_plan, decode_plan = scheduler.schedule()
     
     assert prefill_plan.batch_size == 0
     assert decode_plan.batch_size == 1
-    assert decode_plan.rag_req[0].original_seq_id == 3
+    assert decode_plan.batch_rag_reqs[0].original_seq_id == 3
     
     # Finish sequence 3
     scheduler.finish_seq(3)
@@ -413,3 +411,10 @@ def test_async_schedule():
     pass
     # TOOD: test this feature
 
+
+# TODO: test preemption and resumption. And two scenerios of resumption:
+    # 1. we still have the docs, prompt and part of the generated text in the memory
+    # 2. The prefilling part is partially lost.
+# TODO: test prefix matching for a new QueryRequest
+    # one potential bug: find exact prefix matching with another sequence, the sequence will enter decoding phase directly.
+    # but the generated tokens of the new sequence is still empty. There's no starting token for the decoding phase.

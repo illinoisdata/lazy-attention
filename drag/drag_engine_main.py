@@ -17,7 +17,7 @@ query_doc_ids = [
     [1,2]
 ]
 # query = "Now, you are a helpful assistant. Please answer the following question: who scored more goals at FIFA World Cups, Messi or Ronaldo?<|eot_id|>"
-sampling_param = SamplingParams(max_tokens=10,
+sampling_param = SamplingParams(max_tokens=50,
                                 seed=2024,
                                 temperature=0,
                                 # stop=['<|im_end|>', "<|eot_id|>", "<|end_of_text|>", "<|endoftext|>"],

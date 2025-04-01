@@ -3,7 +3,8 @@ from typing import Dict, List
 import numpy as np
 import torch
 
-from vllm.attention.backends.xformers import XFormersMetadata
+from drag.RAGSequence import RAGSequence
+from vllm.attention.backends.xformers import XFormersBackend, XFormersMetadata
 from vllm.model_executor.sampling_metadata import SamplingMetadata, SequenceGroupToSample
 from vllm.sampling_params import SamplingParams, SamplingType
 from vllm.sequence import SequenceData
@@ -16,14 +17,14 @@ class VllmMetadataBuilder:
                                  batch_query_lens: List[int],#for encoding, query's token length. # for decoding, all 1 (because only decode 1 at a time)
                                  batch_context_lens: List[int],#for encoding, documents' token lengths. # for decoding, length of kv_cache
                                  batch_seq_lens: List[int],#for encoding, query_lens + documents' length. # for decoding, query_lens + documents' length + generated tokens length
-                                 batch_prompt_token_ids: List[List[int]], #? only prompt, or ctx?
-                                 batch_query_token_ids: List[List[int]],#? the query?
+                                 batch_prompt_token_ids: List[List[int]], # for cache doc requests, the doc's token ids. for query requests, the dependant docs' token ids + query's token ids
+                                 batch_query_token_ids: List[List[int]],# token's whose k-v cache is to be calculated in this step
                                  batch_num_prefill_tokens: List[int],# for decode, all 0. for prefill, the number of tokens to be prefilled.
-                                 batch_block_tables: List[List[int]],
-                                 batch_slot_mapping: List[List[int]],
-                                 batch_output_token_ids: List[List[int]], #not added by scheduler # used for batch decode to get the input token id
+                                 batch_block_tables: List[List[int]], # block tables for the whole seq, including blocks for ctx and to be generated tokens
+                                 batch_slot_mapping: List[List[int]], # slot mapping for the to be generated tokens
+                                 batch_output_token_ids: List[List[int]], # generated tokens from previous decoding
                                  req_ids: List[int],#seq id
-                                 seq_ids: List[int],#seq id
+                                 batch_rag_seqs: List[RAGSequence],
                                  generator: torch.Generator,
                                  sampling_params: SamplingParams) -> ModelInputForGPUWithSamplingMetadata:
         # function copied from Haocheng's drag.py
@@ -36,22 +37,31 @@ class VllmMetadataBuilder:
 
         # build a tensor dict for model input
         tensor_dict = {}
+        seq_ids = req_ids.copy()
         if flag_prefill:
-            # concat batch_query_token_ids
+            # Convert batch_query_token_ids to tensors and concatenate
+            batch_query_token_ids = [torch.tensor(ids, dtype=torch.int64) for ids in batch_query_token_ids]
             input_tokens = torch.cat(batch_query_token_ids, dim=0).cuda()
+            
             batch_input_positions = [torch.arange(query_len) + context_len
                                      for query_len, context_len
                                      in zip(batch_query_lens, batch_context_lens)]#positions of query in the sequence
-
             input_positions = torch.cat(batch_input_positions, dim=0).cuda()
+
+            # Convert slot mapping to tensors and concatenate
+            batch_slot_mapping = [torch.tensor(mapping, dtype=torch.int64) for mapping in batch_slot_mapping]
             slot_mapping = torch.cat(batch_slot_mapping, dim=0).cuda()
+
             num_prefill_tokens = sum(batch_num_prefill_tokens)
+
             batch_seq_data = []
             for batch_id in range(batch_size):
                 seq_data = SequenceData.from_seqs(
                     prompt_token_ids=batch_prompt_token_ids[batch_id],
                 )
                 batch_seq_data.append({seq_ids[batch_id]: seq_data})
+
+            seq_ids  = [[seq_id] for seq_id in seq_ids]
 
             tensor_dict = {
                 "input_tokens": input_tokens,
@@ -94,20 +104,22 @@ class VllmMetadataBuilder:
             }
         else:
             batch_size = len(batch_seq_lens)
-            input_tokens = []
-            for batch_id in range(batch_size):
-                input_tokens.append(batch_output_token_ids[batch_id][-1])
-            input_tokens = torch.tensor(input_tokens).cuda()
+
+            # Extract the last token from batch_output_token_ids
+            input_tokens = [output_ids[-1] for output_ids in batch_output_token_ids]
+            input_tokens = torch.tensor(input_tokens, dtype=torch.int64).cuda()
+
             input_positions = (np.array(batch_seq_lens) - np.array(batch_query_lens)).tolist()
             input_positions = torch.tensor(input_positions).cuda()
+
+             # Convert slot mapping to tensors and concatenate
+            batch_slot_mapping = [torch.tensor(mapping, dtype=torch.int64) for mapping in batch_slot_mapping]
             slot_mapping = torch.cat(batch_slot_mapping, dim=0).cuda()
-            batch_seq_data = []
-            for batch_id in range(batch_size):
-                seq_data = SequenceData.from_seqs(
-                    prompt_token_ids=batch_prompt_token_ids[batch_id],
-                    output_token_ids=batch_output_token_ids[batch_id],
-                )
-                batch_seq_data.append({seq_ids[batch_id]: seq_data})
+
+            batch_seq_data = [{seq_id:seq_data.vllm_seq_data} for seq_id, seq_data in zip(seq_ids, batch_rag_seqs)]
+
+            seq_ids  = [[seq_id] for seq_id in seq_ids]
+            
             tensor_dict = {
                 "input_tokens": input_tokens,
                 "input_positions": input_positions,
@@ -147,10 +159,8 @@ class VllmMetadataBuilder:
                 ),
                 "is_prompt": False,
             }
-
         model_input = ModelInputForGPUWithSamplingMetadata.from_broadcasted_tensor_dict(
-            tensor_dict=tensor_dict,
-            attn_backend="XFormersBackend",
+            tensor_dict=tensor_dict
         )
         return model_input
     
@@ -164,8 +174,8 @@ class VllmMetadataBuilder:
         generator: torch.Generator,
         is_prompt: bool,
     ) -> SamplingMetadata:
-        query_start_loc = (np.array([sum(query_lens[:i+1]) for i in range(0, len(query_lens))]) - 1).tolist()
-        selected_token_indices = torch.tensor(query_start_loc, dtype=torch.int32).cuda()
+        query_end_loc = (np.array([sum(query_lens[:i+1]) for i in range(0, len(query_lens))]) - 1).tolist()
+        selected_token_indices = torch.tensor(query_end_loc, dtype=torch.int32).cuda()
 
         seq_groups = []
         for i, (seq_ids, seq_data, seq_len, query_len) in enumerate(zip(batch_seq_ids, batch_seq_data, seq_lens, query_lens)):
@@ -187,10 +197,10 @@ class VllmMetadataBuilder:
             seq_groups=seq_groups,
             selected_token_indices=selected_token_indices,
             categorized_sample_indices={
-                SamplingType.GREEDY: torch.tensor([], dtype=torch.int32).cuda(),
+                SamplingType.GREEDY: torch.tensor(list(range(len(batch_seq_ids))), dtype=torch.int32).cuda(),
                 SamplingType.RANDOM: torch.tensor([], dtype=torch.int32).cuda(),
                 SamplingType.RANDOM_SEED: torch.tensor([], dtype=torch.int32).cuda(),
-            },
+            }, # I don't understand this at all
             num_prompts=len(seq_groups),
         )
 
@@ -208,7 +218,12 @@ class VllmMetadataBuilder:
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.int64).cuda()
         seq_lens_tensor = torch.tensor(seq_lens, dtype=torch.int32).cuda()
         ctx_lens_tensor = torch.tensor(ctx_lens, dtype=torch.int32).cuda()
-        block_tables = torch.tensor(block_tables, dtype=torch.int32).cuda()
+
+        # pad up block_tables
+        max_len = max(len(sublist) for sublist in block_tables)
+        # Pad each sublist to the maximum length with -1
+        padded_block_tables = [sublist + [-1] * (max_len - len(sublist)) for sublist in block_tables]
+        block_tables = torch.tensor(padded_block_tables, dtype=torch.int32).cuda()
 
         query_lens = (np.array(seq_lens) - np.array(ctx_lens)).tolist()
         query_start_loc = [0, ] + [sum(query_lens[:i+1]) for i in range(0, len(query_lens))]
@@ -246,6 +261,7 @@ class VllmMetadataBuilder:
                 slot_mapping=slot_mapping,
                 seq_lens=seq_lens,
                 seq_lens_tensor=seq_lens_tensor,
+                seq_start_loc=torch.tensor(seq_start_loc).cuda(),
                 max_query_len=max(query_lens),
                 max_prefill_seq_len=0,
                 max_decode_seq_len=max(seq_lens),
