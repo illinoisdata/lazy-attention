@@ -17,33 +17,6 @@ inline __device__ void apply_neox_rotary_embedding(
   }
 }
 
-// template <typename scalar_t, int VEC_SIZE>
-// inline __device__ float apply_neox_rotary_embedding_and_dot(
-//     const scalar_t* __restrict__ q_vec_front,  // query前半部分
-//     const scalar_t* __restrict__ q_vec_back,   // query后半部分 
-//     const scalar_t* __restrict__ k_vec_front,  // key前半部分
-//     const scalar_t* __restrict__ k_vec_back,   // key后半部分
-//     const scalar_t* __restrict__ cos_ptr,
-//     const scalar_t* __restrict__ sin_ptr) {
-    
-//     float dot_sum = 0.0f;
-    
-// #pragma unroll
-//     for (int i = 0; i < VEC_SIZE; i++) {
-//         scalar_t q_x = q_vec_front[i];
-//         scalar_t q_y = q_vec_back[i];
-//         scalar_t k_x = k_vec_front[i];
-//         scalar_t k_y = k_vec_back[i];
-        
-//         scalar_t cos_v = cos_ptr[i];
-//         scalar_t sin_v = sin_ptr[i];
-        
-//         dot_sum += (k_x * cos_v - k_y * sin_v) * q_x + 
-//                    (k_y * cos_v + k_x * sin_v) * q_y;
-//     }
-//     return dot_sum;
-// }
-
 template <typename scalar_t, int VEC_SIZE>
 inline __device__ float apply_neox_rotary_embedding_and_dot(
     const scalar_t* __restrict__ q_vec_front,

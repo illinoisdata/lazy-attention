@@ -25,50 +25,50 @@ __device__ __forceinline__ T negate(const T& a) {
     return -a;
 }
 
-// 特化版本 - 对于 float2 类型
+// special version - for float2 type
 template <>
 __device__ __forceinline__ float2 negate<float2>(const float2& a) {
     return make_float2(-a.x, -a.y);
 }
 
-// 特化版本 - 对于 float4 类型
+// special version - for float4 type
 template <>
 __device__ __forceinline__ float4 negate<float4>(const float4& a) {
     return make_float4(-a.x, -a.y, -a.z, -a.w);
 }
 
-// 特化版本 - 对于 uint2 类型
+// special version - for uint2 type
 template <>
 __device__ __forceinline__ uint2 negate<uint2>(const uint2& a) {
-    // 注意：对无符号整数取负会导致溢出，这里我们假设这是预期行为
+    // note: negate for unsigned int will cause overflow, here we assume this is the expected behavior
     return make_uint2(-a.x, -a.y);
 }
 
-// 特化版本 - 对于 uint4 类型
+// special version - for uint4 type
 template <>
 __device__ __forceinline__ uint4 negate<uint4>(const uint4& a) {
-    // 注意：对无符号整数取负会导致溢出，这里我们假设这是预期行为
+    // note: negate for unsigned int will cause overflow, here we assume this is the expected behavior
     return make_uint4(-a.x, -a.y, -a.z, -a.w);
 }
 
-// 为 __nv_bfloat16 类型特化
+// special version - for __nv_bfloat16 type
 template <>
 __device__ __forceinline__ __nv_bfloat16 negate<__nv_bfloat16>(const __nv_bfloat16& a) {
     return __hneg(a);
 }
 
-// 为 __nv_bfloat162 类型特化
+// special version - for __nv_bfloat162 type
 template <>
 __device__ __forceinline__ __nv_bfloat162 negate<__nv_bfloat162>(const __nv_bfloat162& a) {
     return __hneg2(a);
 }
 
-// 为 vllm::bf16_4_t 类型特化
+// special version - for vllm::bf16_4_t type
 template <>
 __device__ __forceinline__ vllm::bf16_4_t negate<vllm::bf16_4_t>(const vllm::bf16_4_t& a) {
     vllm::bf16_4_t result;
     
-    // 假设 bf16_4_t 可以被视为 __nv_bfloat162 数组
+    // assume bf16_4_t can be viewed as __nv_bfloat162 array
     const __nv_bfloat162* a_bf162 = reinterpret_cast<const __nv_bfloat162*>(&a);
     __nv_bfloat162* result_bf162 = reinterpret_cast<__nv_bfloat162*>(&result);
     
@@ -78,12 +78,12 @@ __device__ __forceinline__ vllm::bf16_4_t negate<vllm::bf16_4_t>(const vllm::bf1
     return result;
 }
 
-// 为 vllm::bf16_8_t 类型特化
+// special version - for vllm::bf16_8_t type
 template <>
 __device__ __forceinline__ vllm::bf16_8_t negate<vllm::bf16_8_t>(const vllm::bf16_8_t& a) {
     vllm::bf16_8_t result;
     
-    // 假设 bf16_8_t 可以被视为 __nv_bfloat162 数组
+    // assume bf16_8_t can be viewed as __nv_bfloat162 array
     const __nv_bfloat162* a_bf162 = reinterpret_cast<const __nv_bfloat162*>(&a);
     __nv_bfloat162* result_bf162 = reinterpret_cast<__nv_bfloat162*>(&result);
     
