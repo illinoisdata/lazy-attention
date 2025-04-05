@@ -2,19 +2,16 @@
 
 Specifically, we return a rotary embedding object that just rotates the query 
 while normally key and query are rotated.
-
-Note: original forward output is 
-    (query, key)
-and changed output is 
-    (query, key, cos_sin_cache, rotary_dim)
 """
 
 import torch
-from typing import Any, Dict, Optional
+from typing import Optional, Tuple, Union
+from vllm.model_executor.custom_op import CustomOp
+from vllm.model_executor.layers.rotary_embedding import _apply_rotary_emb
 
 @CustomOp.register("rotary_embedding")
 class RotaryEmbedding(CustomOp):
-    """Original rotary positional embedding."""
+    """Customized rotary positional embedding."""
 
     def __init__(
         self,
@@ -63,6 +60,7 @@ class RotaryEmbedding(CustomOp):
         self,
         positions: torch.Tensor,
         query: torch.Tensor,
+        key: torch.Tensor,
         offsets: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """A PyTorch-native implementation of forward()."""
@@ -81,12 +79,13 @@ class RotaryEmbedding(CustomOp):
         query_rot = _apply_rotary_emb(query_rot, cos, sin, self.is_neox_style)
         query = torch.cat((query_rot, query_pass), dim=-1).reshape(query_shape)
 
-        return query, self.cos_sin_cache, self.rotary_dim
+        return query, key
 
     def forward_cuda(
         self,
         positions: torch.Tensor,
         query: torch.Tensor,
+        key: torch.Tensor,
         offsets: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         from vllm import _custom_ops as ops
@@ -99,7 +98,7 @@ class RotaryEmbedding(CustomOp):
         else:
             ops.rotary_embedding_q(positions, query, self.head_size,
                                    self.cos_sin_cache, self.is_neox_style)
-        return query, self.cos_sin_cache, self.rotary_dim
+        return query, key
 
     def extra_repr(self) -> str:
         s = f"head_size={self.head_size}, rotary_dim={self.rotary_dim}"

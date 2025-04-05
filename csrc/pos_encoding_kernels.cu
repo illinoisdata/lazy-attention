@@ -5,6 +5,8 @@
 #include "cuda_compat.h"
 #include "dispatch_utils.h"
 
+#include "../minidrag/csrc/pos_encoding_kernels.cu"  // inject the customized code
+
 namespace vllm {
 
 template <typename scalar_t, bool IS_NEOX>

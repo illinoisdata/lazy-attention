@@ -18,7 +18,7 @@ def forward(
     self,
     layer: torch.nn.Module,
     query: torch.Tensor,
-    key: torch.Tensor,
+    key: torch.Tensor,  # key is not rotated when passing to this function
     value: torch.Tensor,
     kv_cache: torch.Tensor,
     attn_metadata: FlashAttentionMetadata,
