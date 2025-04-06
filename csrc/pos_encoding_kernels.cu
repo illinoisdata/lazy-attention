@@ -5,8 +5,6 @@
 #include "cuda_compat.h"
 #include "dispatch_utils.h"
 
-#include "../minidrag/csrc/pos_encoding_kernels.cu"  // inject the customized code
-
 namespace vllm {
 
 template <typename scalar_t, bool IS_NEOX>
@@ -122,6 +120,8 @@ __global__ void batched_rotary_embedding_kernel(
 }
 
 }  // namespace vllm
+
+#include "../minidrag/csrc/pos_encoding_kernels.cu"  // inject the customized code
 
 void rotary_embedding(
     torch::Tensor& positions,  // [batch_size, seq_len] or [num_tokens]

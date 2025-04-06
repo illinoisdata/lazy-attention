@@ -249,7 +249,7 @@ if triton.__version__ >= "2.1.0":
                              ((start_n + offs_n[:, None]) < cur_batch_ctx_len),
                              other=0.0)  # [N,D]
             if v_load.dtype.is_fp8():
-                v = (v_load.to(tl.float32) * v_scale).to(q.dtype)
+                v = (v_load.to(tl.float32) * v_scale).to(q_1.dtype)
             else:
                 v = v_load
             p = p.to(v.dtype)
@@ -381,11 +381,8 @@ if triton.__version__ >= "2.1.0":
                               v_scale: float = 1.0,
                               alibi_slopes=None,
                               sliding_window=None,
-                              # **************************** drag begins ****************************
                               cos_sin_cache=None,
                               rotary_dim=None,
-                              provider='triton', # for benchmark
-                              # **************************** drag ends ******************************
                               ):
         BLOCK = 128 if current_platform.has_device_capability(80) else 64
         NUM_WARPS = 8
@@ -432,64 +429,10 @@ if triton.__version__ >= "2.1.0":
             sliding_window = 0
 
         if alibi_slopes is not None:
-            _fwd_kernel_alibi[grid](
-                q,
-                k,
-                v,
-                k_cache,
-                v_cache,
-                b_loc,
-                sm_scale,
-                k_scale,
-                v_scale,
-                b_start_loc,
-                b_seq_len,
-                b_ctx_len,
-                alibi_slopes,
-                v_cache.shape[3],
-                k_cache.shape[4],
-                o,
-                b_loc.stride(0),
-                b_loc.stride(1),
-                q.stride(0),
-                q.stride(1),
-                q.stride(2),
-                k.stride(0),
-                k.stride(1),
-                k.stride(2),
-                v.stride(0),
-                v.stride(1),
-                v.stride(2),
-                o.stride(0),
-                o.stride(1),
-                o.stride(2),
-                k_cache.stride(0),
-                k_cache.stride(1),
-                k_cache.stride(2),
-                k_cache.stride(3),
-                k_cache.stride(
-                    4
-                ),  #[num_blocks, num_kv_heads, head_size/x, block_size, x]
-                v_cache.stride(0),
-                v_cache.stride(1),
-                v_cache.stride(2),
-                v_cache.stride(
-                    3),  #[num_blocks, num_kv_heads, head_size, block_size]
-                num_queries_per_kv=num_queries_per_kv,
-                BLOCK_M=BLOCK,
-                BLOCK_DMODEL=Lk,
-                BLOCK_DMODEL_PADDED=Lk_padded,
-                BLOCK_N=BLOCK,
-                num_warps=NUM_WARPS,
-                num_stages=1,
-            )
-            return
+            raise NotImplementedError("Alibi slopes are not implemented for prefix prefill")
         
-        # **************************** drag begins ****************************
-        # for debug
-        # print(f'-------------------------------- prefill, context len is {b_ctx_len}, seq len is {b_seq_len}')
-        if (cos_sin_cache is not None) and (rotary_dim is not None) and (provider == 'triton'):
-            _fwd_kernel_dynamic_rag_v2[grid](
+        # invoke the kernel for dynamic rotary embedding
+        _fwd_kernel[grid](
                 q,
                 k,
                 v,
@@ -540,60 +483,5 @@ if triton.__version__ >= "2.1.0":
                 num_stages=1,
                 cos_sin_cache=cos_sin_cache,  # [max_position, rot_dim]
                 rotary_dim=rotary_dim,
-            )
-            return
-        # **************************** drag ends ******************************
-
-        # grid: (batch_size, num_head, num_blocks) -> triton instances for parallel execution
-        # ceil(max_input_len / BLOCK) = num_blocks
-        _fwd_kernel[grid](
-            q,
-            k,
-            v,
-            k_cache,
-            v_cache,
-            b_loc,  # block tables
-            sm_scale,  # scores = (Q @ K.T) * sm_scale
-            k_scale,
-            v_scale,
-            b_start_loc,  # query start loc
-            b_seq_len,  # sequence length
-            b_ctx_len,  # context length
-            v_cache.shape[3],  # block_size, e.g., 16 from [9596, 8, 128, 16]
-            k_cache.shape[4],  # x, e.g., 8 from [9596, 8, 16, 16, 8]
-            o,  # output
-            b_loc.stride(0),
-            b_loc.stride(1),
-            q.stride(0),
-            q.stride(1),
-            q.stride(2),
-            k.stride(0),
-            k.stride(1),
-            k.stride(2),
-            v.stride(0),
-            v.stride(1),
-            v.stride(2),
-            o.stride(0),
-            o.stride(1),
-            o.stride(2),
-            k_cache.stride(0),
-            k_cache.stride(1),
-            k_cache.stride(2),
-            k_cache.stride(3),
-            k_cache.stride(
-                4),  #[num_blocks, num_kv_heads, head_size/x, block_size, x]
-            v_cache.stride(0),
-            v_cache.stride(1),
-            v_cache.stride(2),
-            v_cache.stride(
-                3),  #[num_blocks, num_kv_heads, head_size, block_size]
-            num_queries_per_kv=num_queries_per_kv,  # share kv for each query
-            BLOCK_M=BLOCK,
-            BLOCK_DMODEL=Lk,
-            BLOCK_DMODEL_PADDED=Lk_padded,
-            BLOCK_N=BLOCK,
-            SLIDING_WINDOW=sliding_window,
-            num_warps=NUM_WARPS,
-            num_stages=1,
         )
         return

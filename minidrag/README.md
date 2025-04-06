@@ -17,7 +17,13 @@ For C/CUDA code, we use `#include` macro to inject the customized code into the 
 
 - `csrc/`: the customized CPP/CUDA code. We only inject a customized rotary embedding kernel into the original code. While the original code always rotate the key and query, we only rotate the query and keep the key unchanged.
 
+# Build
 
+```shell
+module load cuda/12.4.0
+conda install ccache
+CCACHE_NOHASHDIR="true" pip install --no-build-isolation -e .
+```
 
 
 ## Design

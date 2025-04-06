@@ -674,6 +674,10 @@ else:
         repackage_wheel if envs.VLLM_USE_PRECOMPILED else cmake_build_ext
     }
 
+if os.getenv("NO_C"):
+    # overwrite ext_modules for minidrag
+    ext_modules = []
+
 setup(
     # static metadata should rather go in pyproject.toml
     version=get_vllm_version(),

@@ -222,6 +222,8 @@ def dynamic_chunked_prefill_paged_decode(
     alibi_slopes=None,
     sliding_window=None,
     sm_scale=None,
+    rotary_dim=None,
+    cos_sin_cache=None,
 ):
 
     if sm_scale is None:
@@ -252,6 +254,8 @@ def dynamic_chunked_prefill_paged_decode(
             sliding_window=sliding_window,
             sm_scale=sm_scale,
             skip_decode=True,
+            rotary_dim=rotary_dim,
+            cos_sin_cache=cos_sin_cache,
         )
 
     block_size = value_cache.shape[3]
@@ -285,44 +289,7 @@ def dynamic_chunked_prefill_paged_decode(
                                                  num_queries_per_kv,
                                                  max_seq_len, sliding_window)
     if use_custom:
-        _PARTITION_SIZE_ROCM = 256
-        max_num_partitions = ((max_seq_len + _PARTITION_SIZE_ROCM - 1) //
-                              _PARTITION_SIZE_ROCM)
-        assert _PARTITION_SIZE_ROCM % block_size == 0
-        total_num_seq = query.shape[0]
-        tmp_output = torch.empty(
-            size=(total_num_seq, num_query_heads, max_num_partitions,
-                  head_size),
-            dtype=output.dtype,
-            device=output.device,
-        )
-        exp_sums = torch.empty(
-            size=(total_num_seq, num_query_heads, max_num_partitions),
-            dtype=torch.float32,
-            device=output.device,
-        )
-        max_logits = torch.empty_like(exp_sums)
-
-        ops.paged_attention_rocm(
-            output,
-            exp_sums,
-            max_logits,
-            tmp_output,
-            query,
-            key_cache,
-            value_cache,
-            num_kv_heads,
-            scale=sm_scale,
-            block_tables=block_table,
-            seq_lens=seq_lens,
-            query_start_loc=query_start_loc,
-            block_size=block_size,
-            max_seq_len=max_seq_len,
-            alibi_slopes=alibi_slopes,
-            kv_cache_dtype=kv_cache_dtype,
-            k_scale=k_scale,
-            v_scale=v_scale,
-        )
+        raise NotImplementedError("Custom paged attention is not implemented")
     else:
         kernel_paged_attention_2d[(
             num_seqs,
@@ -363,4 +330,6 @@ def dynamic_chunked_prefill_paged_decode(
             stride_v_cache_3=value_cache.stride(3),
             filter_by_query_len=True,
             query_start_len_ptr=query_start_loc,
+            rotary_dim=rotary_dim,
+            cos_sin_cache=cos_sin_cache,
         )
