@@ -9,7 +9,7 @@ from typing import Optional, Tuple
 from vllm.model_executor.custom_op import CustomOp
 from vllm.model_executor.layers.rotary_embedding import _apply_rotary_emb
 
-@CustomOp.register("rotary_embedding")
+# @CustomOp.register("rotary_embedding")
 # class RotaryEmbedding(CustomOp):
 def new_forward_native(
     self,

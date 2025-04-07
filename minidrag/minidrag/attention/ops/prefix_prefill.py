@@ -39,7 +39,6 @@ if triton.__version__ >= "2.1.0":
         v_scale,
         B_Start_Loc,
         B_Seqlen,
-        B_Ctxlen,
         block_size,
         x,
         Out,
@@ -72,23 +71,40 @@ if triton.__version__ >= "2.1.0":
         BLOCK_DMODEL_PADDED: tl.constexpr,  # head size padded to a power of 2
         BLOCK_N: tl.constexpr,
         SLIDING_WINDOW: tl.constexpr,
+        SKIP_DECODE: tl.constexpr,
         cos_sin_cache,
         rotary_dim: tl.constexpr,
+        is_neox_style: tl.constexpr,
     ):
         # grid: (batch_size, num_head, num_blocks) -> triton instances for parallel execution
         # ceil(max_input_len / BLOCK) = num_blocks
         # from grid get id of batch, head, and start_m
 
-        cur_batch = tl.program_id(0)  
+        # cur_batch = tl.program_id(0)  
+        # cur_head = tl.program_id(1)
+        # start_m = tl.program_id(2)
+
+        # cur_kv_head = cur_head // num_queries_per_kv  # share kv for query
+
+        # cur_batch_ctx_len = tl.load(B_Ctxlen + cur_batch)  # get context length for current request
+        # cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)  # get sequence length for current request
+        # cur_batch_in_all_start_index = tl.load(B_Start_Loc + cur_batch)  # get start index for current request
+        # cur_batch_query_len = cur_batch_seq_len - cur_batch_ctx_len  # get query length for current request
+        cur_batch = tl.program_id(0)
         cur_head = tl.program_id(1)
         start_m = tl.program_id(2)
 
-        cur_kv_head = cur_head // num_queries_per_kv  # share kv for query
+        cur_kv_head = cur_head // num_queries_per_kv
 
-        cur_batch_ctx_len = tl.load(B_Ctxlen + cur_batch)  # get context length for current request
-        cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)  # get sequence length for current request
-        cur_batch_in_all_start_index = tl.load(B_Start_Loc + cur_batch)  # get start index for current request
-        cur_batch_query_len = cur_batch_seq_len - cur_batch_ctx_len  # get query length for current request
+        cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)
+        cur_batch_in_all_start_index = tl.load(B_Start_Loc + cur_batch)
+        cur_batch_in_all_stop_index = tl.load(B_Start_Loc + cur_batch + 1)
+        cur_batch_query_len = (cur_batch_in_all_stop_index -
+                               cur_batch_in_all_start_index)
+        cur_batch_ctx_len = cur_batch_seq_len - cur_batch_query_len
+
+        if SKIP_DECODE and cur_batch_query_len == 1:
+            return
 
         # start position inside of the query
         # generally, N goes over kv, while M goes over query_len
@@ -375,14 +391,17 @@ if triton.__version__ >= "2.1.0":
                               b_loc,
                               b_start_loc,
                               b_seq_len,
-                              b_ctx_len,
+                              max_seq_len,
                               max_input_len,
                               k_scale: float = 1.0,
                               v_scale: float = 1.0,
                               alibi_slopes=None,
                               sliding_window=None,
+                              sm_scale=None,
+                              skip_decode=False,
                               cos_sin_cache=None,
                               rotary_dim=None,
+                              is_neox_style=True,
                               ):
         BLOCK = 128 if current_platform.has_device_capability(80) else 64
         NUM_WARPS = 8
@@ -444,7 +463,6 @@ if triton.__version__ >= "2.1.0":
                 v_scale,
                 b_start_loc,  # query start loc
                 b_seq_len,  # sequence length
-                b_ctx_len,  # context length
                 v_cache.shape[3],  # block_size, e.g., 16 from [9596, 8, 128, 16]
                 k_cache.shape[4],  # x, e.g., 8 from [9596, 8, 16, 16, 8]
                 o,  # output
@@ -479,9 +497,11 @@ if triton.__version__ >= "2.1.0":
                 BLOCK_DMODEL_PADDED=Lk_padded,
                 BLOCK_N=BLOCK,
                 SLIDING_WINDOW=sliding_window,
+                SKIP_DECODE=skip_decode,
                 num_warps=NUM_WARPS,
                 num_stages=1,
                 cos_sin_cache=cos_sin_cache,  # [max_position, rot_dim]
                 rotary_dim=rotary_dim,
+                is_neox_style=is_neox_style,
         )
         return

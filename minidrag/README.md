@@ -30,24 +30,42 @@ CCACHE_NOHASHDIR="true" pip install --no-build-isolation -e .
 
 ```mermaid
 classDiagram
-    Animal <|-- Duck
-    Animal <|-- Fish
-    Animal <|-- Zebra
-    Animal : +int age
-    Animal : +String gender
-    Animal: +isMammal()
-    Animal: +mate()
-    class Duck{
-      +String beakColor
-      +swim()
-      +quack()
+    LlamaAttention <|-- Attention
+    LlamaAttention <|-- RotaryEmbedding
+    Attention <|-- TritonAttentionImpl
+    class LlamaAttention{
+      +q,k,v
+      +cos_sin_cache
+      +rotary_dim
+      +is_neox_style
+      +forward()
     }
-    class Fish{
-      -int sizeInFeet
-      -canEat()
+    class Attention{
+      +attn_metadata
+      +forward()
     }
-    class Zebra{
-      +bool is_wild
-      +run()
+    class RotaryEmbedding{
+      +cos_sin_cache
+      +rotary_dim
+      +is_neox_style
+      +forward_cuda() # rotate q only
     }
+    class TritonAttentionImpl{
+      +write_to_paged_cache()
+      +chunked_prefill_paged_decode()
+    }
+```
+
+
+## Appendix
+
+AttentionMetadata is built in [gpu_model_runner.py](../vllm/v1/worker/gpu_model_runner.py).
+
+```python
+        attn_metadata = self.attn_metadata_builder.build(
+            num_reqs=num_reqs,
+            num_actual_tokens=total_num_scheduled_tokens,
+            max_query_len=max_num_scheduled_tokens,
+            common_prefix_len=common_prefix_len,
+        )
 ```

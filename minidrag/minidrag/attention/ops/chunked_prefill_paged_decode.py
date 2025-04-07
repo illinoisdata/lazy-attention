@@ -1,10 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
-
-# Authors:
-#  - Burkhard Ringlein <ngl@zurich.ibm.com>
-#  - Jan van Lunteren <jvl@zurich.ibm.com>
-#  - Chih-Chieh Yang <chih.chieh.yang@ibm.com>
-#  - Thomas Parnell <tpa@zurich.ibm.com>
+# Adapted from vllm/attention/ops/chunked_prefill_paged_decode.py
 
 import torch
 import triton
@@ -58,6 +52,9 @@ def kernel_paged_attention_2d(
         stride_v_cache_3: tl.int64,  # int
         filter_by_query_len: tl.constexpr,  # bool
         query_start_len_ptr,  # [num_seqs+1]
+        rotary_dim: tl.constexpr,  # int
+        cos_sin_cache_ptr,
+        is_neox_style: tl.constexpr,  # bool
 ):
     seq_idx = tl.program_id(0)
     kv_head_idx = tl.program_id(1)
@@ -224,6 +221,7 @@ def dynamic_chunked_prefill_paged_decode(
     sm_scale=None,
     rotary_dim=None,
     cos_sin_cache=None,
+    is_neox_style=True,
 ):
 
     if sm_scale is None:
@@ -256,6 +254,7 @@ def dynamic_chunked_prefill_paged_decode(
             skip_decode=True,
             rotary_dim=rotary_dim,
             cos_sin_cache=cos_sin_cache,
+            is_neox_style=is_neox_style,
         )
 
     block_size = value_cache.shape[3]
@@ -331,5 +330,6 @@ def dynamic_chunked_prefill_paged_decode(
             filter_by_query_len=True,
             query_start_len_ptr=query_start_loc,
             rotary_dim=rotary_dim,
-            cos_sin_cache=cos_sin_cache,
+            cos_sin_cache_ptr=cos_sin_cache,
+            is_neox_style=is_neox_style,
         )

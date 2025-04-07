@@ -4,14 +4,13 @@ from typing import Any, Optional
 
 import torch
 
-from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
-                                              AttentionMetadata, AttentionType)
 from vllm.attention.ops.chunked_prefill_paged_decode import (
     chunked_prefill_paged_decode)
 from vllm.attention.ops.paged_attn import PagedAttention
-from vllm.logger import init_logger
 from vllm.v1.attention.backends.flash_attn import (
     FlashAttentionMetadata, FlashAttentionMetadataBuilder)
+
+from ..ops.chunked_prefill_paged_decode import dynamic_chunked_prefill_paged_decode
 
 # class TritonAttentionImpl(AttentionImpl):
 def forward(
@@ -47,7 +46,6 @@ def forward(
     Returns:
         shape = [num_tokens, num_heads * head_size]
     """
-
     assert output is not None, "Output tensor must be provided."
 
     if attn_metadata is None:
@@ -82,7 +80,7 @@ def forward(
     )
 
     # Compute attention and update output up to `num_actual_tokens`.
-    chunked_prefill_paged_decode(
+    dynamic_chunked_prefill_paged_decode(
         query=query[:num_actual_tokens],
         key=key[:num_actual_tokens],
         value=value[:num_actual_tokens],
@@ -106,3 +104,17 @@ def forward(
     )
 
     return output
+
+
+original_forward = None
+
+def apply_patch():
+    import vllm.v1.attention.backends.triton_attn
+    global original_forward
+    original_forward = vllm.v1.attention.backends.triton_attn.TritonAttentionImpl.forward
+    vllm.v1.attention.backends.triton_attn.TritonAttentionImpl.forward = forward
+
+
+def revert_patch():
+    import vllm.v1.attention.backends.triton_attn
+    vllm.v1.attention.backends.triton_attn.TritonAttentionImpl.forward = original_forward

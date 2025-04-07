@@ -1,5 +1,8 @@
-from vllm.v1.core.kv_cache_utils import hash_request_tokens
+from typing import Any
 
+from vllm.v1.core.kv_cache_utils import need_extra_keys, generate_block_hash_extra_keys, hash_block_tokens
+from vllm.v1.core.kv_cache_utils import BlockHashType
+from vllm.v1.request import Request
 
 def hash_request_tokens_no_prefix(hash_function: Any, block_size: int,
                                   request: Request) -> list[BlockHashType]:
@@ -16,6 +19,8 @@ def hash_request_tokens_no_prefix(hash_function: Any, block_size: int,
     token_ids = request.all_token_ids
 
     req_need_extra_keys = need_extra_keys(request)
+    # TODO(haocheng): support MM and LoRA requests
+    assert not req_need_extra_keys, "This function does not support MM and LoRA requests"
     req_extra_keys = None
     curr_mm_idx = 0
 
@@ -37,3 +42,16 @@ def hash_request_tokens_no_prefix(hash_function: Any, block_size: int,
                                        block_token_ids, req_extra_keys)
         ret.append(block_hash)
     return ret
+
+
+original_hash_request_tokens = None
+
+def apply_patch():
+    global original_hash_request_tokens
+    import vllm.v1.core.kv_cache_utils
+    original_hash_request_tokens = vllm.v1.core.kv_cache_utils.hash_request_tokens
+    vllm.v1.core.kv_cache_utils.hash_request_tokens = hash_request_tokens_no_prefix
+
+def revert_patch():
+    import vllm.v1.core.kv_cache_utils
+    vllm.v1.core.kv_cache_utils.hash_request_tokens = original_hash_request_tokens

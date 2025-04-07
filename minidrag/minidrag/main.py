@@ -1,6 +1,6 @@
 # /////////////////////////////////////////////////////////////////////////////
 # inject our custom ops
-from .kv_cache_utils import hash_request_tokens_no_prefix
+from ..core.kv_cache_utils import hash_request_tokens_no_prefix
 from .chunked_prefill_paged_decode import dynamic_chunked_prefill_paged_decode
 from .model_executor.layers.rotary_embedding import dynamic_get_rope
 

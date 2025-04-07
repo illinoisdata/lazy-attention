@@ -1,5 +1,4 @@
 # adapted from vllm/tests/kernels/test_pos_encoding.py
-
 from typing import Callable, Optional
 
 import pytest
@@ -10,6 +9,7 @@ from vllm.platforms import current_platform
 from tests.kernels.allclose_default import get_default_atol, get_default_rtol
 from tests.kernels.test_pos_encoding import IS_NEOX_STYLE, DTYPES, HEAD_SIZES,\
     ROTARY_DIMS, NUM_HEADS, BATCH_SIZES, SEQ_LENS, SEEDS, CUDA_DEVICES, TENSORS_SHAPES_FN
+
 
 @pytest.mark.unit
 @pytest.mark.parametrize("is_neox_style", IS_NEOX_STYLE)
@@ -39,8 +39,16 @@ def test_rotary_embedding_with_vllm(
 ) -> None:
     """
     Test the rotary embedding layer. Compare with original vllm implementation.
-    Use native torch functions, running on CPU.
+    Use native torch functions. (can be tested on CPU or GPU)
     """
+    # overwrite device to cpu if not cuda
+    if not torch.cuda.is_available():
+        device = torch.device("cpu")
+        if head_size > HEAD_SIZES[0]:
+            pytest.skip("skip large head size on cpu")
+        if seq_len > SEQ_LENS[0]:
+            pytest.skip("skip large seq len on cpu")
+
     if rotary_dim is None:
         rotary_dim = head_size
 
@@ -79,6 +87,11 @@ def test_rotary_embedding_with_vllm(
     revert_patch()
 
 
+# /////////////////////////////////////////////////////////////////////////////
+# direct copy of vllm/tests/kernels/test_pos_encoding.py
+# /////////////////////////////////////////////////////////////////////////////
+@pytest.mark.unit
+@pytest.mark.gpu
 @pytest.mark.parametrize("is_neox_style", IS_NEOX_STYLE)
 @pytest.mark.parametrize("tensor_shape_fn", TENSORS_SHAPES_FN)
 @pytest.mark.parametrize("batch_size", BATCH_SIZES)
