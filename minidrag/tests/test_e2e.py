@@ -1,7 +1,5 @@
 import pytest
-
-import torch._dynamo
-torch._dynamo.config.suppress_errors = True
+from vllm.distributed import cleanup_dist_env_and_memory
 
 prompts = [
     "Hello, my name is",
@@ -10,34 +8,31 @@ prompts = [
     "The future of AI is",
 ]
 
-# @pytest.fixture
-# def vllm_reference_outputs(request):
-#     value = request.config.cache.get("vllm_reference_outputs", None)
-#     if not value:
-#         value = []
+@pytest.fixture
+def vllm_reference_outputs(request, mock_sampling_params):
+    value = request.config.cache.get("vllm_reference_outputs", None)
+    if not value:
+        value = []
 
-#         from minidrag.attention.selector import apply_patch as apply_attn_selector_patch
-#         from minidrag.attention.selector import revert_patch as revert_attn_selector_patch
-#         from minidrag.platforms.cuda import apply_patch as apply_cuda_patch
-#         from minidrag.platforms.cuda import revert_patch as revert_cuda_patch
-#         apply_cuda_patch()
-#         apply_attn_selector_patch()
-#         import vllm
-#         llm = vllm.LLM(model="meta-llama/Llama-3.2-1B",
-#                        gpu_memory_utilization=0.9,
-#                        enforce_eager=True,
-#                        enable_prefix_caching=True,)
-#         outputs = llm.generate(prompts, mock_sampling_params)
+        from minidrag.platforms.cuda import apply_patch as apply_cuda_patch
+        apply_cuda_patch()
 
-#         for output in outputs:
-#             prompt = output.prompt
-#             generated_text = output.outputs[0].text
-#             print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
-#             value.append((prompt, generated_text))
-#         request.config.cache.set("vllm_reference_outputs", value)
-#         revert_attn_selector_patch()
-#         revert_cuda_patch()
-#     return value
+        import vllm
+        llm = vllm.LLM(model="meta-llama/Llama-3.2-1B",
+                       gpu_memory_utilization=0.9,
+                       enforce_eager=True,
+                       enable_prefix_caching=True,)
+        outputs = llm.generate(prompts, mock_sampling_params)
+
+        for output in outputs:
+            prompt = output.prompt
+            generated_text = output.outputs[0].text
+            print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
+            value.append((prompt, generated_text))
+        request.config.cache.set("vllm_reference_outputs", value)
+        del llm
+        cleanup_dist_env_and_memory()
+    return value
 
 
 @pytest.fixture(scope="module")
@@ -48,7 +43,7 @@ def mock_sampling_params():
 
 class TestE2E:
     @pytest.mark.integration
-    def test_e2e(self, mock_sampling_params):
+    def test_e2e(self, vllm_reference_outputs, mock_sampling_params):
         # load patches
         from minidrag.platforms.cuda import apply_patch as apply_cuda_patch
         from minidrag.attention.layer import apply_patch as apply_attn_layer_patch
@@ -78,4 +73,7 @@ class TestE2E:
             prompt = output.prompt
             generated_text = output.outputs[0].text
             print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
-        
+        for pg_pair in vllm_reference_outputs:
+            print(f"Prompt: {pg_pair[0]!r}, Referencee generated text: {pg_pair[1]!r}")
+        del llm
+        cleanup_dist_env_and_memory()

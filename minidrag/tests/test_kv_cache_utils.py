@@ -7,7 +7,7 @@ from tests.v1.core.test_kv_cache_utils import make_request
 class TestBlockHash:
     @pytest.mark.unit
     @pytest.mark.parametrize("hash_fn", [sha256, hash])
-    def test_hash_request_tokens_no_prefix(self,hash_fn):
+    def test_hash_request_tokens_no_prefix(self, hash_fn):
         # construct two requests with the two blocks
         request1 = make_request(
             request_id=0,
@@ -44,3 +44,8 @@ class TestBlockHash:
         block_hashes_2 = hash_request_tokens(hash_fn, block_size, request2)
         assert block_hashes_1[0].hash_value != block_hashes_2[1].hash_value
         assert block_hashes_1[1].hash_value != block_hashes_2[0].hash_value
+    
+    @pytest.mark.unit
+    @pytest.mark.parametrize("hash_fn", [sha256, hash])
+    def test_block_retrevial(self, hash_fn):
+        pass
