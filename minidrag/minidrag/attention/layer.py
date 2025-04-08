@@ -8,7 +8,8 @@ rotary embedding operations.
 import torch
 from typing import Optional
 from vllm.forward_context import get_forward_context, ForwardContext
-
+from vllm.utils import direct_register_custom_op
+from vllm.platforms import _Backend, current_platform
 
 # class Attention(nn.Module):
 def forward(
@@ -57,7 +58,7 @@ def forward(
                     key = key.view(-1, self.num_kv_heads, self.head_size)
                 if value is not None:
                     value = value.view(-1, self.num_kv_heads, self.head_size)
-            if True: # self.use_direct_call: TODO(haocheng): remove this, support unified attention
+            if self.use_direct_call:
                 forward_context: ForwardContext = get_forward_context()
                 attn_metadata = forward_context.attn_metadata
                 self_kv_cache = self.kv_cache[forward_context.virtual_engine]
@@ -72,8 +73,11 @@ def forward(
                                   is_neox_style,
                                   output=output)
             else:
-                torch.ops.vllm.unified_attention_with_output(
-                    query, key, value, output, self.layer_name)
+                # We use dynamic_unified_attention_with_output to replace
+                # unified_attention_with_output to support dynamic RAG's block attention.
+                torch.ops.vllm.dynamic_unified_attention_with_output(
+                    query, key, value, output, self.layer_name,
+                    cos_sin_cache, rotary_dim, is_neox_style)
             return output.view(-1, hidden_size)
         else:
             if self.use_direct_call:
@@ -85,15 +89,63 @@ def forward(
             else:
                 return torch.ops.vllm.unified_attention(
                     query, key, value, self.layer_name)
+            
+def dynamic_unified_attention_with_output(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    output: torch.Tensor,
+    layer_name: str,
+    cos_sin_cache: torch.Tensor,
+    rotary_dim: int,
+    is_neox_style: bool,
+) -> None:
+    forward_context: ForwardContext = get_forward_context()
+    attn_metadata = forward_context.attn_metadata
+    self = forward_context.no_compile_layers[layer_name]
+    kv_cache = self.kv_cache[forward_context.virtual_engine]
+    self.impl.forward(self,
+                      query,
+                      key,
+                      value,
+                      kv_cache,
+                      attn_metadata,
+                      cos_sin_cache,
+                      rotary_dim,
+                      is_neox_style,
+                      output=output)
+
+
+def dynamic_unified_attention_with_output_fake(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    output: torch.Tensor,
+    layer_name: str,
+    cos_sin_cache: torch.Tensor,
+    rotary_dim: int,
+    is_neox_style: bool,
+) -> None:
+    return
+
+direct_register_custom_op(
+    op_name="dynamic_unified_attention_with_output",
+    op_func=dynamic_unified_attention_with_output,
+    mutates_args=["output"],
+    fake_impl=dynamic_unified_attention_with_output_fake,
+    dispatch_key=current_platform.dispatch_key,
+)
+
 
 original_forward = None
 
+
 def apply_patch():
-    from vllm.attention.layer import Attention
+    import vllm.attention.layer
     global original_forward
-    original_forward = Attention.forward
-    Attention.forward = forward
+    original_forward = vllm.attention.layer.Attention.forward
+    vllm.attention.layer.Attention.forward = forward
 
 def revert_patch():
-    from vllm.attention.layer import Attention
-    Attention.forward = original_forward
+    import vllm.attention.layer
+    vllm.attention.layer.Attention.forward = original_forward

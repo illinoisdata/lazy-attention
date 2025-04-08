@@ -27,10 +27,10 @@ forward_original = forward
 
 def apply_patch():
     global forward_original
-    from vllm.model_executor.models.llama import LlamaAttention
-    forward_original = LlamaAttention.forward
-    LlamaAttention.forward = forward
+    import vllm.model_executor.models.llama
+    forward_original = vllm.model_executor.models.llama.LlamaAttention.forward
+    vllm.model_executor.models.llama.LlamaAttention.forward = forward
 
 def revert_patch():
-    from vllm.model_executor.models.llama import LlamaAttention
-    LlamaAttention.forward = forward_original
+    import vllm.model_executor.models.llama
+    vllm.model_executor.models.llama.LlamaAttention.forward = forward_original

@@ -6,6 +6,17 @@ We use monkeypatch to replace the original function/class in vLLM with our custo
 
 For C/CUDA code, we use `#include` macro to inject the customized code into the original code.
 
+
+## Test coverage
+
+### Eager mode
+- [ ] llama attention
+- [ ] triton attention backend
+  - [ ] prefix prefill
+  - [ ] paged decoding
+  
+### CUDA graph
+
 ## Organization
 
 - `drag/`: the main implementation of Dynamic RAG.

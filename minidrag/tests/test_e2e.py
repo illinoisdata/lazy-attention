@@ -1,5 +1,6 @@
 import pytest
 from vllm.distributed import cleanup_dist_env_and_memory
+from minidrag.entrypoints import MiniDynamicRAG
 
 prompts = [
     "Hello, my name is",
@@ -9,16 +10,14 @@ prompts = [
 ]
 
 @pytest.fixture
-def vllm_reference_outputs(request, mock_sampling_params):
-    value = request.config.cache.get("vllm_reference_outputs", None)
+def vllm_reference_outputs(request, mock_sampling_params, eager):
+    print("vllm reference ", eager)
+    value = request.config.cache.get(f"vllm_reference_outputs::{eager}", None)
     if not value:
         value = []
-
-        from minidrag.platforms.cuda import apply_patch as apply_cuda_patch
-        apply_cuda_patch()
-
+        MiniDynamicRAG.apply_triton_backend()
         import vllm
-        llm = vllm.LLM(model="meta-llama/Llama-3.2-1B",
+        llm = vllm.LLM(model="meta-llama/Llama-3.1-8B",
                        gpu_memory_utilization=0.9,
                        enforce_eager=True,
                        enable_prefix_caching=True,)
@@ -27,9 +26,8 @@ def vllm_reference_outputs(request, mock_sampling_params):
         for output in outputs:
             prompt = output.prompt
             generated_text = output.outputs[0].text
-            print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
             value.append((prompt, generated_text))
-        request.config.cache.set("vllm_reference_outputs", value)
+        request.config.cache.set(f"vllm_reference_outputs::{eager}", value)
         del llm
         cleanup_dist_env_and_memory()
     return value
@@ -43,37 +41,21 @@ def mock_sampling_params():
 
 class TestE2E:
     @pytest.mark.integration
-    def test_e2e(self, vllm_reference_outputs, mock_sampling_params):
-        # load patches
-        from minidrag.platforms.cuda import apply_patch as apply_cuda_patch
-        from minidrag.attention.layer import apply_patch as apply_attn_layer_patch
-        from minidrag.attention.backends.triton_attn import apply_patch as apply_triton_attn_patch
-        from minidrag.core.kv_cache_utils import apply_patch as apply_kv_cache_utils_patch
-        from minidrag.model_executor.layers.rotary_embedding import apply_patch as apply_rotary_embedding_patch
-        from minidrag.model_executor.models.llama import apply_patch as apply_llama_patch
-        from minidrag._custom_ops import apply_patch as apply_custom_ops_patch
-
-        # apply patches
-        apply_cuda_patch()
-        apply_attn_layer_patch()
-        apply_triton_attn_patch()
-        apply_kv_cache_utils_patch()
-        apply_rotary_embedding_patch()
-        apply_llama_patch()
-        apply_custom_ops_patch()
-        
+    @pytest.mark.parametrize("eager", [False])
+    def test_e2e(self, vllm_reference_outputs, mock_sampling_params, eager):
+        print("ours", eager)
+        MiniDynamicRAG.apply_patches()
         import vllm
-        llm = vllm.LLM(model="meta-llama/Llama-3.2-1B",                      
+        llm = vllm.LLM(model="meta-llama/Llama-3.1-8B",                      
                        gpu_memory_utilization=0.9,
                        enforce_eager=True,
                        enable_prefix_caching=True,)
         outputs = llm.generate(prompts, mock_sampling_params)
         print('-'*100)
-        for output in outputs:
+        for output, pg_pair in zip(outputs, vllm_reference_outputs):
             prompt = output.prompt
             generated_text = output.outputs[0].text
             print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
-        for pg_pair in vllm_reference_outputs:
-            print(f"Prompt: {pg_pair[0]!r}, Referencee generated text: {pg_pair[1]!r}")
+            print(f"Reference generated text: {pg_pair[1]!r}")
         del llm
         cleanup_dist_env_and_memory()

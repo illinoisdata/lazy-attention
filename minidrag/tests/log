@@ -1,0 +1,228 @@
+============================= test session starts ==============================
+platform linux -- Python 3.10.16, pytest-8.3.4, pluggy-1.5.0
+rootdir: /projects/bdjx/hxia3/vllm/minidrag/tests
+configfile: pytest.ini
+plugins: xdist-3.6.1, anyio-4.8.0
+INFO 04-07 16:31:30 [__init__.py:239] Automatically detected platform cuda.
+collected 1 item
+
+test_e2e.py INFO 04-07 16:31:51 [config.py:598] This model supports multiple tasks: {'generate', 'classify', 'reward', 'score', 'embed'}. Defaulting to 'generate'.
+INFO 04-07 16:31:52 [config.py:1772] Chunked prefill is enabled with max_num_batched_tokens=8192.
+INFO 04-07 16:31:53 [core.py:61] Initializing a V1 LLM engine (v0.8.3.dev244+gfbe878f1.d20250407) with config: model='meta-llama/Llama-3.2-1B', speculative_config=None, tokenizer='meta-llama/Llama-3.2-1B', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, override_neuron_config=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=131072, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, disable_custom_all_reduce=False, quantization=None, enforce_eager=False, kv_cache_dtype=auto,  device_config=cuda, decoding_config=DecodingConfig(guided_decoding_backend='xgrammar', reasoning_backend=None), observability_config=ObservabilityConfig(show_hidden_metrics=False, otlp_traces_endpoint=None, collect_model_forward_time=False, collect_model_execute_time=False), seed=None, served_model_name=meta-llama/Llama-3.2-1B, num_scheduler_steps=1, multi_step_stream_outputs=True, enable_prefix_caching=True, chunked_prefill_enabled=True, use_async_output_proc=True, disable_mm_preprocessor_cache=False, mm_processor_kwargs=None, pooler_config=None, compilation_config={"level":3,"custom_ops":["none"],"splitting_ops":["vllm.unified_attention","vllm.unified_attention_with_output"],"use_inductor":true,"compile_sizes":[],"use_cudagraph":true,"cudagraph_num_of_warmups":1,"cudagraph_capture_sizes":[512,504,496,488,480,472,464,456,448,440,432,424,416,408,400,392,384,376,368,360,352,344,336,328,320,312,304,296,288,280,272,264,256,248,240,232,224,216,208,200,192,184,176,168,160,152,144,136,128,120,112,104,96,88,80,72,64,56,48,40,32,24,16,8,4,2,1],"max_capture_size":512}
+WARNING 04-07 16:31:55 [utils.py:2413] Methods determine_num_available_blocks,device_config,get_cache_block_size_bytes,initialize_cache not implemented in <vllm.v1.worker.gpu_worker.Worker object at 0x7f848316f340>
+INFO 04-07 16:31:55 [parallel_state.py:957] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, TP rank 0
+WARNING 04-07 16:31:55 [rocm.py:27] Failed to import from amdsmi with ModuleNotFoundError("No module named 'amdsmi'")
+WARNING 04-07 16:31:55 [rocm.py:38] Failed to import from vllm._rocm_C with ModuleNotFoundError("No module named 'vllm._rocm_C'")
+INFO 04-07 16:31:55 [gpu_model_runner.py:1261] Starting to load model meta-llama/Llama-3.2-1B...
+WARNING 04-07 16:31:56 [topk_topp_sampler.py:69] FlashInfer is not available. Falling back to the PyTorch-native implementation of top-p & top-k sampling. For the best performance, please install FlashInfer.
+INFO 04-07 16:31:56 [weight_utils.py:265] Using model weights format ['*.safetensors']
+INFO 04-07 16:31:56 [weight_utils.py:315] No model.safetensors.index.json found in remote.
+Loading safetensors checkpoint shards:   0% Completed | 0/1 [00:00<?, ?it/s]
+Loading safetensors checkpoint shards: 100% Completed | 1/1 [00:01<00:00,  1.10s/it]
+Loading safetensors checkpoint shards: 100% Completed | 1/1 [00:01<00:00,  1.10s/it]
+
+INFO 04-07 16:31:57 [loader.py:447] Loading weights took 1.18 seconds
+INFO 04-07 16:31:58 [gpu_model_runner.py:1276] Model loading took 2.3185 GiB and 1.817879 seconds
+INFO 04-07 16:32:04 [backends.py:416] Using cache directory: /u/hxia3/.cache/vllm/torch_compile_cache/9894555592/rank_0_0 for vLLM's torch.compile
+INFO 04-07 16:32:04 [backends.py:426] Dynamo bytecode transform time: 6.90 s
+INFO 04-07 16:32:05 [backends.py:115] Directly load the compiled graph for shape None from the cache
+INFO 04-07 16:32:09 [monitor.py:33] torch.compile takes 6.90 s in total
+INFO 04-07 16:32:09 [kv_cache_utils.py:578] GPU KV cache size: 1,065,968 tokens
+INFO 04-07 16:32:09 [kv_cache_utils.py:581] Maximum concurrency for 131,072 tokens per request: 8.13x
+INFO 04-07 16:32:25 [gpu_model_runner.py:1611] Graph capturing finished in 16 secs, took 0.30 GiB
+INFO 04-07 16:32:25 [core.py:162] init engine (profile, create kv cache, warmup model) took 27.21 seconds
+Processed prompts:   0%|          | 0/4 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]Processed prompts:  25%|██▌       | 1/4 [00:00<00:02,  1.27it/s, est. speed input: 7.59 toks/s, output: 126.51 toks/s]Processed prompts: 100%|██████████| 4/4 [00:00<00:00,  5.06it/s, est. speed input: 32.88 toks/s, output: 505.87 toks/s]
+Prompt: 'Hello, my name is', Generated text: ' Kelsey and I am a 2018 graduate of the University of Wisconsin-Madison. I am currently a graduate student at the University of Wisconsin-Madison, studying for my Master’s in Public Health. I am a proud member of the UW-Madison chapter of the American Public Health Association (APHA). I am also a member of the American College of Epidemiology (ACE) and the American College of Healthcare Executives (ACHE). I am a member of the Wisconsin Chapter'
+Prompt: 'The president of the United States is', Generated text: ' the head of state of the United States of America. The president is the commander-in-chief of the United States Armed Forces and the chief executive of the executive branch of the federal government. The president is the only person who can be elected to the office of president. The president is the only person who can be elected to the office of president. The president is the only person who can be elected to the office of president. The president is the only person who can be elected to the office of president'
+Prompt: 'The capital of France is', Generated text: ' Paris. It is the most visited city in the world. It is also the most expensive city in the world. The average cost of living in Paris is 1,500 euros per month. The cost of living in Paris is 1,500 euros per month. The cost of living in Paris is 1,500 euros per month. The cost of living in Paris is 1,500 euros per month. The cost of living in Paris is 1,500 euros per month. The'
+Prompt: 'The future of AI is', Generated text: ' here. It’s not just a buzzword anymore. It’s a reality that’s changing the way we live, work, and play. AI is revolutionizing industries like healthcare, finance, and manufacturing, and it’s not just limited to the tech industry. AI is also being used in fields like education, entertainment, and even politics. In this article, we’ll explore the future of AI and how it’s already changing our lives.\nAI is a type of computer science that uses algorithms to make'
+WARNING 04-07 16:32:27 [rocm.py:27] Failed to import from amdsmi with ModuleNotFoundError("No module named 'amdsmi'")
+WARNING 04-07 16:32:27 [rocm.py:38] Failed to import from vllm._rocm_C with ModuleNotFoundError("No module named 'vllm._rocm_C'")
+INFO 04-07 16:32:27 [config.py:598] This model supports multiple tasks: {'generate', 'classify', 'reward', 'score', 'embed'}. Defaulting to 'generate'.
+INFO 04-07 16:32:27 [config.py:1772] Chunked prefill is enabled with max_num_batched_tokens=8192.
+huggingface/tokenizers: The current process just got forked, after parallelism has already been used. Disabling parallelism to avoid deadlocks...
+To disable this warning, you can either:
+	- Avoid using `tokenizers` before the fork if possible
+	- Explicitly set the environment variable TOKENIZERS_PARALLELISM=(true | false)
+INFO 04-07 16:32:28 [core.py:61] Initializing a V1 LLM engine (v0.8.3.dev244+gfbe878f1.d20250407) with config: model='meta-llama/Llama-3.2-1B', speculative_config=None, tokenizer='meta-llama/Llama-3.2-1B', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, override_neuron_config=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=131072, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, disable_custom_all_reduce=False, quantization=None, enforce_eager=False, kv_cache_dtype=auto,  device_config=cuda, decoding_config=DecodingConfig(guided_decoding_backend='xgrammar', reasoning_backend=None), observability_config=ObservabilityConfig(show_hidden_metrics=False, otlp_traces_endpoint=None, collect_model_forward_time=False, collect_model_execute_time=False), seed=None, served_model_name=meta-llama/Llama-3.2-1B, num_scheduler_steps=1, multi_step_stream_outputs=True, enable_prefix_caching=True, chunked_prefill_enabled=True, use_async_output_proc=True, disable_mm_preprocessor_cache=False, mm_processor_kwargs=None, pooler_config=None, compilation_config={"level":3,"custom_ops":["none"],"splitting_ops":["vllm.unified_attention","vllm.unified_attention_with_output"],"use_inductor":true,"compile_sizes":[],"use_cudagraph":true,"cudagraph_num_of_warmups":1,"cudagraph_capture_sizes":[512,504,496,488,480,472,464,456,448,440,432,424,416,408,400,392,384,376,368,360,352,344,336,328,320,312,304,296,288,280,272,264,256,248,240,232,224,216,208,200,192,184,176,168,160,152,144,136,128,120,112,104,96,88,80,72,64,56,48,40,32,24,16,8,4,2,1],"max_capture_size":512}
+WARNING 04-07 16:32:28 [utils.py:2413] Methods determine_num_available_blocks,device_config,get_cache_block_size_bytes,initialize_cache not implemented in <vllm.v1.worker.gpu_worker.Worker object at 0x7f848248b0a0>
+INFO 04-07 16:32:29 [parallel_state.py:957] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, TP rank 0
+INFO 04-07 16:32:29 [gpu_model_runner.py:1261] Starting to load model meta-llama/Llama-3.2-1B...
+WARNING 04-07 16:32:29 [topk_topp_sampler.py:69] FlashInfer is not available. Falling back to the PyTorch-native implementation of top-p & top-k sampling. For the best performance, please install FlashInfer.
+INFO 04-07 16:32:30 [weight_utils.py:265] Using model weights format ['*.safetensors']
+INFO 04-07 16:32:30 [weight_utils.py:281] Time spent downloading weights for meta-llama/Llama-3.2-1B: 0.713112 seconds
+INFO 04-07 16:32:31 [weight_utils.py:315] No model.safetensors.index.json found in remote.
+Loading safetensors checkpoint shards:   0% Completed | 0/1 [00:00<?, ?it/s]
+Loading safetensors checkpoint shards: 100% Completed | 1/1 [00:01<00:00,  1.11s/it]
+Loading safetensors checkpoint shards: 100% Completed | 1/1 [00:01<00:00,  1.11s/it]
+
+INFO 04-07 16:32:32 [loader.py:447] Loading weights took 1.19 seconds
+INFO 04-07 16:32:32 [gpu_model_runner.py:1276] Model loading took 2.3185 GiB and 2.778301 seconds
+ERROR 04-07 16:32:32 [core.py:390] EngineCore hit an exception: Traceback (most recent call last):
+ERROR 04-07 16:32:32 [core.py:390]   File "/projects/bdjx/hxia3/vllm/vllm/v1/engine/core.py", line 378, in run_engine_core
+ERROR 04-07 16:32:32 [core.py:390]     engine_core = EngineCoreProc(*args, **kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/projects/bdjx/hxia3/vllm/vllm/v1/engine/core.py", line 319, in __init__
+ERROR 04-07 16:32:32 [core.py:390]     super().__init__(vllm_config, executor_class, log_stats)
+ERROR 04-07 16:32:32 [core.py:390]   File "/projects/bdjx/hxia3/vllm/vllm/v1/engine/core.py", line 71, in __init__
+ERROR 04-07 16:32:32 [core.py:390]     self._initialize_kv_caches(vllm_config)
+ERROR 04-07 16:32:32 [core.py:390]   File "/projects/bdjx/hxia3/vllm/vllm/v1/engine/core.py", line 132, in _initialize_kv_caches
+ERROR 04-07 16:32:32 [core.py:390]     available_gpu_memory = self.model_executor.determine_available_memory()
+ERROR 04-07 16:32:32 [core.py:390]   File "/projects/bdjx/hxia3/vllm/vllm/v1/executor/abstract.py", line 66, in determine_available_memory
+ERROR 04-07 16:32:32 [core.py:390]     output = self.collective_rpc("determine_available_memory")
+ERROR 04-07 16:32:32 [core.py:390]   File "/projects/bdjx/hxia3/vllm/vllm/executor/uniproc_executor.py", line 56, in collective_rpc
+ERROR 04-07 16:32:32 [core.py:390]     answer = run_method(self.driver_worker, method, args, kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/projects/bdjx/hxia3/vllm/vllm/utils.py", line 2347, in run_method
+ERROR 04-07 16:32:32 [core.py:390]     return func(*args, **kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/utils/_contextlib.py", line 116, in decorate_context
+ERROR 04-07 16:32:32 [core.py:390]     return func(*args, **kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/projects/bdjx/hxia3/vllm/vllm/v1/worker/gpu_worker.py", line 157, in determine_available_memory
+ERROR 04-07 16:32:32 [core.py:390]     self.model_runner.profile_run()
+ERROR 04-07 16:32:32 [core.py:390]   File "/projects/bdjx/hxia3/vllm/vllm/v1/worker/gpu_model_runner.py", line 1576, in profile_run
+ERROR 04-07 16:32:32 [core.py:390]     hidden_states = self._dummy_run(self.max_num_tokens)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/utils/_contextlib.py", line 116, in decorate_context
+ERROR 04-07 16:32:32 [core.py:390]     return func(*args, **kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/projects/bdjx/hxia3/vllm/vllm/v1/worker/gpu_model_runner.py", line 1426, in _dummy_run
+ERROR 04-07 16:32:32 [core.py:390]     hidden_states = model(
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1739, in _wrapped_call_impl
+ERROR 04-07 16:32:32 [core.py:390]     return self._call_impl(*args, **kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1750, in _call_impl
+ERROR 04-07 16:32:32 [core.py:390]     return forward_call(*args, **kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/projects/bdjx/hxia3/vllm/vllm/model_executor/models/llama.py", line 529, in forward
+ERROR 04-07 16:32:32 [core.py:390]     model_output = self.model(input_ids, positions, intermediate_tensors,
+ERROR 04-07 16:32:32 [core.py:390]   File "/projects/bdjx/hxia3/vllm/vllm/compilation/decorators.py", line 238, in __call__
+ERROR 04-07 16:32:32 [core.py:390]     output = self.compiled_callable(*args, **kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/eval_frame.py", line 574, in _fn
+ERROR 04-07 16:32:32 [core.py:390]     return fn(*args, **kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/convert_frame.py", line 1380, in __call__
+ERROR 04-07 16:32:32 [core.py:390]     return self._torchdynamo_orig_callable(
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/convert_frame.py", line 547, in __call__
+ERROR 04-07 16:32:32 [core.py:390]     return _compile(
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/convert_frame.py", line 986, in _compile
+ERROR 04-07 16:32:32 [core.py:390]     guarded_code = compile_inner(code, one_graph, hooks, transform)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/convert_frame.py", line 715, in compile_inner
+ERROR 04-07 16:32:32 [core.py:390]     return _compile_inner(code, one_graph, hooks, transform)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_utils_internal.py", line 95, in wrapper_function
+ERROR 04-07 16:32:32 [core.py:390]     return function(*args, **kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/convert_frame.py", line 750, in _compile_inner
+ERROR 04-07 16:32:32 [core.py:390]     out_code = transform_code_object(code, transform)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/bytecode_transformation.py", line 1361, in transform_code_object
+ERROR 04-07 16:32:32 [core.py:390]     transformations(instructions, code_options)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/convert_frame.py", line 231, in _fn
+ERROR 04-07 16:32:32 [core.py:390]     return fn(*args, **kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/convert_frame.py", line 662, in transform
+ERROR 04-07 16:32:32 [core.py:390]     tracer.run()
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 2868, in run
+ERROR 04-07 16:32:32 [core.py:390]     super().run()
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 1052, in run
+ERROR 04-07 16:32:32 [core.py:390]     while self.step():
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 962, in step
+ERROR 04-07 16:32:32 [core.py:390]     self.dispatch_table[inst.opcode](self, inst)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 659, in wrapper
+ERROR 04-07 16:32:32 [core.py:390]     return inner_fn(self, inst)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 1658, in CALL_FUNCTION
+ERROR 04-07 16:32:32 [core.py:390]     self.call_function(fn, args, {})
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 897, in call_function
+ERROR 04-07 16:32:32 [core.py:390]     self.push(fn.call_function(self, args, kwargs))  # type: ignore[arg-type]
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/variables/nn_module.py", line 914, in call_function
+ERROR 04-07 16:32:32 [core.py:390]     return variables.UserFunctionVariable(fn, source=source).call_function(
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/variables/functions.py", line 317, in call_function
+ERROR 04-07 16:32:32 [core.py:390]     return super().call_function(tx, args, kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/variables/functions.py", line 118, in call_function
+ERROR 04-07 16:32:32 [core.py:390]     return tx.inline_user_function_return(self, [*self.self_args(), *args], kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 903, in inline_user_function_return
+ERROR 04-07 16:32:32 [core.py:390]     return InliningInstructionTranslator.inline_call(self, fn, args, kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/projects/bdjx/hxia3/vllm/vllm/compilation/decorators.py", line 234, in patched_inline_call
+ERROR 04-07 16:32:32 [core.py:390]     return inline_call(parent, func, args, kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 3072, in inline_call
+ERROR 04-07 16:32:32 [core.py:390]     return cls.inline_call_(parent, func, args, kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 3198, in inline_call_
+ERROR 04-07 16:32:32 [core.py:390]     tracer.run()
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 1052, in run
+ERROR 04-07 16:32:32 [core.py:390]     while self.step():
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 962, in step
+ERROR 04-07 16:32:32 [core.py:390]     self.dispatch_table[inst.opcode](self, inst)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 659, in wrapper
+ERROR 04-07 16:32:32 [core.py:390]     return inner_fn(self, inst)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 1748, in CALL_FUNCTION_KW
+ERROR 04-07 16:32:32 [core.py:390]     self.call_function(fn, args, kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 897, in call_function
+ERROR 04-07 16:32:32 [core.py:390]     self.push(fn.call_function(self, args, kwargs))  # type: ignore[arg-type]
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/variables/lazy.py", line 170, in realize_and_forward
+ERROR 04-07 16:32:32 [core.py:390]     return getattr(self.realize(), name)(*args, **kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/variables/nn_module.py", line 914, in call_function
+ERROR 04-07 16:32:32 [core.py:390]     return variables.UserFunctionVariable(fn, source=source).call_function(
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/variables/functions.py", line 317, in call_function
+ERROR 04-07 16:32:32 [core.py:390]     return super().call_function(tx, args, kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/variables/functions.py", line 118, in call_function
+ERROR 04-07 16:32:32 [core.py:390]     return tx.inline_user_function_return(self, [*self.self_args(), *args], kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 903, in inline_user_function_return
+ERROR 04-07 16:32:32 [core.py:390]     return InliningInstructionTranslator.inline_call(self, fn, args, kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/projects/bdjx/hxia3/vllm/vllm/compilation/decorators.py", line 234, in patched_inline_call
+ERROR 04-07 16:32:32 [core.py:390]     return inline_call(parent, func, args, kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 3072, in inline_call
+ERROR 04-07 16:32:32 [core.py:390]     return cls.inline_call_(parent, func, args, kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 3198, in inline_call_
+ERROR 04-07 16:32:32 [core.py:390]     tracer.run()
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 1052, in run
+ERROR 04-07 16:32:32 [core.py:390]     while self.step():
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 962, in step
+ERROR 04-07 16:32:32 [core.py:390]     self.dispatch_table[inst.opcode](self, inst)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 659, in wrapper
+ERROR 04-07 16:32:32 [core.py:390]     return inner_fn(self, inst)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 1748, in CALL_FUNCTION_KW
+ERROR 04-07 16:32:32 [core.py:390]     self.call_function(fn, args, kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 897, in call_function
+ERROR 04-07 16:32:32 [core.py:390]     self.push(fn.call_function(self, args, kwargs))  # type: ignore[arg-type]
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/variables/lazy.py", line 170, in realize_and_forward
+ERROR 04-07 16:32:32 [core.py:390]     return getattr(self.realize(), name)(*args, **kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/variables/nn_module.py", line 914, in call_function
+ERROR 04-07 16:32:32 [core.py:390]     return variables.UserFunctionVariable(fn, source=source).call_function(
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/variables/functions.py", line 317, in call_function
+ERROR 04-07 16:32:32 [core.py:390]     return super().call_function(tx, args, kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/variables/functions.py", line 118, in call_function
+ERROR 04-07 16:32:32 [core.py:390]     return tx.inline_user_function_return(self, [*self.self_args(), *args], kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 903, in inline_user_function_return
+ERROR 04-07 16:32:32 [core.py:390]     return InliningInstructionTranslator.inline_call(self, fn, args, kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/projects/bdjx/hxia3/vllm/vllm/compilation/decorators.py", line 234, in patched_inline_call
+ERROR 04-07 16:32:32 [core.py:390]     return inline_call(parent, func, args, kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 3072, in inline_call
+ERROR 04-07 16:32:32 [core.py:390]     return cls.inline_call_(parent, func, args, kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 3198, in inline_call_
+ERROR 04-07 16:32:32 [core.py:390]     tracer.run()
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 1052, in run
+ERROR 04-07 16:32:32 [core.py:390]     while self.step():
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 962, in step
+ERROR 04-07 16:32:32 [core.py:390]     self.dispatch_table[inst.opcode](self, inst)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 659, in wrapper
+ERROR 04-07 16:32:32 [core.py:390]     return inner_fn(self, inst)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 1658, in CALL_FUNCTION
+ERROR 04-07 16:32:32 [core.py:390]     self.call_function(fn, args, {})
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/symbolic_convert.py", line 897, in call_function
+ERROR 04-07 16:32:32 [core.py:390]     self.push(fn.call_function(self, args, kwargs))  # type: ignore[arg-type]
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/variables/builtin.py", line 1004, in call_function
+ERROR 04-07 16:32:32 [core.py:390]     return handler(tx, args, kwargs)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/variables/builtin.py", line 838, in <lambda>
+ERROR 04-07 16:32:32 [core.py:390]     return lambda *args: unimplemented(error_msg)
+ERROR 04-07 16:32:32 [core.py:390]   File "/u/hxia3/.conda/envs/rag/lib/python3.10/site-packages/torch/_dynamo/exc.py", line 317, in unimplemented
+ERROR 04-07 16:32:32 [core.py:390]     raise Unsupported(msg, case_name=case_name)
+ERROR 04-07 16:32:32 [core.py:390] torch._dynamo.exc.Unsupported: builtin: print [<class 'torch._dynamo.variables.constant.ConstantVariable'>] False
+ERROR 04-07 16:32:32 [core.py:390] 
+ERROR 04-07 16:32:32 [core.py:390] from user code:
+ERROR 04-07 16:32:32 [core.py:390]    File "/projects/bdjx/hxia3/vllm/vllm/model_executor/models/llama.py", line 358, in forward
+ERROR 04-07 16:32:32 [core.py:390]     hidden_states, residual = layer(positions, hidden_states, residual)
+ERROR 04-07 16:32:32 [core.py:390]   File "/projects/bdjx/hxia3/vllm/vllm/model_executor/models/llama.py", line 278, in forward
+ERROR 04-07 16:32:32 [core.py:390]     hidden_states = self.self_attn(positions=positions,
+ERROR 04-07 16:32:32 [core.py:390]   File "/projects/bdjx/hxia3/vllm/minidrag/minidrag/model_executor/models/llama.py", line 17, in forward
+ERROR 04-07 16:32:32 [core.py:390]     attn_output = self.attn(q, k, v,
+ERROR 04-07 16:32:32 [core.py:390]   File "/projects/bdjx/hxia3/vllm/minidrag/minidrag/attention/layer.py", line 75, in forward
+ERROR 04-07 16:32:32 [core.py:390]     print("call unified attention")
+ERROR 04-07 16:32:32 [core.py:390] 
+ERROR 04-07 16:32:32 [core.py:390] Set TORCH_LOGS="+dynamo" and TORCHDYNAMO_VERBOSE=1 for more information
+ERROR 04-07 16:32:32 [core.py:390] 
+ERROR 04-07 16:32:32 [core.py:390] 
+ERROR 04-07 16:32:32 [core.py:390] You can suppress this exception and fall back to eager by setting:
+ERROR 04-07 16:32:32 [core.py:390]     import torch._dynamo
+ERROR 04-07 16:32:32 [core.py:390]     torch._dynamo.config.suppress_errors = True
+ERROR 04-07 16:32:32 [core.py:390] 
+ERROR 04-07 16:32:32 [core.py:390] 
+CRITICAL 04-07 16:32:32 [core_client.py:361] Got fatal signal from worker processes, shutting down. See stack trace above for root cause issue.
