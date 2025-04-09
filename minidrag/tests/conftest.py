@@ -10,9 +10,13 @@ sys.path.insert(0, vllm_root)
 minidrag_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../minidrag"))
 sys.path.insert(0, minidrag_root)
 
+# for reproducibility
+from vllm.model_executor.utils import set_random_seed
+set_random_seed(42)
+
 
 # inject custom ops for all tests (not affect any functionality)
-# specifically, we just inject two functions:
+# specifically, we inject two functions:
 # 1. vllm._custom_ops.rotary_embedding_q = rotary_embedding_q
 # 2. vllm._custom_ops.batched_rotary_embedding_q = batched_rotary_embedding_q
 from minidrag._custom_ops import apply_patch
@@ -22,7 +26,8 @@ apply_patch()
 @pytest.fixture(scope="session")
 def mock_sampling_params():
     from vllm import SamplingParams
-    return SamplingParams(temperature=0.0, max_tokens=100)
+    return SamplingParams(temperature=0.0, max_tokens=100,
+                          seed=42, stop_token_ids=[128008, 128001])
 
 
 @pytest.fixture(scope="session")
