@@ -15,7 +15,7 @@ def new_forward_native(
     self,
     positions: torch.Tensor,
     query: torch.Tensor,
-    key: torch.Tensor,
+    key: Optional[torch.Tensor] = None,
     offsets: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """A PyTorch-native implementation of forward()."""
@@ -40,7 +40,7 @@ def new_forward_cuda(
     self,
     positions: torch.Tensor,
     query: torch.Tensor,
-    key: torch.Tensor,
+    key: Optional[torch.Tensor] = None,
     offsets: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     from vllm import _custom_ops as ops

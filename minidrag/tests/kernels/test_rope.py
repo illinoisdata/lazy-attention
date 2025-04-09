@@ -10,7 +10,7 @@ from tests.kernels.test_pos_encoding import IS_NEOX_STYLE, DTYPES, HEAD_SIZES,\
     ROTARY_DIMS, NUM_HEADS, BATCH_SIZES, SEQ_LENS, SEEDS, CUDA_DEVICES, TENSORS_SHAPES_FN
 from utils import RoPEPatchContext
 
-# DTYPES = [torch.bfloat16]  # DTYPES = [torch.half, torch.bfloat16, torch.float]
+
 # We test two cases: base and llama3
 ROPE_SCALINGS = [
     # default case
@@ -169,7 +169,7 @@ def test_rotary_embedding(
         # NOTE(woosuk): The reference implementation should be executed first
         # because the custom kernel is in-place.
         ref_query, ref_key = rope.forward_native(positions, query, key)
-        out_query, out_key = rope.forward_cuda(positions, query, key)
+        out_query, out_key = rope.forward(positions, query, key)
         # Compare the results.
         torch.testing.assert_close(out_query,
                                 ref_query,

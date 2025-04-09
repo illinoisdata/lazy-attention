@@ -10,16 +10,17 @@ prompts = [
 ]
 
 @pytest.fixture
-def vllm_reference_outputs(request, mock_sampling_params, eager):
-    print("vllm reference ", eager)
+def vllm_reference_outputs(request, eager,
+                           mock_model_name,
+                           mock_sampling_params):
     value = request.config.cache.get(f"vllm_reference_outputs::{eager}", None)
     if not value:
         value = []
         MiniDynamicRAG.apply_triton_backend()
         import vllm
-        llm = vllm.LLM(model="meta-llama/Llama-3.1-8B",
+        llm = vllm.LLM(model=mock_model_name,
                        gpu_memory_utilization=0.9,
-                       enforce_eager=True,
+                       enforce_eager=eager,
                        enable_prefix_caching=True,)
         outputs = llm.generate(prompts, mock_sampling_params)
 
@@ -33,22 +34,17 @@ def vllm_reference_outputs(request, mock_sampling_params, eager):
     return value
 
 
-@pytest.fixture(scope="module")
-def mock_sampling_params():
-    from vllm import SamplingParams
-    return SamplingParams(temperature=0.0, max_tokens=100)
-
-
 class TestE2E:
     @pytest.mark.integration
     @pytest.mark.parametrize("eager", [False])
-    def test_e2e(self, vllm_reference_outputs, mock_sampling_params, eager):
-        print("ours", eager)
+    def test_e2e(self, vllm_reference_outputs, eager,
+                 mock_model_name,
+                 mock_sampling_params):
         MiniDynamicRAG.apply_patches()
         import vllm
-        llm = vllm.LLM(model="meta-llama/Llama-3.1-8B",                      
+        llm = vllm.LLM(model=mock_model_name,                      
                        gpu_memory_utilization=0.9,
-                       enforce_eager=True,
+                       enforce_eager=eager,
                        enable_prefix_caching=True,)
         outputs = llm.generate(prompts, mock_sampling_params)
         print('-'*100)
