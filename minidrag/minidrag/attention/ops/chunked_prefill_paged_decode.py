@@ -201,7 +201,7 @@ def kernel_paged_attention_2d(
     )
 
 
-def dynamic_chunked_prefill_paged_decode(
+def chunked_prefill_paged_decode(
     query,
     key,
     value,

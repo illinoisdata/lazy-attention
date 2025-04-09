@@ -4,13 +4,11 @@ from typing import Any, Optional
 
 import torch
 
-from vllm.attention.ops.chunked_prefill_paged_decode import (
-    chunked_prefill_paged_decode)
 from vllm.attention.ops.paged_attn import PagedAttention
 from vllm.v1.attention.backends.flash_attn import (
-    FlashAttentionMetadata, FlashAttentionMetadataBuilder)
+    FlashAttentionMetadata)
 
-from ..ops.chunked_prefill_paged_decode import dynamic_chunked_prefill_paged_decode
+from ..ops.chunked_prefill_paged_decode import chunked_prefill_paged_decode
 
 # class TritonAttentionImpl(AttentionImpl):
 def forward(
@@ -80,7 +78,7 @@ def forward(
     )
 
     # Compute attention and update output up to `num_actual_tokens`.
-    dynamic_chunked_prefill_paged_decode(
+    chunked_prefill_paged_decode(
         query=query[:num_actual_tokens],
         key=key[:num_actual_tokens],
         value=value[:num_actual_tokens],

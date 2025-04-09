@@ -6,6 +6,11 @@ We use monkeypatch to replace the original function/class in vLLM with our custo
 
 For C/CUDA code, we use `#include` macro to inject the customized code into the original code.
 
+## TODO
+
+### Test
+
+- [ ] Use context manager to control patch
 
 ## Test coverage
 

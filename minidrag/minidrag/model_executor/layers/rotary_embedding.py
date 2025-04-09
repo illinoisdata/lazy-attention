@@ -36,7 +36,7 @@ def new_forward_native(
 
     return query, key
 
-def forward_cuda(
+def new_forward_cuda(
     self,
     positions: torch.Tensor,
     query: torch.Tensor,
@@ -67,7 +67,7 @@ def apply_patch():
     original_forward_native = vllm.model_executor.layers.rotary_embedding.RotaryEmbedding.forward_native
 
     # apply the new forward_cuda and forward_native
-    vllm.model_executor.layers.rotary_embedding.RotaryEmbedding.forward_cuda = forward_cuda
+    vllm.model_executor.layers.rotary_embedding.RotaryEmbedding.forward_cuda = new_forward_cuda
     vllm.model_executor.layers.rotary_embedding.RotaryEmbedding.forward_native = new_forward_native
 
 def revert_patch():

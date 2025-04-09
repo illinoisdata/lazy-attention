@@ -24,3 +24,8 @@ def apply_patch():
     import vllm._custom_ops
     vllm._custom_ops.rotary_embedding_q = rotary_embedding_q
     vllm._custom_ops.batched_rotary_embedding_q = batched_rotary_embedding_q
+    
+def revert_patch():
+    import vllm._custom_ops
+    del vllm._custom_ops.rotary_embedding_q
+    del vllm._custom_ops.batched_rotary_embedding_q
