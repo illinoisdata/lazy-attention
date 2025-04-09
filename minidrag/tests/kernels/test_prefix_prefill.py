@@ -1,10 +1,9 @@
 # adapted from vllm/tests/kernels/test_prefix_prefill.py
 
-import math
 import random
 import time
 from collections.abc import Callable
-from typing import Optional
+from typing import Optional, Tuple
 
 import pytest
 import torch
@@ -15,20 +14,21 @@ from xformers.ops.fmha.attn_bias import BlockDiagonalCausalFromBottomRightMask
 from vllm.attention.ops.chunked_prefill_paged_decode import (
     chunked_prefill_paged_decode)
 from vllm.attention.ops.prefix_prefill import context_attention_fwd
-# # minidrag custom functions
-# from minidrag.attention.ops.chunked_prefill_paged_decode import (
-#     chunked_prefill_paged_decode as minidrag_chunked_prefill_paged_decode)
-# from minidrag.attention.ops.prefix_prefill import (
-#     context_attention_fwd as minidrag_context_attention_fwd)
+# minidrag custom functions
+from minidrag.attention.ops.chunked_prefill_paged_decode import (
+    chunked_prefill_paged_decode as minidrag_chunked_prefill_paged_decode)
+from minidrag.attention.ops.prefix_prefill import (
+    context_attention_fwd as minidrag_context_attention_fwd)
 from vllm.platforms import current_platform
 from vllm.utils import STR_DTYPE_TO_TORCH_DTYPE
 from tests.kernels.test_prefix_prefill import (HEAD_SIZES, NUM_HEADS,
                                                NUM_QUERIES_PER_KV,
-                                               SLIDING_WINDOW, DTYPES, CUDA_DEVICES, KV_CACHE_DTYPES)
-from utils import RoPEPatchContext
+                                               DTYPES, CUDA_DEVICES, KV_CACHE_DTYPES)
+from utils import RoPEPatchContext, DynamicTritonAttnContext
 KV_CACHE_DTYPES = ["auto"] #, "fp8", "fp8_e5m2"] # TODO(haocheng): support more data types
 
-OPS = [chunked_prefill_paged_decode, context_attention_fwd]
+OPS = [(chunked_prefill_paged_decode, minidrag_chunked_prefill_paged_decode), 
+       (context_attention_fwd, minidrag_context_attention_fwd)]
 
 @pytest.mark.gpu
 @pytest.mark.unit
@@ -38,23 +38,25 @@ OPS = [chunked_prefill_paged_decode, context_attention_fwd]
 @pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("kv_cache_dtype", KV_CACHE_DTYPES)
 @pytest.mark.parametrize("device", CUDA_DEVICES)
-@pytest.mark.parametrize("sliding_window", SLIDING_WINDOW)
-@pytest.mark.parametrize("op", OPS)
+# @pytest.mark.parametrize("sliding_window", SLIDING_WINDOW)
+@pytest.mark.parametrize("ops", OPS)
 @torch.inference_mode()
 def test_contexted_kv_attention_with_pos(
     num_heads: int,
     num_queries_per_kv: int,
     head_size: int,
-    sliding_window: int,
     dtype: torch.dtype,
     kv_cache_dtype: str,
     device: str,
-    op: Callable,
+    ops: Tuple[Callable],
     is_neox_style: bool = True, # TODO(haocheng): support more styles
     rotary_dim: Optional[int] = None,
     max_position: int = 8192,
     base: int = 10000,
+    sliding_window: int = 0,
 ) -> None:
+    op = ops[0]
+    dynamic_op = ops[1]
     if 'fp8' in kv_cache_dtype and not current_platform.has_device_capability(
             89):
         pytest.skip(
@@ -121,7 +123,9 @@ def test_contexted_kv_attention_with_pos(
                 key[s_start:s_start+s_len,:,:]) # rotate key
             q_start += q_len
             s_start += s_len
-
+    # copy the rotated query
+    rotated_query = query.clone()
+    
     if kv_cache_dtype == "auto":
         cache_dtype = dtype
     else:
@@ -276,3 +280,79 @@ def test_contexted_kv_attention_with_pos(
     output_ref = output_ref.reshape(output.shape)
     atol = 1e-3 if "fp8" in kv_cache_dtype else 1e-4
     torch.testing.assert_close(output, output_ref, atol=atol, rtol=0)
+    
+    # /////////////////////////////////////////////////////////////////////////
+    # test our dynamic prefill and decode
+    # /////////////////////////////////////////////////////////////////////////
+    with DynamicTritonAttnContext():
+        dynamic_output = torch.empty(num_tokens, num_heads, head_size, dtype=dtype)
+        # prepare k cache
+        for i in range(BS):
+            for j in range(query_lens[i]):
+                k[b_start_loc[i] + j].copy_(unrotated_key[b_seq_start_loc[i] + b_ctx_len[i] +
+                                                j])
+            cur_ctx = 0
+            block_id = 0
+            while cur_ctx < b_ctx_len[i]:
+                start_loc = b_seq_start_loc[i] + cur_ctx
+                if cur_ctx + block_size > b_ctx_len[i]:
+                    end_loc = b_seq_start_loc[i] + b_ctx_len[i]
+                else:
+                    end_loc = start_loc + block_size
+                start_slot = block_table[i, block_id] * block_size
+                end_slot = start_slot + end_loc - start_loc
+                k_cache.view(-1, num_kv_heads,
+                            head_size)[start_slot:end_slot].copy_(
+                                unrotated_key[start_loc:end_loc])
+                cur_ctx += block_size
+                block_id += 1
+        # transpose K_cache[num_blocks, block_size, num_kv_heads, head_size]
+        # to K_cache[num_blocks, num_kv_heads, head_size/8, block_size, 8]
+        k_cache = k_cache.view(-1, block_size, num_kv_heads, head_size // 8,
+                            8).permute(0, 2, 3, 1, 4).contiguous()
+
+        # Warm up the Triton kernel by calling it once before actually measuring
+        # generation time
+        dynamic_op(rotated_query,
+        k,
+        v,
+        dynamic_output,
+        kv_cache_dtype,
+        k_cache,
+        v_cache,
+        block_table,
+        b_start_loc,
+        b_seq_len,
+        MAX_CTX_LEN,
+        max_input_len,
+        k_scale,
+        v_scale,
+        sliding_window=sliding_window,
+        rotary_dim=rope.rotary_dim,
+        cos_sin_cache=rope.cos_sin_cache,
+        is_neox_style=rope.is_neox_style,)
+        torch.cuda.synchronize()
+        start_time = time.time()
+        dynamic_op(rotated_query,
+        k,
+        v,
+        dynamic_output,
+        kv_cache_dtype,
+        k_cache,
+        v_cache,
+        block_table,
+        b_start_loc,
+        b_seq_len,
+        MAX_CTX_LEN,
+        max_input_len,
+        k_scale,
+        v_scale,
+        sliding_window=sliding_window,
+        rotary_dim=rope.rotary_dim,
+        cos_sin_cache=rope.cos_sin_cache,
+        is_neox_style=rope.is_neox_style,)
+        torch.cuda.synchronize()
+        end_time = time.time()
+        print(f"dynamic triton Time: {(end_time - start_time)*1000:.2f} ms")
+        torch.testing.assert_close(dynamic_output, output_ref, atol=atol, rtol=0)
+        

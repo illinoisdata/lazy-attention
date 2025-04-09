@@ -9,6 +9,13 @@ import triton.language as tl
 
 from vllm.platforms import current_platform
 
+# Static kernels parameters
+BASE_BLOCK = 128 if current_platform.has_device_capability(80) else 64
+NUM_WARPS = 4 if current_platform.is_rocm() else 8
+
+# To check compatibility
+IS_TURING = current_platform.get_device_capability() == (7, 5)
+
 
 if triton.__version__ >= "2.1.0":
     """
@@ -66,6 +73,7 @@ if triton.__version__ >= "2.1.0":
         stride_v_cache_d,
         stride_v_cache_bl,
         num_queries_per_kv: int,
+        IN_PRECISION: tl.constexpr,
         BLOCK_M: tl.constexpr,
         BLOCK_DMODEL: tl.constexpr,  # head size
         BLOCK_DMODEL_PADDED: tl.constexpr,  # head size padded to a power of 2
@@ -74,22 +82,10 @@ if triton.__version__ >= "2.1.0":
         SKIP_DECODE: tl.constexpr,
         cos_sin_cache,
         rotary_dim: tl.constexpr,
+        rotary_dim_pow2: tl.constexpr,
         is_neox_style: tl.constexpr,
     ):
-        # grid: (batch_size, num_head, num_blocks) -> triton instances for parallel execution
-        # ceil(max_input_len / BLOCK) = num_blocks
-        # from grid get id of batch, head, and start_m
-
-        # cur_batch = tl.program_id(0)  
-        # cur_head = tl.program_id(1)
-        # start_m = tl.program_id(2)
-
-        # cur_kv_head = cur_head // num_queries_per_kv  # share kv for query
-
-        # cur_batch_ctx_len = tl.load(B_Ctxlen + cur_batch)  # get context length for current request
-        # cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)  # get sequence length for current request
-        # cur_batch_in_all_start_index = tl.load(B_Start_Loc + cur_batch)  # get start index for current request
-        # cur_batch_query_len = cur_batch_seq_len - cur_batch_ctx_len  # get query length for current request
+        # TODO(haocheng): consider the case rot dim != head size
         cur_batch = tl.program_id(0)
         cur_head = tl.program_id(1)
         start_m = tl.program_id(2)
@@ -127,7 +123,10 @@ if triton.__version__ >= "2.1.0":
 
         # divide query into two parts
         embed_dim: tl.constexpr = rotary_dim // 2
-        offs_d1 = tl.arange(0, embed_dim)
+        embed_dim_pow2: tl.constexpr = rotary_dim_pow2 // 2
+        # offs_d1 = tl.arange(0, embed_dim) # arange's range must be a power of 2
+        offs_d1_raw = tl.arange(0, embed_dim_pow2)
+        offs_d1 = tl.where(offs_d1_raw < embed_dim, offs_d1_raw, 0)
         offs_d2 = offs_d1 + embed_dim
         # [M, D//2]
         off_q1 = (
@@ -168,8 +167,6 @@ if triton.__version__ >= "2.1.0":
                 offs_d[None, :] * stride_v_cache_d +
                 (start_n + offs_n[:, None]) % block_size * stride_v_cache_bl)
             
-            qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)  # [M,N]
-
             # [D//2,N]
             off_k_1 = (bn[None, :] * stride_k_cache_bs +  # block
                      cur_kv_head * stride_k_cache_h +         # head
@@ -220,9 +217,9 @@ if triton.__version__ >= "2.1.0":
                               mask=dim_mask_half[:, None] &
                                 ((start_n + offs_n[None, :]) < cur_batch_ctx_len),
                                 other=0.0)
-                
-            qk += tl.dot(q_1, (k_load_1 * cos_val - k_load_2 * sin_val))
-            qk += tl.dot(q_2, (k_load_1 * sin_val + k_load_2 * cos_val))
+            qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)  # [M,N]
+            qk = tl.dot(q_1, (k_load_1 * cos_val - k_load_2 * sin_val), acc=qk, input_precision=IN_PRECISION)
+            qk = tl.dot(q_2, (k_load_1 * sin_val + k_load_2 * cos_val), acc=qk, input_precision=IN_PRECISION)
             qk = tl.where((start_n + offs_n[None, :]) < cur_batch_ctx_len, qk,
                             float("-inf"))
             qk *= sm_scale
@@ -275,13 +272,13 @@ if triton.__version__ >= "2.1.0":
             l_i = l_i_new
             m_i = m_i_new
 
-        off_k = (offs_n[None, :] * stride_kbs + cur_kv_head * stride_kh +
-                 offs_d[:, None] * stride_kd)
+        # off_k = (offs_n[None, :] * stride_kbs + cur_kv_head * stride_kh +
+        #          offs_d[:, None] * stride_kd)
         off_v = (offs_n[:, None] * stride_vbs + cur_kv_head * stride_vh +
                  offs_d[None, :] * stride_vd)
 
        
-        k_ptrs = K + off_k
+        # k_ptrs = K + off_k
         v_ptrs = V + off_v
 
         # block_mask is 0 when we're already past the current query length
@@ -291,7 +288,6 @@ if triton.__version__ >= "2.1.0":
         for start_n in range(0, block_mask * (start_m + 1) * BLOCK_M, BLOCK_N):
             start_n = tl.multiple_of(start_n, BLOCK_N)
             # -- compute qk ----
-            qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
             # Apply rotary embedding to the key tensor `k` for the new part
 
             # [D//2,N]
@@ -326,9 +322,9 @@ if triton.__version__ >= "2.1.0":
                               mask=dim_mask_half[:, None] &
                         ((start_n + offs_n[None, :]) < cur_batch_query_len),
                         other=0.0)
-                
-            qk += tl.dot(q_1, (k_load_1 * cos_val - k_load_2 * sin_val))
-            qk += tl.dot(q_2, (k_load_1 * sin_val + k_load_2 * cos_val))
+            qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)     
+            qk = tl.dot(q_1, (k_load_1 * cos_val - k_load_2 * sin_val), acc=qk, input_precision=IN_PRECISION)
+            qk = tl.dot(q_2, (k_load_1 * sin_val + k_load_2 * cos_val), acc=qk, input_precision=IN_PRECISION)
 
             qk *= sm_scale
 
@@ -382,7 +378,7 @@ if triton.__version__ >= "2.1.0":
 
     @torch.inference_mode()
     def context_attention_fwd(q,
-                              k,  # hint: unrotated key when use DynamicRAG, otherwise rotated key
+                              k,
                               v,
                               o,
                               kv_cache_dtype: str,
@@ -393,8 +389,8 @@ if triton.__version__ >= "2.1.0":
                               b_seq_len,
                               max_seq_len,
                               max_input_len,
-                              k_scale: float = 1.0,
-                              v_scale: float = 1.0,
+                              k_scale: torch.Tensor,
+                              v_scale: torch.Tensor,
                               alibi_slopes=None,
                               sliding_window=None,
                               sm_scale=None,
@@ -403,13 +399,19 @@ if triton.__version__ >= "2.1.0":
                               rotary_dim=None,
                               is_neox_style=True,
                               ):
-        BLOCK = 128 if current_platform.has_device_capability(80) else 64
-        NUM_WARPS = 8
-
+        q_dtype_is_f32 = q.dtype is torch.float32
         # need to reduce num. blocks when using fp32
         # due to increased use of GPU shared memory
-        if q.dtype is torch.float32:
-            BLOCK = BLOCK // 2
+        # if q.dtype is torch.float32:
+        BLOCK = BASE_BLOCK // 2 if q_dtype_is_f32 else BASE_BLOCK
+
+        # Turing does have tensor core for float32 multiplication
+        # use ieee as fallback for triton kernels work. There is also
+        # warning on vllm/config.py to inform users this fallback
+        # implementation
+        IN_PRECISION = 'ieee' if IS_TURING and q_dtype_is_f32 else None
+
+        NUM_WARPS = 8
 
         # Conversion of FP8 Tensor from uint8 storage to
         # appropriate torch.dtype for interpretation by Triton
@@ -437,10 +439,12 @@ if triton.__version__ >= "2.1.0":
         assert Lq == Lk and Lk == Lv
         # round up Lk to a power of 2 - this is required for Triton block size
         Lk_padded = triton.next_power_of_2(Lk)
-        sm_scale = 1.0 / (Lq**0.5)
+        if sm_scale is None:
+            sm_scale = 1.0 / (Lq**0.5)
         batch, head = b_seq_len.shape[0], q.shape[1]
         num_queries_per_kv = q.shape[1] // k.shape[1]
 
+        assert batch + 1 == len(b_start_loc)
         grid = (batch, head, triton.cdiv(max_input_len, BLOCK))  # batch, head,
 
         # 0 means "disable"
@@ -450,6 +454,7 @@ if triton.__version__ >= "2.1.0":
         if alibi_slopes is not None:
             raise NotImplementedError("Alibi slopes are not implemented for prefix prefill")
         
+        assert is_neox_style, "Only Neox style rotary embedding is supported"
         # invoke the kernel for dynamic rotary embedding
         _fwd_kernel[grid](
                 q,
@@ -492,6 +497,7 @@ if triton.__version__ >= "2.1.0":
                 v_cache.stride(
                     3),  #[num_blocks, num_kv_heads, head_size, block_size]
                 num_queries_per_kv=num_queries_per_kv,  # share kv for each query
+                IN_PRECISION=IN_PRECISION,
                 BLOCK_M=BLOCK,
                 BLOCK_DMODEL=Lk,
                 BLOCK_DMODEL_PADDED=Lk_padded,
@@ -502,6 +508,7 @@ if triton.__version__ >= "2.1.0":
                 num_stages=1,
                 cos_sin_cache=cos_sin_cache,  # [max_position, rot_dim]
                 rotary_dim=rotary_dim,
+                rotary_dim_pow2=triton.next_power_of_2(rotary_dim),
                 is_neox_style=is_neox_style,
         )
         return

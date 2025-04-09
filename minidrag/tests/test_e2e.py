@@ -36,7 +36,7 @@ def vllm_reference_outputs(request, eager,
 
 class TestE2E:
     @pytest.mark.integration
-    @pytest.mark.parametrize("eager", [False])
+    @pytest.mark.parametrize("eager", [True])
     def test_e2e(self, vllm_reference_outputs, eager,
                  mock_model_name,
                  mock_sampling_params):

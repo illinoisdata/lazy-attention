@@ -53,9 +53,11 @@ def kernel_paged_attention_2d(
         filter_by_query_len: tl.constexpr,  # bool
         query_start_len_ptr,  # [num_seqs+1]
         rotary_dim: tl.constexpr,  # int
+        rotary_dim_pow2: tl.constexpr,  # int
         cos_sin_cache_ptr,
         is_neox_style: tl.constexpr,  # bool
 ):
+    # TODO(haocheng): consider the case rot dim != head size
     seq_idx = tl.program_id(0)
     kv_head_idx = tl.program_id(1)
 
@@ -81,14 +83,30 @@ def kernel_paged_attention_2d(
 
     dim_mask = tl.where(tl.arange(0, HEAD_SIZE_PADDED) < HEAD_SIZE, 1,
                         0).to(tl.int1)
+    dim_mask_half = tl.where(tl.arange(0, HEAD_SIZE_PADDED // 2) < HEAD_SIZE // 2, 1,
+                        0).to(tl.int1)
+    # rotary_dim = HEAD_SIZE
+    offs_d1 = tl.arange(0, HEAD_SIZE_PADDED // 2)
+    offs_d2 = offs_d1 + HEAD_SIZE // 2
 
-    # Q : (num_queries_per_kv, HEAD_SIZE,)
-    Q = tl.load(
-        query_ptr + query_offset + tl.arange(0, HEAD_SIZE_PADDED)[None, :],
-        mask=dim_mask[None, :] & head_mask[:, None],
+    # # Q : (num_queries_per_kv, HEAD_SIZE,)
+    # Q = tl.load(
+    #     query_ptr + query_offset + tl.arange(0, HEAD_SIZE_PADDED)[None, :],
+    #     mask=dim_mask[None, :] & head_mask[:, None],
+    #     other=0.0,
+    # )
+    # Q_1: (num_queries_per_kv, HEAD_SIZE // 2,)
+    Q_1 = tl.load(
+        query_ptr + query_offset + offs_d1[None, :],
+        mask=dim_mask_half[None, :] & head_mask[:, None],
         other=0.0,
     )
-
+    # Q_2: (num_queries_per_kv, HEAD_SIZE // 2,)
+    Q_2 = tl.load(
+        query_ptr + query_offset + offs_d2[None, :],
+        mask=dim_mask_half[None, :] & head_mask[:, None],
+        other=0.0,
+    )
     block_table_offset = seq_idx * block_table_stride
 
     M = tl.full([num_queries_per_kv_padded], float("-inf"), dtype=tl.float32)
@@ -120,21 +138,41 @@ def kernel_paged_attention_2d(
                     offs_d[None, :] * stride_v_cache_2 +
                     offs_n[:, None] * stride_v_cache_3)
 
-        k_offset = (physical_block_idx * stride_k_cache_0 +
+        # k_offset = (physical_block_idx * stride_k_cache_0 +
+        #             kv_head_idx * stride_k_cache_1 +
+        #             (offs_d[:, None] // x) * stride_k_cache_2 +
+        #             offs_n[None, :] * stride_k_cache_3 +
+        #             (offs_d[:, None] % x) * stride_k_cache_4)
+        k_offset_1 = (physical_block_idx * stride_k_cache_0 +
                     kv_head_idx * stride_k_cache_1 +
-                    (offs_d[:, None] // x) * stride_k_cache_2 +
+                    (offs_d1[:, None] // x) * stride_k_cache_2 +
                     offs_n[None, :] * stride_k_cache_3 +
-                    (offs_d[:, None] % x) * stride_k_cache_4)
+                    (offs_d1[:, None] % x) * stride_k_cache_4)
+        k_offset_2 = (physical_block_idx * stride_k_cache_0 +
+                    kv_head_idx * stride_k_cache_1 +
+                    (offs_d2[:, None] // x) * stride_k_cache_2 +
+                    offs_n[None, :] * stride_k_cache_3 +
+                    (offs_d2[:, None] % x) * stride_k_cache_4)
 
-        # K : (HEAD_SIZE, BLOCK_SIZE)
-        K_load = tl.load(key_cache_ptr + k_offset,
-                         mask=dim_mask[:, None],
+        # # K : (HEAD_SIZE, BLOCK_SIZE)
+        # K_load = tl.load(key_cache_ptr + k_offset,
+        #                  mask=dim_mask[:, None],
+        #                  other=0.0)
+        # K1: (HEAD_SIZE // 2, BLOCK_SIZE)
+        K_load_1 = tl.load(key_cache_ptr + k_offset_1,
+                         mask=dim_mask_half[:, None],
+                         other=0.0)
+        # K2: (HEAD_SIZE // 2, BLOCK_SIZE)
+        K_load_2 = tl.load(key_cache_ptr + k_offset_2,
+                         mask=dim_mask_half[:, None],
                          other=0.0)
 
-        if K_load.dtype.is_fp8():
-            K = (K_load.to(tl.float32) * tl.load(k_scale)).to(Q.dtype)
+        if K_load_1.dtype.is_fp8():
+            K_1 = (K_load_1.to(tl.float32) * tl.load(k_scale)).to(Q_1.dtype)
+            K_2 = (K_load_2.to(tl.float32) * tl.load(k_scale)).to(Q_2.dtype)
         else:
-            K = K_load
+            K_1 = K_load_1
+            K_2 = K_load_2
 
         # V : (BLOCK_SIZE, HEAD_SIZE)
         V_load = tl.load(value_cache_ptr + v_offset,
@@ -149,11 +187,33 @@ def kernel_paged_attention_2d(
         seq_offset = j * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
         boundary = tl.full([BLOCK_SIZE], seq_len, dtype=tl.int32)
         seq_mask = seq_offset[None, :] < boundary
+        
+        # fuse rotary embedding
+        positions = seq_offset
+        start_n = j * BLOCK_SIZE
+
+        offs_cache_1 = (positions[None, :] * rotary_dim +
+                            offs_d1[:, None])
+        offs_cache_2 = (positions[None, :] * rotary_dim +
+                            offs_d2[:, None])
+        cos_val = tl.load(cos_sin_cache_ptr + offs_cache_1,
+                               mask=dim_mask_half[:, None] &
+                                ((start_n + offs_n[None, :]) < boundary),
+                                other=0.0)
+        sin_val = tl.load(cos_sin_cache_ptr + offs_cache_2, 
+                              mask=dim_mask_half[:, None] &
+                                ((start_n + offs_n[None, :]) < boundary),
+                                other=0.0)
 
         # S : (num_queries_per_kv, BLOCK_SIZE,)
         S = tl.where(head_mask[:, None] & seq_mask, 0.0,
                      float("-inf")).to(tl.float32)
-        S += scale * tl.dot(Q, K)
+        qk = tl.zeros([num_queries_per_kv_padded, BLOCK_SIZE],
+                      dtype=tl.float32)
+        qk = tl.dot(Q_1, (K_1 * cos_val - K_2 * sin_val), acc=qk)
+        qk = tl.dot(Q_2, (K_1 * sin_val + K_2 * cos_val), acc=qk)
+        # S += scale * tl.dot(Q, K)
+        S += scale * qk
 
         context_len = seq_len - 1
 
@@ -330,6 +390,7 @@ def chunked_prefill_paged_decode(
             filter_by_query_len=True,
             query_start_len_ptr=query_start_loc,
             rotary_dim=rotary_dim,
+            rotary_dim_pow2=triton.next_power_of_2(rotary_dim),  # padded
             cos_sin_cache_ptr=cos_sin_cache,
             is_neox_style=is_neox_style,
         )
