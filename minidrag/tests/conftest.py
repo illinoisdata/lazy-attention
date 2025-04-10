@@ -3,16 +3,13 @@ import os
 import sys
 import pytest
 
+# os.environ['PYTORCH_CUDA_GRAPH_DEBUG'] = '1'
 
 # add root directory to python path
 vllm_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.insert(0, vllm_root)
 minidrag_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../minidrag"))
 sys.path.insert(0, minidrag_root)
-
-# for reproducibility
-from vllm.model_executor.utils import set_random_seed
-set_random_seed(42)
 
 
 # inject custom ops for all tests (not affect any functionality)
@@ -24,10 +21,20 @@ apply_patch()
 
 
 @pytest.fixture(scope="session")
+def mock_prompts():
+    prompts = [
+        "Hello, my name is",
+        "The president of the United States is",
+        "The capital of France is",
+        "The future of AI is",
+    ]
+    return prompts
+
+
+@pytest.fixture(scope="session")
 def mock_sampling_params():
     from vllm import SamplingParams
-    return SamplingParams(temperature=0.0, max_tokens=100,
-                          seed=42, stop_token_ids=[128008, 128001])
+    return SamplingParams(temperature=0, max_tokens=100, seed=42)
 
 
 @pytest.fixture(scope="session")

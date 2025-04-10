@@ -7,7 +7,7 @@ import triton.language as tl
 from vllm import _custom_ops as ops
 from vllm.platforms.rocm import use_rocm_custom_paged_attention
 
-from .prefix_prefill import context_attention_fwd
+from .prefix_prefill import context_attention_fwd, IS_TURING
 
 
 @triton.jit
@@ -35,6 +35,7 @@ def kernel_paged_attention_2d(
         query_stride_1: tl.int64,  # int, should be equal to head_size
         output_stride_0: tl.int64,  # int
         output_stride_1: tl.int64,  # int, should be equal to head_size
+        IN_PRECISION: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,  # int
         HEAD_SIZE: tl.constexpr,  # int
         HEAD_SIZE_PADDED: tl.constexpr,  # int, must be power of 2
@@ -180,7 +181,7 @@ def kernel_paged_attention_2d(
                          other=0.0)
 
         if V_load.dtype.is_fp8():
-            V = (V_load.to(tl.float32) * tl.load(v_scale)).to(Q.dtype)
+            V = (V_load.to(tl.float32) * tl.load(v_scale)).to(Q_1.dtype)
         else:
             V = V_load
 
@@ -210,8 +211,13 @@ def kernel_paged_attention_2d(
                      float("-inf")).to(tl.float32)
         qk = tl.zeros([num_queries_per_kv_padded, BLOCK_SIZE],
                       dtype=tl.float32)
-        qk = tl.dot(Q_1, (K_1 * cos_val - K_2 * sin_val), acc=qk)
-        qk = tl.dot(Q_2, (K_1 * sin_val + K_2 * cos_val), acc=qk)
+        qk = tl.dot(Q_1, (K_1 * cos_val - K_2 * sin_val), acc=qk, input_precision=IN_PRECISION)
+        qk = tl.dot(Q_2, (K_1 * sin_val + K_2 * cos_val), acc=qk, input_precision=IN_PRECISION)
+        # rotated_k1 = K_1 * cos_val - K_2 * sin_val
+        # rotated_k2 = K_1 * sin_val + K_2 * cos_val
+        # qk1 = tl.dot(Q_1, rotated_k1, input_precision=IN_PRECISION)
+        # qk2 = tl.dot(Q_2, rotated_k2, input_precision=IN_PRECISION)
+        # qk = qk1 + qk2
         # S += scale * tl.dot(Q, K)
         S += scale * qk
 
@@ -283,7 +289,8 @@ def chunked_prefill_paged_decode(
     cos_sin_cache=None,
     is_neox_style=True,
 ):
-
+    q_dtype_is_f32 = query.dtype is torch.float32
+    IN_PRECISION = 'ieee' if IS_TURING and q_dtype_is_f32 else None
     if sm_scale is None:
         sm_scale = 1.0 / (query.shape[1]**0.5)
 
@@ -372,6 +379,7 @@ def chunked_prefill_paged_decode(
             query_stride_1=query.stride(1),
             output_stride_0=output.stride(0),
             output_stride_1=output.stride(1),
+            IN_PRECISION=IN_PRECISION,
             BLOCK_SIZE=block_size,
             HEAD_SIZE=head_size,
             HEAD_SIZE_PADDED=triton.next_power_of_2(head_size),

@@ -137,15 +137,35 @@ direct_register_custom_op(
 )
 
 
+# class CompilationConfig(BaseModel):
+def set_splitting_ops_for_v1(self):
+    # If default, override splitting ops for piecewise cudagraph on V1.
+    # NOTE: this function needs to be called
+    if not self.splitting_ops:
+        self.splitting_ops = [
+            "vllm.unified_attention",
+            "vllm.unified_attention_with_output",
+            "vllm.dynamic_unified_attention_with_output",
+        ]
+
+
 original_forward = None
+original_splitting_ops = None
 
 
 def apply_patch():
     import vllm.attention.layer
-    global original_forward
+    import vllm.config
+    global original_forward, original_splitting_ops
+
     original_forward = vllm.attention.layer.Attention.forward
     vllm.attention.layer.Attention.forward = forward
 
+    original_splitting_ops = vllm.config.CompilationConfig.set_splitting_ops_for_v1
+    vllm.config.CompilationConfig.set_splitting_ops_for_v1 = set_splitting_ops_for_v1
+
 def revert_patch():
     import vllm.attention.layer
+    import vllm.config
     vllm.attention.layer.Attention.forward = original_forward
+    vllm.config.CompilationConfig.set_splitting_ops_for_v1 = original_splitting_ops
