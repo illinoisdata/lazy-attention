@@ -6,21 +6,17 @@ We use monkeypatch to replace the original function/class in vLLM with our custo
 
 For C/CUDA code, we use `#include` macro to inject the customized code into the original code.
 
-## TODO
+## Benchmark and profiler
 
-### Test
-
-- [ ] Use context manager to control patch
 
 ## Test coverage
 
-### Eager mode
-- [ ] llama attention
-- [ ] triton attention backend
-  - [ ] prefix prefill
-  - [ ] paged decoding
-  
-### CUDA graph
+- [x] llama attention
+- [x] triton attention backend
+  - [x] prefix prefill
+  - [x] paged decoding
+- [ ] scheduler
+- [ ] kv cache manager
 
 ## Organization
 
@@ -85,3 +81,50 @@ AttentionMetadata is built in [gpu_model_runner.py](../vllm/v1/worker/gpu_model_
             common_prefix_len=common_prefix_len,
         )
 ```
+
+
+```bash
+cmake .. \
+    -G Ninja \
+    -DCMAKE_INSTALL_PREFIX=.. \
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DVLLM_TARGET_DEVICE=cuda \
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache \
+    -DCMAKE_HIP_COMPILER_LAUNCHER=ccache \
+    -DVLLM_PYTHON_EXECUTABLE=$(which python) \
+    -DVLLM_PYTHON_PATH=$(python -c "import sys; print(':'.join(sys.path))") \
+    -DFETCHCONTENT_BASE_DIR=$(pwd)/../.deps \
+    -DNVCC_THREADS=16 \
+    -DCMAKE_JOB_POOL_COMPILE:STRING=compile \
+    -DCMAKE_JOB_POOLS:STRING=compile=16
+
+
+cmake --build . --target _C _vllm_fa2_C  # fa3 easy to OOM
+
+
+cmake --install . --component _C
+cmake --install . --component _vllm_fa2_C
+
+cd ..
+cp -r vllm_flash_attn ./vllm/
+
+NO_C=1 pip install -e . --no-build-isolation
+
+```
+
+## Block reuse
+
+bug:
+
+request 1
+
+| block 1 | block 2| -> processed
+            'doc 1'
+
+
+request 2
+
+| block 1' | block 2 (reused) not wanted |
+             'doc 2'
