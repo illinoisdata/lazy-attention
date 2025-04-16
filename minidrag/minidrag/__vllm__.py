@@ -1,0 +1,47 @@
+from __future__ import annotations  # isort:skip
+
+import os
+
+from minidrag.core.kv_cache_utils import hash_request_tokens_no_prefix
+from minidrag._custom_ops import (
+    rotary_embedding_q, 
+    batched_rotary_embedding_q,
+)
+from minidrag.model_executor.layers.rotary_embedding import (
+    forward_cuda as rotary_embedding_forward_cuda,
+    forward_native as rotary_embedding_forward_native,
+)
+from minidrag.attention.backends.triton_attn import forward as triton_attn_forward
+from minidrag.attention.layer import (
+    forward as attn_layer_forward,
+    set_splitting_ops_for_v1
+)
+from minidrag.model_executor.models.llama import forward as llama_attn_forward
+
+
+# Step 0: Set environment variable for Triton backend
+os.environ["VLLM_ATTENTION_BACKEND"] = "TRITON_ATTN_VLLM_V1" 
+
+
+def proc_patch():
+    import vllm as _vllm
+    # Step 1.1: Patch hash function for block content
+    _vllm.v1.core.kv_cache_utils.hash_request_tokens = hash_request_tokens_no_prefix
+    # Step 1.2: Patch custom ops
+    _vllm._custom_ops.rotary_embedding_q = rotary_embedding_q
+    _vllm._custom_ops.batched_rotary_embedding_q = batched_rotary_embedding_q
+    # Step 1.3: Patch RotaryEmbedding forward functions
+    _vllm.model_executor.layers.rotary_embedding.RotaryEmbedding.forward_cuda = rotary_embedding_forward_cuda
+    _vllm.model_executor.layers.rotary_embedding.RotaryEmbedding.forward_native = rotary_embedding_forward_native
+    # Step 1.4: Patch triton attention forward function
+    import vllm.v1.attention.backends.triton_attn
+    vllm.v1.attention.backends.triton_attn.TritonAttentionImpl.forward = triton_attn_forward
+    # Step 1.5: Patch attention layer
+    _vllm.attention.layer.Attention.forward = attn_layer_forward
+    _vllm.config.CompilationConfig.set_splitting_ops_for_v1 = set_splitting_ops_for_v1
+    # Step 1.6: Patch llama attention forward function
+    import vllm.model_executor.models.llama
+    vllm.model_executor.models.llama.LlamaAttention.forward = llama_attn_forward
+
+
+proc_patch()

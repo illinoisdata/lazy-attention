@@ -4,7 +4,7 @@ import torch
 from vllm.distributed import cleanup_dist_env_and_memory
 from minidrag.entrypoints import MiniDynamicRAG
 
-from utils import set_seed
+from utils import setup_deterministic_env
 
 
 # -----------------------------------------------------------------------------
@@ -20,7 +20,7 @@ def vllm_ref_outputs_simple(mock_prompts,
     try:
         MiniDynamicRAG.apply_triton_backend()
         value = []
-        set_seed(42)
+        setup_deterministic_env()
         import vllm
         llm = vllm.LLM(model=mock_model_name,
                         gpu_memory_utilization=0.9,
@@ -59,7 +59,7 @@ class TestE2E:
         llm = None
         try:
             with MiniDynamicRAG():
-                set_seed(42)
+                setup_deterministic_env()
                 import vllm
                 llm = vllm.LLM(model=mock_model_name,                      
                             gpu_memory_utilization=0.9,

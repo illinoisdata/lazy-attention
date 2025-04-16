@@ -11,7 +11,7 @@ from vllm.model_executor.layers.rotary_embedding import _apply_rotary_emb
 
 # @CustomOp.register("rotary_embedding")
 # class RotaryEmbedding(CustomOp):
-def new_forward_native(
+def forward_native(
     self,
     positions: torch.Tensor,
     query: torch.Tensor,
@@ -36,7 +36,7 @@ def new_forward_native(
 
     return query, key
 
-def new_forward_cuda(
+def forward_cuda(
     self,
     positions: torch.Tensor,
     query: torch.Tensor,
@@ -67,8 +67,8 @@ def apply_patch():
     original_forward_native = vllm.model_executor.layers.rotary_embedding.RotaryEmbedding.forward_native
 
     # apply the new forward_cuda and forward_native
-    vllm.model_executor.layers.rotary_embedding.RotaryEmbedding.forward_cuda = new_forward_cuda
-    vllm.model_executor.layers.rotary_embedding.RotaryEmbedding.forward_native = new_forward_native
+    vllm.model_executor.layers.rotary_embedding.RotaryEmbedding.forward_cuda = forward_cuda
+    vllm.model_executor.layers.rotary_embedding.RotaryEmbedding.forward_native = forward_native
 
 def revert_patch():
     import vllm.model_executor.layers.rotary_embedding

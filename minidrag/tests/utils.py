@@ -1,7 +1,18 @@
+import os
+
 import torch
 
 from minidrag.entrypoints import MiniDynamicRAG
 
+
+def setup_deterministic_env():
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    os.environ["VLLM_ATTENTION_BACKEND"] = "TRITON_ATTN_VLLM_V1"
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
+    
 
 class MiniDynamicRAGContext:
     """Context manager for safely applying and reverting RoPE patches."""
