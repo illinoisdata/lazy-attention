@@ -166,7 +166,7 @@ def sample_random_requests(
                 output_len=output_len,
                 document_len=document_len,
                 documents=prompt_doc_ids,
-                sampling_params=SamplingParams(max_tokens=output_len),
+                sampling_params=SamplingParams(max_tokens=output_len, seed=42, temperature=0.0, repetition_penalty=1.0, stop_token_ids=[]),
             )
         )
 
@@ -676,6 +676,7 @@ def load_dataset(
 
 
 def main(args: argparse.Namespace):
+    args.seed = 42
     logger.info(args)
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -807,7 +808,7 @@ if __name__ == "__main__":
         "Otherwise, we use Poisson process to synthesize "
         "the request arrival times.",
     )
-    # parser.add_argument("--seed", type=int, default=0)
+    # parser.add_argument("--seed", type=int, default=42)
     # parser.add_argument(
     #     "--trust-remote-code",
     #     action="store_true",

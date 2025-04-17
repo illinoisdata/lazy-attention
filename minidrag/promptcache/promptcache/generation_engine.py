@@ -100,6 +100,13 @@ class GenerationEngine:
                 # add redundant batch dim
                 if cache is not None:
                     cache = [(k[0].unsqueeze(0), k[1].unsqueeze(0)) for k in cache]
+                    
+                try:
+                    from transformers.cache_utils import DynamicCache
+                    if cache is not None and not isinstance(cache, DynamicCache):
+                        cache = DynamicCache.from_legacy_cache(cache)
+                except ImportError as e:
+                    print(f"Error importing DynamicCache: {e}")
 
                 start = torch.cuda.Event(enable_timing=True)
                 end = torch.cuda.Event(enable_timing=True)

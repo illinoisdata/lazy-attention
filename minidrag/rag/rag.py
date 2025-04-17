@@ -20,7 +20,6 @@ from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.transformers_utils.tokenizer import get_tokenizer as vllm_get_tokenizer
 
 from rag.logging import logger
-from minidrag.entrypoints import MiniDynamicRAG
 
 DocumentId = int
 
@@ -820,8 +819,10 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
         cache_manager = make_cache_manager(args)
         return CacheParrotRAG(tokenizer_id=args.cachep_tokenizer, cache_manager=cache_manager)
     elif args.rag_type == "llmrag":
+        from minidrag.entrypoints import MiniDynamicRAG
         MiniDynamicRAG.apply_triton_backend()
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
+        logger.info(f"[llmrag] Using async engine args: {async_engine_args}")
         return LLMRAG(llm=AsyncLLMEngine.from_engine_args(async_engine_args))
     elif args.rag_type == "trrag":
         return TransformerRAG(lm_name=args.trrag_lm_name, method=args.trrag_method)
@@ -833,11 +834,9 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
             cache_max_token=args.pc_cache_max_token,
         )
     elif args.rag_type == "drag":
-        # start to load the patch we needed
-        ctx_manager = MiniDynamicRAG()
-        ctx_manager.__enter__()
-        logger.info("Loading DynamicRAG patch")
+        import minidrag.__vllm__
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
+        logger.info(f"[drag] Using async engine args: {async_engine_args}")
         return DynamicRAG(llm=AsyncLLMEngine.from_engine_args(async_engine_args))
     logger.error(f"Invalid RAG type {args.rag_type}")
     sys.exit(1)
