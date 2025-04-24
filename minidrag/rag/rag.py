@@ -819,7 +819,7 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
         cache_manager = make_cache_manager(args)
         return CacheParrotRAG(tokenizer_id=args.cachep_tokenizer, cache_manager=cache_manager)
     elif args.rag_type == "llmrag":
-        from minidrag.entrypoints import MiniDynamicRAG
+        from minidrag.ctxmgr import MiniDynamicRAG
         MiniDynamicRAG.apply_triton_backend()
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
         logger.info(f"[llmrag] Using async engine args: {async_engine_args}")

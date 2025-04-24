@@ -2,7 +2,7 @@ import os
 
 import torch
 
-from minidrag.entrypoints import MiniDynamicRAG
+from minidrag.ctxmgr import MiniDynamicRAG
 
 
 def setup_deterministic_env():

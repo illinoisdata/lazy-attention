@@ -21,7 +21,7 @@ def setup_deterministic_env():
 def test_cudagraph_determinism(model_name="meta-llama/Llama-3.2-1B"):
     setup_deterministic_env()
     
-    from minidrag.entrypoints import MiniDynamicRAG
+    from minidrag.ctxmgr import MiniDynamicRAG
     MiniDynamicRAG.apply_patches()
     torch.cuda.synchronize()
     MiniDynamicRAG.apply_patches_subprocess()

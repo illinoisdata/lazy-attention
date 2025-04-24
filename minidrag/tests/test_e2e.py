@@ -2,8 +2,8 @@ import pytest
 import torch
 
 from vllm.distributed import cleanup_dist_env_and_memory
-from minidrag.entrypoints import MiniDynamicRAG
 
+from minidrag.ctxmgr import MiniDynamicRAG
 from utils import setup_deterministic_env
 
 
