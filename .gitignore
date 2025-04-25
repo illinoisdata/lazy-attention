@@ -203,3 +203,8 @@ benchmarks/**/*.json
 # Linting
 actionlint
 shellcheck*/
+
+
+minidrag/ChatRAG-Bench/
+minidrag/results
+log*

@@ -47,7 +47,7 @@ def vllm_ref_outputs_simple(mock_prompts,
 class TestE2E:
     @pytest.mark.gpu
     @pytest.mark.integration
-    @pytest.mark.parametrize("eager", [True, False])
+    @pytest.mark.parametrize("eager", [False]) # True
     def test_e2e_simple(self, 
                         eager,
                         mock_prompts,

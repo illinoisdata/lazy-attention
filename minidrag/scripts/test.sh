@@ -1,1 +1,1 @@
-PYTHONPATH=.:./promptcache bash scripts/bench_exp1.sh parrot,llmrag,pcrag,drag sqa,narrativeqa
+PYTHONPATH=.:./promptcache bash scripts/bench_exp1.sh parrot,llmrag,drag sqa

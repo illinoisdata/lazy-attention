@@ -34,7 +34,13 @@ class WrapperedRequest(Request):
         # extra attributes for DynamicRAG
         self.documents_token_ids = documents_token_ids
         self.documents_hash = documents_hash
-        
+        self.len_documents = None
+        self.num_computed_tokens_documents = None
+        if documents_token_ids is not None:
+            # assert len(documents_token_ids) == len(documents_hash)
+            self.len_documents = len(documents_token_ids)
+            self.num_computed_tokens_documents = [0 for _ in range(len(documents_hash))]
+            
         
     @classmethod
     def from_engine_core_request(cls, request: EngineCoreRequest) -> "Request":
@@ -59,7 +65,9 @@ class WrapperedRequest(Request):
         return f"WrapperedRequest(request_id={self.request_id}, prompt={self.prompt}, " \
                f"prompt_token_ids={self.prompt_token_ids}, sampling_params={self.sampling_params}, " \
                f"eos_token_id={self.eos_token_id}, arrival_time={self.arrival_time}, " \
-               f"documents_token_ids={self.documents_token_ids}, documents_hash={self.documents_hash})"
+               f"documents_token_ids={self.documents_token_ids}, documents_hash={self.documents_hash}), " \
+               f"len_documents={self.len_documents})" \
+               f"num_computed_tokens_documents={self.num_computed_tokens_documents})"
                
 
 def apply_patch():
