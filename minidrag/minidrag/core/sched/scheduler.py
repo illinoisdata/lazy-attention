@@ -20,7 +20,7 @@ from vllm.v1.engine import (EngineCoreEventType, EngineCoreOutput,
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.metrics.stats import SchedulerStats
 from vllm.v1.outputs import ModelRunnerOutput
-from vllm.v1.request import Request, RequestStatus
+from vllm.v1.request import RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.structured_output import StructuredOutputManager
 
@@ -28,6 +28,7 @@ from vllm.v1.core.sched.scheduler import Scheduler as OriginalV1Scheduler
 
 from minidrag.core.sched.output import NewRequestData, CachedRequestData, SchedulerOutput
 from minidrag.core.kv_cache_manager import DragKVCacheManager as KVCacheManager
+from minidrag.request import _Request as Request
 
 
 """ Different from the original V1Scheduler, this scheduler need to process the documents inner the 
@@ -286,33 +287,45 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         # and put back at the head of the waiting queue later
         skipped_waiting_requests: deque[Request] = deque()
 
+        # ///////////////////////////////////////////////////////////////////////
         # Next, schedule the WAITING requests.
         if not preempted_reqs:
             while self.waiting and token_budget > 0:
                 if len(self.running) == self.max_num_running_reqs:
                     break
-
                 request = self.waiting[0]
-
                 # TODO(haocheng): support FSM and LoRA requests.
-                # Skip FSM and LoRA requests.
 
                 # Get already-cached tokens.
                 computed_blocks, num_computed_tokens = \
                     self.kv_cache_manager.get_computed_blocks(request)
-                computed_blocks_docs, num_computed_tokens_docs = \
-                    self.kv_cache_manager.get_computed_blocks_documents(request)
-                # Number of tokens to be scheduled.
-                # We use `request.num_tokens` instead of
-                # `request.num_prompt_tokens` to consider the resumed requests,
-                # which have output tokens.
-                num_new_tokens = request.num_tokens - num_computed_tokens
-                if (0 < self.scheduler_config.long_prefill_token_threshold <
-                        num_new_tokens):
-                    num_new_tokens = (
-                        self.scheduler_config.long_prefill_token_threshold)
-                num_new_tokens = min(num_new_tokens, token_budget)
-                assert num_new_tokens > 0
+                num_new_tokens_docs = None
+                if request.documents_token_ids is not None:
+                    # Check the document status if this request has documents.
+                    computed_blocks_docs, num_computed_tokens_docs = \
+                        self.kv_cache_manager.get_computed_blocks_documents(request)
+                    # Number of tokens to be scheduled.
+                    num_new_tokens_docs = sum(request.len_documents) - \
+                                          sum(num_computed_tokens_docs)
+                    
+                # Then we have three cases:
+                #  1. No documents -> num_new_tokens_docs is None
+                #  2. All documents ready -> num_new_tokens_docs == 0
+                #  3. Some documents not ready -> num_new_tokens_docs > 0
+
+                if num_new_tokens_docs == 0:
+                    # should use the original behavior
+                    pass
+                    # We use `request.num_tokens` instead of
+                    # `request.num_prompt_tokens` to consider the resumed requests,
+                    # which have output tokens.
+                    num_new_tokens = request.num_tokens - num_computed_tokens
+                    if (0 < self.scheduler_config.long_prefill_token_threshold <
+                            num_new_tokens):
+                        num_new_tokens = (
+                            self.scheduler_config.long_prefill_token_threshold)
+                    num_new_tokens = min(num_new_tokens, token_budget)
+                    assert num_new_tokens > 0
 
                 # Schedule encoder inputs.
                 if request.has_encoder_inputs:

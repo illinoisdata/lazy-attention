@@ -24,7 +24,7 @@ class DragKVCacheManager(KVCacheManager):
         self,
         kv_cache_config: KVCacheConfig,
         max_model_len: int,
-        enable_caching: bool = True,
+        enable_caching: bool = True,  # always True
         caching_hash_algo: str = "builtin",
         num_preallocate_tokens: int = 64,
         log_stats: bool = False,
