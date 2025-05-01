@@ -2,35 +2,152 @@
 from typing import Optional
 
 from vllm import SamplingParams
-from vllm.v1.request import Request
+from vllm.v1.request import RequestStatus
 from vllm.v1.structured_output.request import StructuredOutputRequest
 
 from minidrag.engine.__init__ import EngineCoreRequest
 
 
-class WrapperedRequest(Request):
-    """Extends the Request class to support DynamicRAG.
-    """
+# class WrapperedRequest(Request):
+#     """Extends the Request class to support DynamicRAG.
+#     """
+#     def __init__(
+#         self,
+#         request_id: str,
+#         prompt: Optional[str],
+#         prompt_token_ids: list[int],
+#         sampling_params: SamplingParams,
+#         eos_token_id: Optional[int],
+#         arrival_time: float,
+#         multi_modal_inputs= None,
+#         multi_modal_hashes = None,
+#         multi_modal_placeholders = None,
+#         lora_request = None,
+#         structured_output_request = None,
+#         documents_token_ids: Optional[list[list[int]]] = None,
+#         documents_hash: Optional[list[str]] = None,
+#     ) -> None:
+#         super().__init__(request_id, prompt, prompt_token_ids, 
+#                          multi_modal_inputs, multi_modal_hashes, multi_modal_placeholders, 
+#                          sampling_params, eos_token_id, arrival_time, 
+#                          lora_request, structured_output_request)
+#         # extra attributes for DynamicRAG
+#         self.documents_token_ids = documents_token_ids
+#         self.documents_hash = documents_hash
+#         self.len_documents = None
+#         self.num_computed_tokens_documents = None
+#         if documents_token_ids is not None:
+#             # assert len(documents_token_ids) == len(documents_hash)
+#             self.len_documents = len(documents_token_ids)
+#             self.num_computed_tokens_documents = [0 for _ in range(len(documents_hash))]
+            
+        
+#     @classmethod
+#     def from_engine_core_request(cls, request: EngineCoreRequest) -> "Request":
+#         return cls(
+#             request_id=request.request_id,
+#             prompt=request.prompt,
+#             prompt_token_ids=request.prompt_token_ids,
+#             multi_modal_inputs=request.mm_inputs,
+#             multi_modal_hashes=request.mm_hashes,
+#             multi_modal_placeholders=request.mm_placeholders,
+#             sampling_params=request.sampling_params,
+#             eos_token_id=request.eos_token_id,
+#             arrival_time=request.arrival_time,
+#             lora_request=request.lora_request,
+#             structured_output_request=StructuredOutputRequest(
+#                 sampling_params=request.sampling_params),
+#             documents_token_ids=request.documents_token_ids,
+#             documents_hash=request.documents_hash,
+#         )
+    
+#     def __repr__(self) -> str:
+#         return f"WrapperedRequest(request_id={self.request_id}, prompt={self.prompt}, " \
+#                f"prompt_token_ids={self.prompt_token_ids}, sampling_params={self.sampling_params}, " \
+#                f"eos_token_id={self.eos_token_id}, arrival_time={self.arrival_time}, " \
+#                f"documents_token_ids={self.documents_token_ids}, documents_hash={self.documents_hash}), " \
+#                f"len_documents={self.len_documents})" \
+#                f"num_computed_tokens_documents={self.num_computed_tokens_documents})"
+
+
+# SPDX-License-Identifier: Apache-2.0
+
+import enum
+from typing import TYPE_CHECKING, Optional, Union
+
+from vllm.sampling_params import SamplingParams
+from vllm.v1.engine import (EngineCoreEvent, EngineCoreEventType, FinishReason)
+from vllm.v1.structured_output.request import StructuredOutputRequest
+from vllm.v1.utils import ConstantList
+
+if TYPE_CHECKING:
+
+    from vllm.lora.request import LoRARequest
+    from vllm.multimodal import MultiModalKwargs
+    from vllm.multimodal.inputs import PlaceholderRange
+
+
+class _Request:
+
     def __init__(
         self,
         request_id: str,
         prompt: Optional[str],
         prompt_token_ids: list[int],
+        multi_modal_inputs: Optional[list["MultiModalKwargs"]],
+        multi_modal_hashes: Optional[list[str]],
+        multi_modal_placeholders: Optional[list["PlaceholderRange"]],
         sampling_params: SamplingParams,
         eos_token_id: Optional[int],
         arrival_time: float,
-        multi_modal_inputs= None,
-        multi_modal_hashes = None,
-        multi_modal_placeholders = None,
-        lora_request = None,
-        structured_output_request = None,
+        lora_request: Optional["LoRARequest"] = None,
+        structured_output_request: Optional["StructuredOutputRequest"] = None,
         documents_token_ids: Optional[list[list[int]]] = None,
         documents_hash: Optional[list[str]] = None,
     ) -> None:
-        super().__init__(request_id, prompt, prompt_token_ids, 
-                         multi_modal_inputs, multi_modal_hashes, multi_modal_placeholders, 
-                         sampling_params, eos_token_id, arrival_time, 
-                         lora_request, structured_output_request)
+        self.request_id = request_id
+        self.sampling_params = sampling_params
+        # Because of LoRA, the eos token id can be different for each request.
+        self.eos_token_id = eos_token_id
+        self.lora_request = lora_request
+        self.structured_output_request = structured_output_request
+
+        self.status = (RequestStatus.WAITING_FOR_FSM
+                       if sampling_params.guided_decoding is not None else
+                       RequestStatus.WAITING)
+        self.events: list[EngineCoreEvent] = []
+        self.stop_reason: Union[int, str, None] = None
+        assert sampling_params.max_tokens is not None
+        self.max_tokens = sampling_params.max_tokens
+
+        self.prompt = prompt
+        self.prompt_token_ids = prompt_token_ids
+        self.num_prompt_tokens = len(self.prompt_token_ids)
+        self._output_token_ids: list[int] = []
+        self._all_token_ids: list[int] = self.prompt_token_ids.copy()
+        self.spec_token_ids: list[int] = []
+        self.num_computed_tokens = 0
+
+        # Multi-modal related
+        self.mm_positions = multi_modal_placeholders or []
+        self.mm_inputs = multi_modal_inputs or []
+        self.mm_hashes: list[str] = multi_modal_hashes or []
+        self.num_encoder_inputs = len(self.mm_inputs)
+        self.has_encoder_inputs = self.num_encoder_inputs > 0
+
+        # Sanity check
+        assert len(self.mm_inputs) == len(self.mm_positions)
+        if self.mm_hashes:
+            assert len(self.mm_inputs) == len(self.mm_hashes)
+
+        # Read-only views
+        # Prevent directly appending to the these lists since
+        # they should also be updated simultaneously.
+        self.output_token_ids = ConstantList(self._output_token_ids)
+        self.all_token_ids = ConstantList(self._all_token_ids)
+
+        # /////////////////////////////////////////
+        self.arrival_time = arrival_time
         # extra attributes for DynamicRAG
         self.documents_token_ids = documents_token_ids
         self.documents_hash = documents_hash
@@ -38,12 +155,11 @@ class WrapperedRequest(Request):
         self.num_computed_tokens_documents = None
         if documents_token_ids is not None:
             # assert len(documents_token_ids) == len(documents_hash)
-            self.len_documents = len(documents_token_ids)
+            self.len_documents = [len(document_token_ids) for document_token_ids in documents_token_ids]
             self.num_computed_tokens_documents = [0 for _ in range(len(documents_hash))]
-            
-        
+
     @classmethod
-    def from_engine_core_request(cls, request: EngineCoreRequest) -> "Request":
+    def from_engine_core_request(cls, request: EngineCoreRequest) -> "_Request":
         return cls(
             request_id=request.request_id,
             prompt=request.prompt,
@@ -64,14 +180,72 @@ class WrapperedRequest(Request):
     def __repr__(self) -> str:
         return f"WrapperedRequest(request_id={self.request_id}, prompt={self.prompt}, " \
                f"prompt_token_ids={self.prompt_token_ids}, sampling_params={self.sampling_params}, " \
+               f"eos_token_id={self.eos_token_id}, arrival_time=<Not used>, " \
+               f"documents_token_ids={self.documents_token_ids}, documents_hash={self.documents_hash}, " \
+               f"len_documents={self.len_documents}" \
+               f"num_computed_tokens_documents={self.num_computed_tokens_documents})"
+
+    def append_output_token_ids(
+        self,
+        token_ids: Union[int, list[int]],
+    ) -> None:
+        if isinstance(token_ids, int):
+            self._output_token_ids.append(token_ids)
+            self._all_token_ids.append(token_ids)
+        else:
+            self._output_token_ids.extend(token_ids)
+            self._all_token_ids.extend(token_ids)
+
+    @property
+    def num_tokens(self) -> int:
+        return len(self._all_token_ids)
+
+    @property
+    def num_tokens_with_spec(self) -> int:
+        return len(self._all_token_ids) + len(self.spec_token_ids)
+
+    @property
+    def num_output_tokens(self) -> int:
+        return len(self._output_token_ids)
+
+    def is_finished(self) -> bool:
+        return RequestStatus.is_finished(self.status)
+
+    def get_finished_reason(self) -> Union[FinishReason, None]:
+        return RequestStatus.get_finished_reason(self.status)
+
+    def get_num_encoder_tokens(self, input_id: int) -> int:
+        assert input_id < len(self.mm_positions)
+        num_tokens = self.mm_positions[input_id]["length"]
+        return num_tokens
+
+    @property
+    def use_structured_output(self) -> bool:
+        return self.sampling_params.guided_decoding is not None
+
+    def record_event(
+        self,
+        event_type: EngineCoreEventType,
+        timestamp: Optional[float] = None,
+    ) -> None:
+        self.events.append(EngineCoreEvent.new_event(event_type, timestamp))
+
+    def take_events(self) -> Optional[list[EngineCoreEvent]]:
+        if not self.events:
+            return None
+        events, self.events = self.events, []
+        return events
+
+    def __repr__(self) -> str:
+        return f"Request(request_id={self.request_id}, prompt={self.prompt}, " \
+               f"prompt_token_ids={self.prompt_token_ids}, sampling_params={self.sampling_params}, " \
                f"eos_token_id={self.eos_token_id}, arrival_time={self.arrival_time}, " \
                f"documents_token_ids={self.documents_token_ids}, documents_hash={self.documents_hash}), " \
-               f"len_documents={self.len_documents})" \
+               f"len_documents={self.len_documents})," \
                f"num_computed_tokens_documents={self.num_computed_tokens_documents})"
-               
 
 def apply_patch():
     """Apply the patch to the Request class.
     """
     import vllm.v1.request
-    vllm.v1.request.Request = WrapperedRequest
+    vllm.v1.request.Request = _Request

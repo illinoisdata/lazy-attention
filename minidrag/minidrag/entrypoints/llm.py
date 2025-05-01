@@ -39,6 +39,8 @@ def generate(
     document_seqs: Union[Union[Sequence[PromptType], Sequence[Sequence[PromptType]]],
                        Optional[Union[list[str], list[list[str]]]]] = None,
     ) -> list[RequestOutput]:
+        # [DRAG] TAG: print just for debugging 
+        print("Note: You are using the patched version of LLM.generate() to support dynamic requests.")
         assert prompt_token_ids is None, "[deprecated] prompt_token_ids is not supported in LLM.generate()"
 
         parsed_prompts = cast(Union[PromptType, Sequence[PromptType]], 
@@ -93,7 +95,8 @@ def _validate_and_add_requests(
             # Convert a document sequence to a nested list.
             document_seqs = [document_seqs]
         assert len(prompts) == len(document_seqs), \
-            "The lengths of prompts and document_seqs must be the same."
+            "The lengths of prompts and document_seqs must be the same." \
+            f" {len(prompts)} != {len(document_seqs)}"
 
     num_requests = len(prompts)
     if isinstance(params, list) and len(params) != num_requests:

@@ -496,6 +496,7 @@ class SyncMPClient(MPClient):
     def _send_input(self, request_type: EngineCoreRequestType, request: Any):
         # (RequestType, SerializedRequest)
         msg = (request_type.value, self.encoder.encode(request))
+        print(f"send_input: {msg}")
         self.core_engine.send_multipart(msg)
 
     def call_utility(self, method: str, *args) -> Any:

@@ -10,7 +10,7 @@ from vllm.logger import init_logger
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.v1.core.encoder_cache_manager import (EncoderCacheManager,
                                                 compute_encoder_budget)
-from vllm.v1.core.kv_cache_manager import KVCacheManager
+# from vllm.v1.core.kv_cache_manager import KVCacheManager
 from vllm.v1.core.sched.interface import SchedulerInterface
 from vllm.v1.core.sched.output import (CachedRequestData, NewRequestData,
                                        SchedulerOutput)
@@ -26,6 +26,9 @@ from vllm.v1.structured_output import StructuredOutputManager
 
 from vllm.v1.core.sched.scheduler import Scheduler as OriginalV1Scheduler
 
+from minidrag.core.sched.output import NewRequestData, CachedRequestData, SchedulerOutput
+from minidrag.core.kv_cache_manager import DragKVCacheManager as KVCacheManager
+
 
 """ Different from the original V1Scheduler, this scheduler need to process the documents inner the 
 request"""
@@ -36,8 +39,86 @@ request"""
 
 
 class MiniDynamicRAGScheduler(OriginalV1Scheduler):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self,
+        scheduler_config: SchedulerConfig,
+        model_config: ModelConfig,
+        cache_config: CacheConfig,
+        lora_config: Optional[LoRAConfig],
+        kv_cache_config: KVCacheConfig,
+        structured_output_manager: StructuredOutputManager,
+        mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
+        include_finished_set: bool = False,
+        log_stats: bool = False,):
+        
+        print("Using MiniDynamicRAGScheduler")
+        self.scheduler_config = scheduler_config
+        self.cache_config = cache_config
+        self.lora_config = lora_config
+        self.kv_cache_config = kv_cache_config
+        self.log_stats = log_stats
+        self.structured_output_manager = structured_output_manager
+
+        # include_finished_set controls whether a separate set of finished
+        # request ids should be included in the EngineCoreOutputs returned
+        # by update_from_outputs(). This is currently used in the multi-engine
+        # case to track request lifetimes efficiently.
+        self.include_finished_set = include_finished_set
+
+        # Scheduling constraints.
+        self.max_num_running_reqs = self.scheduler_config.max_num_seqs
+        self.max_num_scheduled_tokens = \
+            self.scheduler_config.max_num_batched_tokens
+        self.max_model_len = self.scheduler_config.max_model_len
+
+        # Create the KV cache manager.
+        self.kv_cache_manager = KVCacheManager(
+            kv_cache_config=kv_cache_config,
+            max_model_len=self.max_model_len,
+            enable_caching=cache_config.enable_prefix_caching,
+            caching_hash_algo=self.cache_config.prefix_caching_hash_algo,
+            log_stats=self.log_stats)
+        self.block_size = self.cache_config.block_size
+
+        # req_id -> Request
+        self.requests: dict[str, Request] = {}
+        # Priority queues for requests.
+        self.waiting: deque[Request] = deque()
+        self.running: list[Request] = []
+        # The requests that have been scheduled and are being executed
+        # by the executor.
+        self.scheduled_req_ids: set[str] = set()
+
+        # The request IDs that are finished in between the previous and the
+        # current steps. This is used to notify the workers about the finished
+        # requests so that they can free the cached states for those requests.
+        # This is flushed at the end of each scheduling step.
+        self.finished_req_ids: set[str] = set()
+
+        # OPTIMIZATION: Cache the CachedRequestData objects to avoid creating
+        # them at each scheduling step.
+        # Request id -> CachedRequestData
+        self._cached_reqs_data: dict[str, CachedRequestData] = {}
+
+        # Encoder-related.
+        # Calculate encoder cache size if applicable
+        # NOTE: For now we use the same budget for both compute and space.
+        # This can be changed when we make encoder cache for embedding caching
+        # across requests.
+        encoder_compute_budget, encoder_cache_size = compute_encoder_budget(
+            model_config=model_config,
+            scheduler_config=scheduler_config,
+            mm_registry=mm_registry,
+        )
+
+        # NOTE(woosuk): Here, "encoder" includes the vision encoder (and
+        # projector if needed). Currently, we assume that the encoder also
+        # has the Transformer architecture (e.g., ViT).
+        self.max_num_encoder_input_tokens = encoder_compute_budget
+        # NOTE: For the models without encoder (e.g., text-only models),
+        # the encoder cache will not be initialized because cache size is 0
+        # for these models.
+        self.encoder_cache_manager = EncoderCacheManager(
+            cache_size=encoder_cache_size)
         
         # # Hyperparameters for scheduling. can affect the throughput.
         # # Maximum number of tokens to be processed in a single iteration.
@@ -213,31 +294,14 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
 
                 request = self.waiting[0]
 
-                # Skip request if the structured output request is still waiting
-                # for FSM compilation.
-                if request.status == RequestStatus.WAITING_FOR_FSM:
-                    structured_output_req = request.structured_output_request
-                    if structured_output_req and structured_output_req.grammar:
-                        request.status = RequestStatus.WAITING
-                    else:
-                        self.waiting.popleft()
-                        skipped_waiting_requests.appendleft(request)
-                        continue
-
-                # Check that adding the request still respects the max_loras
-                # constraint.
-                if self.lora_config and request.lora_request and (
-                        len(scheduled_loras) == self.lora_config.max_loras
-                        and request.lora_request.lora_int_id
-                        not in scheduled_loras):
-                    # Scheduling would exceed max_loras, skip.
-                    self.waiting.popleft()
-                    skipped_waiting_requests.appendleft(request)
-                    continue
+                # TODO(haocheng): support FSM and LoRA requests.
+                # Skip FSM and LoRA requests.
 
                 # Get already-cached tokens.
                 computed_blocks, num_computed_tokens = \
                     self.kv_cache_manager.get_computed_blocks(request)
+                computed_blocks_docs, num_computed_tokens_docs = \
+                    self.kv_cache_manager.get_computed_blocks_documents(request)
                 # Number of tokens to be scheduled.
                 # We use `request.num_tokens` instead of
                 # `request.num_prompt_tokens` to consider the resumed requests,
@@ -390,6 +454,8 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
             self.requests[req_id].num_computed_tokens += num_scheduled_token
 
         self.finished_req_ids = set()
+        print(f"Scheduler output: {scheduler_output}")
+        breakpoint()
         return scheduler_output
 
     def _make_cached_request_data(
@@ -617,6 +683,7 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         return engine_core_outputs
 
     def add_request(self, request: Request) -> None:
+        # print("add_request in scheduler", request)
         self.waiting.append(request)
         self.requests[request.request_id] = request
         if self.log_stats:
