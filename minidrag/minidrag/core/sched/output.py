@@ -31,12 +31,14 @@ class NewRequestData:
     # new fields
     documents_token_ids: Optional[list[list[int]]]
     documents_hash: Optional[list[str]]
+    b_start_loc_docs: Optional[list[int]]
 
     @classmethod
     def from_request(
         cls,
         request: Request,
         block_ids: list[int],
+        b_start_loc_docs: Optional[list[int]] = None,
     ) -> NewRequestData:
         return cls(
             req_id=request.request_id,
@@ -51,6 +53,7 @@ class NewRequestData:
             lora_request=request.lora_request,
             documents_token_ids=request.documents_token_ids,
             documents_hash=request.documents_hash,
+            b_start_loc_docs=b_start_loc_docs,
         )
 
 
@@ -73,6 +76,7 @@ class CachedRequestData:
         resumed_from_preemption: bool,
         new_token_ids: list[int],
         new_block_ids: list[int],
+        b_start_loc_docs: Optional[list[int]] = None,
     ) -> CachedRequestData:
         return cls(
             req_id=request.request_id,
@@ -80,6 +84,7 @@ class CachedRequestData:
             new_token_ids=new_token_ids,
             new_block_ids=new_block_ids,
             num_computed_tokens=request.num_computed_tokens,
+            b_start_loc_docs=b_start_loc_docs,
         )
 
 

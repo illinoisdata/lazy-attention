@@ -152,11 +152,11 @@ class _Request:
         self.documents_token_ids = documents_token_ids
         self.documents_hash = documents_hash
         self.len_documents = None
-        self.num_computed_tokens_documents = None
+        self.num_computed_tokens_docs = None
         if documents_token_ids is not None:
             # assert len(documents_token_ids) == len(documents_hash)
             self.len_documents = [len(document_token_ids) for document_token_ids in documents_token_ids]
-            self.num_computed_tokens_documents = [0 for _ in range(len(documents_hash))]
+            self.num_computed_tokens_docs = [0 for _ in range(len(documents_hash))]
 
     @classmethod
     def from_engine_core_request(cls, request: EngineCoreRequest) -> "_Request":
