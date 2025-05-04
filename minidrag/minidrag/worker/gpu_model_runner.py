@@ -48,15 +48,15 @@ from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
 from vllm.v1.spec_decode.ngram_proposer import NgramProposer
 from vllm.v1.spec_decode.utils import is_spec_decode_supported
 from vllm.v1.utils import bind_kv_cache
-from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
 from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
 
-from .utils import sanity_check_mm_encoder_outputs
+from minidrag.worker.gpu_input_batch import CachedRequestState, InputBatch
+
 
 if TYPE_CHECKING:
     import xgrammar as xgr
 
-    from vllm.v1.core.sched.output import SchedulerOutput
+    from minidrag.core.sched.output import SchedulerOutput, NewRequestData
 else:
     xgr = LazyLoader("xgr", globals(), "xgrammar")
 
@@ -138,46 +138,24 @@ def _update_states(self, scheduler_output: "SchedulerOutput") -> None:
             num_computed_tokens=new_req_data.num_computed_tokens,
             output_token_ids=[],
             lora_request=new_req_data.lora_request,
+            # ////
+            documents_token_ids = new_req_data.documents_token_ids,
+            block_ids_docs = new_req_data.block_ids_docs,
+            num_computed_tokens_docs = new_req_data.num_computed_tokens_docs,
         )
-
-        # Only relevant for models using M-RoPE (e.g, Qwen2-VL)
-        if self.uses_mrope:
-            image_grid_thw = []
-            video_grid_thw = []
-            second_per_grid_ts = []
-            for mm_input in self.requests[req_id].mm_inputs:
-                if mm_input.get("image_grid_thw") is not None:
-                    image_grid_thw.extend(
-                        mm_input["image_grid_thw"].tolist())
-                if mm_input.get("video_grid_thw") is not None:
-                    video_grid_thw.extend(
-                        mm_input["video_grid_thw"].tolist())
-                if mm_input.get("second_per_grid_ts") is not None:
-                    second_per_grid_ts.extend(
-                        mm_input["second_per_grid_ts"])
-
-            hf_config = self.model_config.hf_config
-
-            self.requests[req_id].mrope_positions, \
-                self.requests[req_id].mrope_position_delta = \
-                MRotaryEmbedding.get_input_positions_tensor(
-                    self.requests[req_id].prompt_token_ids,
-                    hf_config=hf_config,
-                    image_grid_thw=image_grid_thw,
-                    video_grid_thw=video_grid_thw,
-                    second_per_grid_ts=second_per_grid_ts,
-                )
 
         req_ids_to_add.append(req_id)
 
     # Update the states of the running/resumed requests.
     for req_data in scheduler_output.scheduled_cached_reqs:
         req_id = req_data.req_id
-        req_state = self.requests[req_id]
+        req_state: CachedRequestState = self.requests[req_id]
 
         # Update the cached states.
         num_computed_tokens = req_data.num_computed_tokens
         req_state.num_computed_tokens = num_computed_tokens
+        num_computed_tokens_docs = req_data.num_computed_tokens_docs
+        req_state.num_computed_tokens_docs = num_computed_tokens_docs
         # Add the sampled token(s) from the previous step (if any).
         # This doesn't include "unverified" tokens like spec decode tokens.
         num_new_tokens = (num_computed_tokens +
@@ -193,10 +171,19 @@ def _update_states(self, scheduler_output: "SchedulerOutput") -> None:
         if not req_data.resumed_from_preemption:
             # Append the new blocks to the existing block IDs.
             req_state.block_ids.extend(req_data.new_block_ids)
+            if req_data.new_block_ids_docs is not None:
+                # Append the new blocks to the existing block IDs.
+                for i in range(len(req_state.block_ids_docs)):
+                    req_state.block_ids_docs[i].extend(
+                        req_data.new_block_ids_docs[i])
         else:
             # The request is resumed from preemption.
             # Replace the existing block IDs with the new ones.
             req_state.block_ids = req_data.new_block_ids
+            if req_data.new_block_ids_docs is not None:
+                for i in range(len(req_state.block_ids_docs)):
+                    req_state.block_ids_docs[i] = (
+                        req_data.new_block_ids_docs[i])
 
         req_index = self.input_batch.req_id_to_index.get(req_id)
         if req_index is None:

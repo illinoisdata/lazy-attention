@@ -439,6 +439,11 @@ class DragKVCacheManager(KVCacheManager):
         self.num_cached_block_docs[
             request.request_id] = num_full_blocks_after_append_docs
         return new_blocks_docs
+    
+    def is_docs_ready(self, request: Request) -> bool:
+        """Use to confirm if the documents are ready to be processed."""
+        assert request.has_documents, "Request does not have documents"
+        pass
 
     def free(self, request: Request) -> None:
         """Free the blocks allocated for the request.

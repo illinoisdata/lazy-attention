@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from vllm.multimodal.inputs import MultiModalKwargs, PlaceholderRange
     from vllm.sampling_params import SamplingParams
     # from vllm.v1.request import Request
-    from minidrag.request import WrapperedRequest as Request
+    from minidrag.request import _Request as Request
 
 @dataclass
 class NewRequestData:
@@ -31,11 +31,9 @@ class NewRequestData:
     # ///////////////////////////////////////////////////////////////////////////
     # * Fields for the documents
     # Basic token IDs
-    documents_token_ids: Optional[list[int]]
-    t_start_loc_docs: Optional[list[int]]
+    documents_token_ids: Optional[list[list[int]]]
     # Documents resources
-    block_ids_docs: Optional[list[int]]
-    b_start_loc_docs: Optional[list[int]]
+    block_ids_docs: Optional[list[list[int]]]
     # Documents states
     num_computed_tokens_docs: Optional[list[int]]
     # Documents hashes
@@ -85,6 +83,9 @@ class CachedRequestData:
     new_token_ids: list[int]
     new_block_ids: list[int]
     num_computed_tokens: int
+    
+    new_block_ids_docs: Optional[list[list[int]]] = None
+    num_computed_tokens_docs: Optional[list[int]] = None
 
     @classmethod
     def from_request(
@@ -93,7 +94,7 @@ class CachedRequestData:
         resumed_from_preemption: bool,
         new_token_ids: list[int],
         new_block_ids: list[int],
-        b_start_loc_docs: Optional[list[int]] = None,
+        new_block_ids_docs: Optional[list[list[int]]] = None,
     ) -> CachedRequestData:
         return cls(
             req_id=request.request_id,
@@ -101,7 +102,8 @@ class CachedRequestData:
             new_token_ids=new_token_ids,
             new_block_ids=new_block_ids,
             num_computed_tokens=request.num_computed_tokens,
-            b_start_loc_docs=b_start_loc_docs,
+            new_block_ids_docs=new_block_ids_docs,
+            num_computed_tokens_docs=request.num_computed_tokens_docs,
         )
 
 

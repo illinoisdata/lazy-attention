@@ -14,6 +14,15 @@ from vllm.v1.metrics.stats import SchedulerStats
 from vllm.v1.outputs import LogprobsLists, LogprobsTensors
 
 
+class EngineCoreEventType(enum.IntEnum):
+    """The type of engine core request event."""
+    QUEUED = 1
+    SCHEDULED = 2
+    PREEMPTED = 3
+    DOC_QUEUED = 4
+    QUERY_QUEUED = 5
+
+
 class EngineCoreRequest(
         msgspec.Struct,
         array_like=True,  # type: ignore[call-arg]
