@@ -1,5 +1,5 @@
 """ In this file, we inject several functions to InputPreprocessor class to 
-support the preprocessing of document_seqs. 
+support the preprocessing of document_seq ([doc1, ..., docn]). 
 
 Specifically, we need to do the following:
 1. Convert each document sequence to a list of token ids.
@@ -7,7 +7,7 @@ Specifically, we need to do the following:
 """
 
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Optional, Union
 
 from vllm.config import VllmConfig
@@ -23,13 +23,13 @@ from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sampling_params import SamplingParams
 from vllm.transformers_utils.tokenizer_group import BaseTokenizerGroup
-from vllm.v1.engine import EngineCoreRequest
 from vllm.v1.structured_output.backend_guidance import (
     validate_guidance_grammar)
 from vllm.v1.structured_output.utils import (
     validate_structured_output_request_xgrammar)
-from vllm.sequence import Sequence
 from vllm.utils import cdiv, sha256
+
+from minidrag.engine import EngineCoreRequest
 
 # class Processor:
 
@@ -45,7 +45,7 @@ def process_inputs(
     prompt_adapter_request: Optional[PromptAdapterRequest] = None,
     priority: int = 0,
     # For dynamic rag
-    document_seqs: Optional[Sequence[PromptType]] = None,
+    document_seq: Optional[Sequence[PromptType]] = None,
     block_size: Optional[int] = None,
 ) -> EngineCoreRequest:
     # TODO(woosuk): Support pooling models.
@@ -73,13 +73,14 @@ def process_inputs(
     )
     
     documents_token_ids = None
-    documents_hashes = None
-    if document_seqs is not None:
+    documents_hash = None
+    document_seq_hash = None
+    if document_seq is not None:
         documents_token_ids = []
-        documents_hashes = []
-        for document_seq in document_seqs:
+        documents_hash = []
+        for doc in document_seq:
             processed_document_seq: ProcessorInputs = self.input_preprocessor.preprocess(
-                document_seq,
+                doc,
                 lora_request=lora_request,
                 prompt_adapter_request=prompt_adapter_request,
                 return_mm_hashes=self.use_hash,
@@ -92,7 +93,16 @@ def process_inputs(
             # left padding
             pad_length = nearest_multiple - len(doc_token_ids)
             if pad_length > 0:
-                pad_token_id = self.tokenizer.tokenizer("<pad>")["input_ids"][-1]  # skip the first token
+                pad_token = "<pad>"
+                try:
+                    pad_token = self.tokenizer.tokenizer.pad_token
+                except AttributeError:
+                    print("Warning: no pad token in the tokenizer, use '<pad>'.")
+                pad_token_ids = self.tokenizer.tokenizer(pad_token, 
+                                                         add_special_tokens=False)["input_ids"]  # skip the first token
+                pad_token_id = pad_token_ids[-1]
+                if len(pad_token_ids) > 1:
+                    print(f"Warning: the pad token id is not a single token. {pad_token_ids}")
                 doc_token_ids = [pad_token_id] * pad_length + doc_token_ids
             # right padding
             # if pad_length > 0:
@@ -102,7 +112,8 @@ def process_inputs(
 
             documents_token_ids.append(doc_token_ids)
             # hash the document sequence
-            documents_hashes.append(sha256(tuple(doc_token_ids)))
+            documents_hash.append(str(sha256(tuple(doc_token_ids))))
+            document_seq_hash = str(sha256(tuple(documents_hash)))
             
     eos_token_id = self.input_preprocessor.get_eos_token_id(lora_request)
     self._validate_model_inputs(processed_inputs, lora_request)
@@ -172,9 +183,9 @@ def process_inputs(
         lora_request=lora_request,
         # Arguments for dynamic rag
         documents_token_ids=documents_token_ids,
-        documents_hashes=documents_hashes,
+        documents_hash=documents_hash,
+        document_seq_hash=document_seq_hash,
     )
-
 
 
 def apply_patch():

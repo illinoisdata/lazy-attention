@@ -177,6 +177,7 @@ class EngineCore:
                 request.mm_inputs, request.mm_hashes)
 
         req = Request.from_engine_core_request(request)
+        print(f"has translaated tp the real req: {req}")
         if req.use_structured_output:
             # Start grammar compilation asynchronously
             self.structured_output_manager.grammar_init(req)
@@ -482,7 +483,7 @@ class EngineCoreProc(EngineCore):
         # Msgpack serialization decoding.
         add_request_decoder = MsgpackDecoder(EngineCoreRequest)
         generic_decoder = MsgpackDecoder()
-
+        # add_request_decoder = MsgpackDecoder()
         with zmq_socket_ctx(input_path, zmq.constants.PULL) as socket:
             while True:
                 # (RequestType, RequestData)
@@ -494,6 +495,8 @@ class EngineCoreProc(EngineCore):
                     request_type
                     == EngineCoreRequestType.ADD) else generic_decoder
                 request = decoder.decode(data_frame.buffer)
+                # print(f"Recived: {data_frame.buffer.hex()}")
+                print("decoded request:", request)
 
                 # Push to input queue for core busy loop.
                 self.input_queue.put_nowait((request_type, request))

@@ -6,6 +6,21 @@ We use monkeypatch to replace the original function/class in vLLM with our custo
 
 For C/CUDA code, we use `#include` macro to inject the customized code into the original code.
 
+
+## Top-down
+
+1. We feed one request consisting of
+   - documents
+   - query
+   - sampling params
+
+2. each request is processed as a whole body, it will check if the documents are prefilled, if not find the part has not been cached and compute (**core diff** from prefix cache)
+
+3. after we find that the prefix is processed, continue decoding
+
+4. kv cache manager, 
+
+
 ## Benchmark and profiler
 
 

@@ -28,7 +28,7 @@ from vllm.v1.engine.output_processor import OutputProcessor
 from vllm.v1.engine.parallel_sampling import ParentRequest
 from vllm.v1.engine.processor import Processor
 from vllm.v1.executor.abstract import Executor
-from vllm.sequence import Sequence
+from collections.abc import Sequence
 
 # class LLMEngine:
 def add_request(
@@ -42,10 +42,10 @@ def add_request(
     prompt_adapter_request: Optional[PromptAdapterRequest] = None,
     priority: int = 0,
     # For dynamic rag
-    document_seqs: Optional[Sequence[PromptType]] = None,
+    document_seq: Optional[Sequence[PromptType]] = None,
 ) -> None:
     # Process raw inputs into the request.
-    if document_seqs is None:
+    if document_seq is None:
         # Fall back to the default behavior.
         request = self.processor.process_inputs(request_id, prompt, params,
                                                 arrival_time, lora_request,
@@ -61,15 +61,17 @@ def add_request(
                                                 trace_headers,
                                                 prompt_adapter_request,
                                                 priority,
-                                                document_seqs=document_seqs,
+                                                document_seq=document_seq,
                                                 block_size=block_size)
 
+    # print(f"after preprocess: {request}")
     n = params.n if isinstance(params, SamplingParams) else 1
     assert n == 1, "n > 1 is not supported in customized engine now."
     if n == 1:
         # Make a new RequestState and queue.
         self.output_processor.add_request(request, None, 0)
         # Add the request to EngineCore.
+        # print(f"after preprocess, when add to engien core: {request}")
         self.engine_core.add_request(request)  # Send by socket.
         return
     
