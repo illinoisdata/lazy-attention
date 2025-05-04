@@ -2,7 +2,6 @@ from __future__ import annotations  # isort:skip
 
 import os
 
-from minidrag.core.kv_cache_utils import hash_request_tokens_no_prefix
 from minidrag._custom_ops import (
     rotary_embedding_q, 
     batched_rotary_embedding_q,
@@ -41,8 +40,7 @@ os.environ["VLLM_ATTENTION_BACKEND"] = "TRITON_ATTN_VLLM_V1"
 def proc_patch():
     import vllm as _vllm
     # TODO: fix the routering problem, when reuse and when not reuse
-    # # Step 1.1: Patch hash function for block content
-    # _vllm.v1.core.kv_cache_utils.hash_request_tokens = hash_request_tokens_no_prefix
+    # # Step 1.1: Patch hash function for block content (Removed)
     # Step 1.2: Patch custom ops
     _vllm._custom_ops.rotary_embedding_q = rotary_embedding_q
     _vllm._custom_ops.batched_rotary_embedding_q = batched_rotary_embedding_q

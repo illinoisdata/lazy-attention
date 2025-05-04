@@ -28,10 +28,19 @@ class NewRequestData:
     block_ids: list[int]
     num_computed_tokens: int
     lora_request: Optional[LoRARequest]
-    # new fields
-    documents_token_ids: Optional[list[list[int]]]
-    documents_hash: Optional[list[str]]
+    # ///////////////////////////////////////////////////////////////////////////
+    # * Fields for the documents
+    # Basic token IDs
+    documents_token_ids: Optional[list[int]]
+    t_start_loc_docs: Optional[list[int]]
+    # Documents resources
+    block_ids_docs: Optional[list[int]]
     b_start_loc_docs: Optional[list[int]]
+    # Documents states
+    num_computed_tokens_docs: Optional[list[int]]
+    # Documents hashes
+    documents_hash: Optional[list[str]]
+    document_seq_hash: Optional[str]
 
     @classmethod
     def from_request(
@@ -51,9 +60,16 @@ class NewRequestData:
             block_ids=block_ids,
             num_computed_tokens=request.num_computed_tokens,
             lora_request=request.lora_request,
+            # ///////////////////////////////////////////////////////////////////////////
+            # Fields for the documents
             documents_token_ids=request.documents_token_ids,
-            documents_hash=request.documents_hash,
+            # Documents resources
+            block_ids_docs=request.block_ids_docs,
             b_start_loc_docs=b_start_loc_docs,
+            # Documents states
+            num_computed_tokens_docs=request.num_computed_tokens_docs,
+            document_seq_hash=request.document_seq_hash,
+            documents_hash=request.documents_hash,
         )
 
 
@@ -61,6 +77,7 @@ class NewRequestData:
 class CachedRequestData:
 
     req_id: str
+    # Since if req is preempted, its resources are released and taken by others.
     # If resumed_from_preemption is False, new_block_ids will be appended to
     # the request's block IDs. If True, new_block_ids will be used as the
     # request's block IDs instead of appending to the existing block IDs.

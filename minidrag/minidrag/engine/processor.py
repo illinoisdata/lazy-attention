@@ -74,6 +74,7 @@ def process_inputs(
     
     documents_token_ids = None
     documents_hash = None
+    document_seq_hash = None
     if document_seq is not None:
         documents_token_ids = []
         documents_hash = []
@@ -112,6 +113,7 @@ def process_inputs(
             documents_token_ids.append(doc_token_ids)
             # hash the document sequence
             documents_hash.append(str(sha256(tuple(doc_token_ids))))
+            document_seq_hash = str(sha256(tuple(documents_hash)))
             
     eos_token_id = self.input_preprocessor.get_eos_token_id(lora_request)
     self._validate_model_inputs(processed_inputs, lora_request)
@@ -182,8 +184,8 @@ def process_inputs(
         # Arguments for dynamic rag
         documents_token_ids=documents_token_ids,
         documents_hash=documents_hash,
+        document_seq_hash=document_seq_hash,
     )
-
 
 
 def apply_patch():

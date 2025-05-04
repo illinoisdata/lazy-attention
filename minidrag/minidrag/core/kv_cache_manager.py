@@ -1,22 +1,25 @@
-from vllm.v1.core.kv_cache_manager import KVCacheManager
-
-
+from itertools import chain
 from collections import defaultdict
 from collections.abc import Iterable
-from typing import Optional
+from typing import Optional, Union
 
 from vllm.logger import init_logger
 from vllm.utils import cdiv, sha256
-from vllm.v1.core.block_pool import BlockPool
 from vllm.v1.core.kv_cache_utils import (BlockHashType, KVCacheBlock,
                                          hash_request_tokens)
 from vllm.v1.core.specialized_manager import get_specialized_manager
 from vllm.v1.kv_cache_interface import KVCacheConfig
 # from vllm.v1.metrics.stats import PrefixCacheStats
 from vllm.v1.request import RequestStatus
+from vllm.v1.core.kv_cache_manager import KVCacheManager
+from vllm.v1.core.block_pool import BlockPool
 
 from minidrag.request import _Request as Request
 from minidrag.metrics.stats import PrefixCacheStats
+
+from minidrag.core.kv_cache_utils import hash_request_tokens_with_doc_hash, hash_request_tokens_docs
+from minidrag.core.block_pool import cache_full_blocks, cache_full_blocks_docs
+
 
 class DragKVCacheManager(KVCacheManager):
 
@@ -55,7 +58,6 @@ class DragKVCacheManager(KVCacheManager):
         self.num_preallocate_tokens = num_preallocate_tokens
         self.num_preallocate_blocks = cdiv(num_preallocate_tokens,
                                            self.block_size)
-
         self.block_pool = BlockPool(self.num_gpu_blocks, enable_caching)
 
         self.specialized_manager = get_specialized_manager(
@@ -68,18 +70,23 @@ class DragKVCacheManager(KVCacheManager):
         # is finished.
         self.req_to_blocks: defaultdict[str,
                                         list[KVCacheBlock]] = defaultdict(list)
+        self.req_to_blocks_docs: defaultdict[
+            str, list[list[KVCacheBlock]]] = defaultdict(list)
 
         # Mapping from request ID to kv block hashes.
         # This is to avoid recomputing the block hashes for each call of
         # `get_computed_blocks` or `allocate_slots`.
         self.req_to_block_hashes: defaultdict[
             str, list[BlockHashType]] = defaultdict(list)
+        self.req_to_block_hashes_docs: defaultdict[
+            str, list[list[BlockHashType]]] = defaultdict(list)
 
         # {req_id: The number of cached blocks for this given request}
         # This is used to track the number of cached blocks for each request.
         # This is only used to track the RUNNING requests, we do not track the
         # data for reempted ones.
         self.num_cached_block: dict[str, int] = {}
+        self.num_cached_block_docs: dict[str, list[int]] = {}
         self.prefix_cache_stats = PrefixCacheStats()
 
     @property
@@ -122,8 +129,13 @@ class DragKVCacheManager(KVCacheManager):
         # if the scheduler has tried to schedule the request before.
         block_hashes = self.req_to_block_hashes[request.request_id]
         if not block_hashes:
-            block_hashes = hash_request_tokens(self.caching_hash_fn,
-                                               self.block_size, request)
+            if request.has_documents:
+                # The first block is the document sequence hash.
+                block_hashes = hash_request_tokens_with_doc_hash(
+                    self.caching_hash_fn, self.block_size, request)
+            else:
+                block_hashes = hash_request_tokens(self.caching_hash_fn,
+                                                self.block_size, request)
             self.req_to_block_hashes[request.request_id] = block_hashes
 
         self.prefix_cache_stats.requests += 1
@@ -159,54 +171,43 @@ class DragKVCacheManager(KVCacheManager):
         else:
             # Skip cache hits for prompt logprobs
             return [], 0
-    
-    
-    def get_computed_blocks_documents(
-            self, request: Request) -> tuple[list[list[KVCacheBlock]], list[int]]:
-        """Get the computed (cached) blocks for the request attached documents.
-        Note that the computed blocks must be full.
-
-        Args:
-            request: The request to get the computed blocks.
-
-        Returns:
-            A tuple containing:
-                - A list of blocks that are computed for the request.
-                - The number of computed tokens.
-        """
-        num_documents = len(request.documents_hash)
-        computed_blocks_doc = [[] for _ in range(num_documents)]
-        num_computed_tokens_doc = [0 for _ in range(num_documents)]
-        if not self.enable_caching:
-            # Prefix caching is disabled.
-            return computed_blocks_doc, num_computed_tokens_doc
         
-        # Walk through all documents
-        # The block hashes for the request may already be computed
-        # if the scheduler has tried to schedule the request before.
-        self.prefix_cache_stats.doc_requests += num_documents
-        for doc_idx in range(num_documents):
-            block_hashes = request.documents_hash[doc_idx]
-            if not block_hashes:
-                raise ValueError(
-                    f"Document {doc_idx} does not have block hashes.")
-            assert (request.sampling_params.prompt_logprobs is None)
-            
-            # do not need to consider the last bloc
-            computed_blocks = (
-                self.specialized_manager.find_longest_cache_hit(block_hashes))
+    def get_computed_blocks_docs(
+            self, request: Request, 
+            ) -> tuple[list[list[KVCacheBlock]], list[int]]:
+        """Get the computed (cached) blocks for the request.
+        Note that the computed blocks must be full.
+        
+        Is processing the documents, make sure to retrieve the
+           computed blocks for the documents indenpently with prefix caching.
+        """
+        assert request.has_documents, "Request does not have documents"
+        num_docs = len(request.documents_token_ids)
+        if not self.enable_caching:
+            return [[] for _ in range(num_docs)], \
+                    [0 for _ in range(num_docs)]
 
-            self.prefix_cache_stats.doc_queries += len(block_hashes)
-            self.prefix_cache_stats.doc_hits += len(computed_blocks)
+        block_hashes_docs = self.req_to_block_hashes_docs[request.request_id]
+        
+        if not block_hashes_docs:
+            block_hashes_docs = hash_request_tokens_docs(self.caching_hash_fn,
+                                                         self.block_size, request)
+            self.req_to_block_hashes_docs[request.request_id] = block_hashes_docs
 
-            # NOTE(woosuk): Since incomplete blocks are not eligible for
-            # sharing, `num_computed_tokens` is always a multiple of
-            # `block_size`.
-            num_computed_tokens = len(computed_blocks) * self.block_size
-            computed_blocks_doc[doc_idx] = computed_blocks
-            num_computed_tokens_doc[doc_idx] = num_computed_tokens
+        self.prefix_cache_stats.doc_requests += 1
+        # Then find the computed blocks.
+        computed_blocks_docs = [[] for _ in range(num_docs)]
+        num_computed_tokens_docs = [0 for _ in range(num_docs)]
+        for doc_idx in range(num_docs):
+            block_hashes_doc = block_hashes_docs[doc_idx]
+            computed_blocks_docs[doc_idx] = (
+                self.specialized_manager.find_longest_cache_hit(block_hashes_doc))
+            num_computed_tokens_docs[doc_idx] = (
+                len(computed_blocks_docs[doc_idx]) * self.block_size)
             
-        return computed_blocks_doc, num_computed_tokens_doc
+        # Update stats information TODO(haocheng): utilize the stats
+        self.prefix_cache_stats.doc_hits += num_docs
+        return computed_blocks_docs, num_computed_tokens_docs
 
     def allocate_slots(
         self,
@@ -294,13 +295,17 @@ class DragKVCacheManager(KVCacheManager):
         else:
             # Get new blocks from the free block pool considering
             # preallocated blocks.
+            block_table_limit = self.max_num_blocks_per_req - len(req_blocks)
+            if request.has_documents:
+                block_table_limit -= sum([len(req_blocks_doc) for req_blocks_doc in
+                                          self.req_to_blocks_docs[request.request_id]])
             num_new_blocks = min(
                 num_new_blocks + self.num_preallocate_blocks,
                 self.block_pool.get_num_free_blocks(),
                 # Should not exceed the maximum number of blocks per request.
                 # This is especially because the block table has the shape
                 # [..., max_num_blocks_per_req].
-                self.max_num_blocks_per_req - len(req_blocks),
+                block_table_limit,
             )
             assert num_new_blocks > 0
 
@@ -335,6 +340,106 @@ class DragKVCacheManager(KVCacheManager):
             request.request_id] = num_full_blocks_after_append
         return new_blocks
 
+    def allocate_slots_docs(
+        self,
+        request: Request,
+        num_tokens_docs: Optional[list[int]] = None,
+        new_computed_blocks_docs: Optional[list[list[KVCacheBlock]]] = None,
+    ) -> Optional[list[list[KVCacheBlock]]]:
+        if sum(num_tokens_docs) == 0:
+            raise ValueError("sum of num_tokens_docs must be greater than 0")
+        
+        num_docs = len(request.documents_token_ids)
+        new_computed_blocks_docs = new_computed_blocks_docs or [[] for _ in range(num_docs)]
+        req_blocks_docs = self.req_to_blocks_docs[request.request_id]
+
+        # TODO(haocheng): we can free some blocks in the future
+
+        num_computed_tokens_docs = [
+            request.num_computed_tokens_docs[doc_idx] +
+            len(new_computed_blocks_docs[doc_idx]) * self.block_size
+            for doc_idx in range(num_docs)
+        ]
+        num_required_blocks_docs = [
+            cdiv(num_computed_tokens_docs[doc_idx] + num_tokens_docs[doc_idx],
+                self.block_size) for doc_idx in range(num_docs)
+        ]
+        num_new_blocks_docs = [
+                (num_required_blocks_docs[doc_idx] - 
+                 len(req_blocks_docs[doc_idx]) -
+                 len(new_computed_blocks_docs[doc_idx]))
+                for doc_idx in range(num_docs)
+        ]
+        num_evictable_computed_blocks_docs = sum(1 for blk in chain.from_iterable(
+                new_computed_blocks_docs) if blk.ref_cnt == 0)
+        if (sum(num_new_blocks_docs) > self.block_pool.get_num_free_blocks() -
+                num_evictable_computed_blocks_docs):
+                # Cannot allocate new blocks
+            return None
+        # Touch the add ref count for the computed blocks
+        assert self.enable_caching, "Should not be here if caching is disabled"
+        self.block_pool.touch(chain.from_iterable(new_computed_blocks_docs))
+        
+        # Append the new computed blocks to the request blocks until now to
+        for doc_idx in range(num_docs):
+            req_blocks_docs[doc_idx].extend(new_computed_blocks_docs[doc_idx])
+
+        if sum(num_new_blocks_docs) <= 0:
+            # No new block is needed.
+            new_blocks_docs = [[] for _ in range(num_docs)]
+        else:
+            total_num_req_blocks_docs = sum(
+                len(req_blocks_docs[doc_idx]) 
+                for doc_idx in range(num_docs)
+            )
+            new_blocks_docs = [[] for _ in range(num_docs)]
+            for doc_idx in range(num_docs):
+                # We do not give preallocated blocks for documents
+                num_new_blocks_doc = min(
+                    num_new_blocks_docs[doc_idx],
+                    self.block_pool.get_num_free_blocks(),
+                )
+                if num_new_blocks_doc + total_num_req_blocks_docs > \
+                        self.max_num_blocks_per_req:
+                    raise ValueError("Exceed the maximum number of blocks per request")
+                total_num_req_blocks_docs += num_new_blocks_doc
+                
+                assert num_new_blocks_doc > 0
+                
+                new_blocks_doc = self.block_pool.get_new_blocks(num_new_blocks_docs[doc_idx])
+                new_blocks_docs[doc_idx].extend(new_blocks_doc)
+                req_blocks_docs[doc_idx].extend(new_blocks_doc)
+                
+            if not self.enable_caching:
+                return new_blocks_docs
+            
+            num_cached_blocks_docs = self.num_cached_block_docs.get(
+                request.request_id,
+                [
+                    len(new_computed_blocks_doc)
+                    for new_computed_blocks_doc in new_computed_blocks_docs
+                ]
+            )
+            
+            num_full_blocks_after_append_docs = [
+                (num_computed_tokens_docs[doc_idx] +
+                 num_tokens_docs[doc_idx]) // self.block_size
+                for doc_idx in range(num_docs)]
+
+        self.block_pool.cache_full_blocks_docs(
+            request=request,
+            block_docs=req_blocks_docs,
+            block_hashes_docs=self.req_to_block_hashes_docs[request.request_id],
+            num_cached_blocks_docs=num_cached_blocks_docs,
+            num_full_blocks_docs=num_full_blocks_after_append_docs,
+            block_size=self.block_size,
+            hash_fn=self.caching_hash_fn,
+        )
+            
+        self.num_cached_block_docs[
+            request.request_id] = num_full_blocks_after_append_docs
+        return new_blocks_docs
+
     def free(self, request: Request) -> None:
         """Free the blocks allocated for the request.
         When caching is enabled, we free the blocks in reverse order so that
@@ -353,7 +458,21 @@ class DragKVCacheManager(KVCacheManager):
 
         self.block_pool.free_blocks(ordered_blocks)
         self.num_cached_block.pop(request.request_id, None)
+        
+        if request.has_documents:
+            # Free the blocks for documents
+            blocks_docs = self.req_to_blocks_docs.pop(request.request_id, None)
+            # TODO(haocheng): add better strategy to free the blocks
+            ordered_blocks_docs: Iterable[KVCacheBlock] = []
+            if blocks_docs is not None:
+                ordered_blocks_docs = chain.from_iterable(blocks_docs)
+                if self.enable_caching:
+                    # Evict tail documents first
+                    ordered_blocks_docs = reversed(ordered_blocks_docs)
+            self.block_pool.free_blocks(ordered_blocks_docs)
+            self.num_cached_block_docs.pop(request.request_id, None)
 
+    # TODO(haocheng): consider resetting the prefix cache
     def reset_prefix_cache(self) -> bool:
         """Reset prefix cache. This function may be used in RLHF
         flows to invalid prefix caching after the weights are updated,
@@ -415,6 +534,8 @@ class DragKVCacheManager(KVCacheManager):
             else:
                 break
         return num_common_blocks
+    
+    # TODO(haocheng): add a function `get_num_common_doc_blocks`
 
     def free_block_hashes(self, request: Request) -> None:
         """Discard the block hashes for the request.
@@ -423,3 +544,5 @@ class DragKVCacheManager(KVCacheManager):
         is finished, not when it is preempted.
         """
         self.req_to_block_hashes.pop(request.request_id, None)
+        # TODO(haocheng): should we remove immediately?
+        self.req_to_block_hashes_docs.pop(request.request_id, None)

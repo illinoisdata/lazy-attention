@@ -39,6 +39,7 @@ class EngineCoreRequest(
     # Extra arguments for dynamic rag
     documents_token_ids: Optional[list[list[int]]]
     documents_hash: Optional[list[str]]
+    document_seq_hash: Optional[str]
     
 
 def apply_patch():
