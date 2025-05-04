@@ -22,7 +22,6 @@ from vllm.v1.engine import (EngineCoreOutput,
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.metrics.stats import SchedulerStats
 from vllm.v1.outputs import ModelRunnerOutput
-from vllm.v1.request import RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.structured_output import StructuredOutputManager
 
@@ -33,6 +32,7 @@ from vllm.v1.core.sched.output import SchedulerOutput, NewRequestData, CachedReq
 
 from minidrag.core.kv_cache_manager import DragKVCacheManager as KVCacheManager
 from minidrag.request import _Request as Request
+from minidrag.request import RequestStatus
 from minidrag.engine import EngineCoreRequest, EngineCoreEventType
 
 
@@ -137,10 +137,13 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         scheduled_resumed_reqs: list[Request] = []
         scheduled_running_reqs: list[Request] = []
         preempted_reqs: list[Request] = []
+        
+        structured_output_request_ids: dict[str, int] = {}
 
         req_to_new_block_ids: dict[str, list[int]] = {}
         num_scheduled_tokens: dict[str, int] = {}
         token_budget = self.max_num_scheduled_tokens
+        
         # Encoder-related.
         scheduled_encoder_inputs: dict[str, list[int]] = {}
         encoder_budget = self.max_num_encoder_input_tokens
@@ -152,6 +155,8 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
 
         # ///////////////////////////////////////////////////////////////////////
         # First, schedule the RUNNING requests.
+        # If already in the RUNNING queue, the required documents are ready,
+        # so we do not need to check the documents again.
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
@@ -159,182 +164,106 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                 # This request has already been scheduled.
                 req_index += 1
                 continue
-            
-            # Since is from waitting to running, we just use updated
-            # information of computed tokens
-            # for the query part and new output
-            num_new_tokens_docs = None
-            if request.documents_token_ids is not None:
-                num_new_tokens_docs = sum(request.len_documents) - \
-                    sum(request.num_computed_tokens_docs)
+
             num_new_tokens = (request.num_tokens_with_spec -
                               request.num_computed_tokens)
-            # Also divide to three cases:
-            # 1. No documents -> num_new_tokens_docs is None
-            # 2. All documents ready -> num_new_tokens_docs == 0
-            # 3. Some documents not ready -> num_new_tokens_docs > 0
-            if num_new_tokens_docs is None:
-                # Case 1
-                # 1.1 Compute the number of new tokens to be scheduled.
-                num_new_tokens = (request.num_tokens_with_spec -
-                                request.num_computed_tokens)
-                if (0 < self.scheduler_config.long_prefill_token_threshold <
-                        num_new_tokens):
-                    num_new_tokens = (
-                        self.scheduler_config.long_prefill_token_threshold)
-                num_new_tokens = min(num_new_tokens, token_budget)
-                assert num_new_tokens > 0
-                # 1.2 Try to allocate resources for the request.
-                while True:
-                    new_blocks = self.kv_cache_manager.allocate_slots(
-                        request, num_new_tokens)
-                    if new_blocks is None:
-                        # The request cannot be scheduled.
-                        # Preempt the lowest-priority request.
-                        preempted_req = self.running.pop()
-                        self.kv_cache_manager.free(preempted_req)
-                        preempted_req.status = RequestStatus.PREEMPTED
-                        preempted_req.num_computed_tokens = 0
-                        if self.log_stats:
-                            preempted_req.record_event(
-                                EngineCoreEventType.PREEMPTED, scheduled_timestamp)
+            if (0 < self.scheduler_config.long_prefill_token_threshold <
+                    num_new_tokens):
+                num_new_tokens = (
+                    self.scheduler_config.long_prefill_token_threshold)
+            num_new_tokens = min(num_new_tokens, token_budget)
+            assert num_new_tokens > 0
 
-                        self.waiting.appendleft(preempted_req)
-                        preempted_reqs.append(preempted_req)
-                        if preempted_req == request:
-                            # No more request to preempt.
-                            can_schedule = False
-                            break
-                    else:
-                        # The request can be scheduled.
-                        can_schedule = True
-                        break
-                if not can_schedule:
-                    break
-                assert new_blocks is not None
-                # Schedule the request.
-                scheduled_running_reqs.append(request)
-                self.scheduled_req_ids.add(request.request_id)
-                req_to_new_block_ids[request.request_id] = [
-                    b.block_id for b in new_blocks
-                ]
-                num_scheduled_tokens[request.request_id] = num_new_tokens
-                token_budget -= num_new_tokens
-                req_index += 1
-                
-            elif num_new_tokens_docs == 0:
-                # Case 2: has documents, all documents are ready
-                num_new_tokens = (request.num_tokens_with_spec -
-                                  request.num_computed_tokens)
-                if (0 < self.scheduler_config.long_prefill_token_threshold <
-                        num_new_tokens):
-                    num_new_tokens = (
-                        self.scheduler_config.long_prefill_token_threshold)
-                num_new_tokens = min(num_new_tokens, token_budget)
-                assert num_new_tokens > 0
-                # 2.2 Try to allocate resources for the request.
-                while True:
-                    new_blocks = self.kv_cache_manager.allocate_slots(
-                        request, num_new_tokens)
-                    if new_blocks is None:
-                        # The request cannot be scheduled.
-                        # Preempt the lowest-priority request.
-                        preempted_req = self.running.pop()
-                        self.kv_cache_manager.free(preempted_req)
-                        preempted_req.status = RequestStatus.PREEMPTED
-                        preempted_req.num_computed_tokens = 0
-                        if self.log_stats:
-                            preempted_req.record_event(
-                                EngineCoreEventType.PREEMPTED, scheduled_timestamp)
-
-                        self.waiting.appendleft(preempted_req)
-                        preempted_reqs.append(preempted_req)
-                        if preempted_req == request:
-                            # No more request to preempt.
-                            can_schedule = False
-                            break
-                    else:
-                        # The request can be scheduled.
-                        can_schedule = True
-                        break
-                if not can_schedule:
-                    break
-                assert new_blocks is not None
-                # Schedule the request.
-                scheduled_running_reqs.append(request)
-                self.scheduled_req_ids.add(request.request_id)
-                req_to_new_block_ids[request.request_id] = [
-                    b.block_id for b in new_blocks
-                ]
-                num_scheduled_tokens[request.request_id] = num_new_tokens
-                token_budget -= num_new_tokens
-                req_index += 1
-            elif num_new_tokens_docs > 0:
-                # Case 3: some documents are not ready, still process the documents,
-                # DO NOT touch the query part
-                num_prefill_tokens_docs = []
-                new_blocks_docs = []
-                can_schedule = True
-                for doc_idx in range(len(request.len_documents)):
-                    if not can_schedule:
-                        num_prefill_tokens_docs.append(0)
-                        new_blocks_docs.append([])
-                        continue
-                    # Process the documents one by one
-                    num_new_tokens_doc = request.len_documents[doc_idx] - \
-                        request.num_computed_tokens_docs[doc_idx]
-                    if num_new_tokens_doc == 0:
-                        continue
-                    if (0 < self.scheduler_config.long_prefill_token_threshold <
-                            num_new_tokens_doc):
-                        num_new_tokens_doc = (
-                            self.scheduler_config.long_prefill_token_threshold)
-                    num_new_tokens_doc = min(num_new_tokens_doc, token_budget)
-                    assert num_new_tokens_doc > 0
-                    num_prefill_tokens_docs.append(num_new_tokens_doc)
-                    while True:
-                        new_blocks = self.kv_cache_manager.allocate_slots(
-                            request, num_new_tokens)
-                        if new_blocks is None:
-                            # The request cannot be scheduled.
-                            # Preempt the lowest-priority request.
-                            preempted_req = self.running.pop()
-                            self.kv_cache_manager.free(preempted_req)
-                            preempted_req.status = RequestStatus.PREEMPTED
-                            preempted_req.num_computed_tokens = 0
-                            if self.log_stats:
-                                preempted_req.record_event(
-                                    EngineCoreEventType.PREEMPTED, scheduled_timestamp)
-
-                            self.waiting.appendleft(preempted_req)
-                            preempted_reqs.append(preempted_req)
-                            if preempted_req == request:
-                                # No more request to preempt.
-                                can_schedule = False
-                                break
-                        else:
-                            # The request can be scheduled.
-                            can_schedule = True
-                            break
-                    if not can_schedule:
-                        num_prefill_tokens_docs.append(0)
-                        new_blocks_docs.append([])
-                        break
-                    
-                # Schedule the request.
-                scheduled_running_reqs.append(request)
-                self.scheduled_req_ids.add(request.request_id)
-                req_to_b_start_loc_docs[request.request_id] = [0] + \
-                        list(accumulate(len(x) for x in new_blocks_docs))
-                req_to_new_block_ids[request.request_id] = [
-                        b.block_id for b in chain.from_iterable(new_blocks_docs)]
-                num_new_tokens = sum(num_prefill_tokens_docs)
-                num_scheduled_tokens[request.request_id] = num_new_tokens
-                token_budget -= num_new_tokens
-                req_index += 1
+            # Schedule encoder inputs.
+            if request.has_encoder_inputs:
+                (encoder_inputs_to_schedule, num_new_tokens,
+                 new_encoder_budget) = self._try_schedule_encoder_inputs(
+                     request, request.num_computed_tokens, num_new_tokens,
+                     encoder_budget)
+                if num_new_tokens == 0:
+                    # The request cannot be scheduled because the encoder budget
+                    # or the encoder cache is exhausted.
+                    # NOTE(woosuk): By using `continue` instead of `break` here,
+                    # we intentionally relax the strict FCFS scheduling policy
+                    # to allow lower-priority requests to be scheduled when a
+                    # higher-priority request is blocked by encoder constraints.
+                    req_index += 1
+                    continue
             else:
-                raise RuntimeError(
-                    f"Invalid num_new_tokens_docs: {num_new_tokens_docs}")
+                encoder_inputs_to_schedule = None
+                new_encoder_budget = encoder_budget
+
+            while True:
+                new_blocks = self.kv_cache_manager.allocate_slots(
+                    request, num_new_tokens)
+                if new_blocks is None:
+                    # The request cannot be scheduled.
+                    # Preempt the lowest-priority request.
+                    preempted_req = self.running.pop()
+                    self.kv_cache_manager.free(preempted_req)
+                    preempted_req.status = RequestStatus.PREEMPTED
+                    preempted_req.num_computed_tokens = 0
+                    if self.log_stats:
+                        preempted_req.record_event(
+                            EngineCoreEventType.PREEMPTED, scheduled_timestamp)
+
+                    self.waiting.appendleft(preempted_req)
+                    preempted_reqs.append(preempted_req)
+                    if preempted_req == request:
+                        # No more request to preempt.
+                        can_schedule = False
+                        break
+                else:
+                    # The request can be scheduled.
+                    can_schedule = True
+                    break
+            if not can_schedule:
+                break
+            assert new_blocks is not None
+
+            # Schedule the request.
+            scheduled_running_reqs.append(request)
+            self.scheduled_req_ids.add(request.request_id)
+            if request.use_structured_output:
+                # PERF: in case of chunked prefill,
+                # request might not include any new tokens.
+                # Therefore, we might introduce some additional
+                # cycle to fill in the bitmask, which could be a big no-op.
+                structured_output_request_ids[request.request_id] = req_index
+            req_to_new_block_ids[request.request_id] = [
+                b.block_id for b in new_blocks
+            ]
+            num_scheduled_tokens[request.request_id] = num_new_tokens
+            token_budget -= num_new_tokens
+            req_index += 1
+
+            # Speculative decode related.
+            if request.spec_token_ids:
+                num_scheduled_spec_tokens = (num_new_tokens +
+                                             request.num_computed_tokens -
+                                             request.num_tokens)
+                if num_scheduled_spec_tokens > 0:
+                    # Trim spec_token_ids list to num_scheduled_spec_tokens.
+                    del request.spec_token_ids[num_scheduled_spec_tokens:]
+                    scheduled_spec_decode_tokens[request.request_id] = (
+                        request.spec_token_ids)
+
+            # Encoder-related.
+            if encoder_inputs_to_schedule:
+                scheduled_encoder_inputs[request.request_id] = (
+                    encoder_inputs_to_schedule)
+                # Allocate the encoder cache.
+                for i in encoder_inputs_to_schedule:
+                    self.encoder_cache_manager.allocate(request, i)
+                encoder_budget = new_encoder_budget
+
+        # Record the LoRAs in scheduled_running_reqs
+        scheduled_loras: set[int] = set()
+        if self.lora_config:
+            scheduled_loras = set(
+                req.lora_request.lora_int_id for req in scheduled_running_reqs
+                if req.lora_request and req.lora_request.lora_int_id > 0)
+            assert len(scheduled_loras) <= self.lora_config.max_loras
 
         # Use a temporary deque to collect requests that need to be skipped
         # and put back at the head of the waiting queue later
@@ -342,186 +271,142 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
 
         # ///////////////////////////////////////////////////////////////////////
         # Next, schedule the WAITING requests.
+        # Here we need to check and assemble query requests and document.
+        print("Scheduling waiting requests")
         if not preempted_reqs:
             while self.waiting and token_budget > 0:
                 if len(self.running) == self.max_num_running_reqs:
                     break
                 request = self.waiting[0]
-                # TODO(haocheng): support FSM and LoRA requests.
+                # Skip request if the structured output request is still waiting
+                # for FSM compilation.
+                if request.status == RequestStatus.WAITING_FOR_FSM:
+                    structured_output_req = request.structured_output_request
+                    if structured_output_req and structured_output_req.grammar:
+                        request.status = RequestStatus.WAITING
+                    else:
+                        self.waiting.popleft()
+                        skipped_waiting_requests.appendleft(request)
+                        continue
 
+                # Check that adding the request still respects the max_loras
+                # constraint.
+                if self.lora_config and request.lora_request and (
+                        len(scheduled_loras) == self.lora_config.max_loras
+                        and request.lora_request.lora_int_id
+                        not in scheduled_loras):
+                    # Scheduling would exceed max_loras, skip.
+                    self.waiting.popleft()
+                    skipped_waiting_requests.appendleft(request)
+                    continue
+
+                # Skip the request if it is not ready to be scheduled.
+                if request.status == RequestStatus.WAITING_FOR_DOC:
+                    if self.is_doc_ready(request):
+                        print("ready to schedule request")
+                        request.status = RequestStatus.WAITING
+                    else:
+                        self.waiting.popleft()
+                        skipped_waiting_requests.appendleft(request)
+                        continue
+                print(f"Scheduling request {request.request_id} with status {request.status}")
                 # Get already-cached tokens.
-                # Here, in order to avoid query part find mismatched results
-                # we need to involve document hash as well
+                # If the request has documents, automatically use doc as the prefix
                 computed_blocks, num_computed_tokens = \
                     self.kv_cache_manager.get_computed_blocks(request)
-                num_new_tokens_docs = None
-                if request.documents_token_ids is not None:
-                    # Check the document status if this request has documents.
+                # Since when a request with docs can reach here, all the
+                # documents are already ready, we can just assemble the 
+                # resources
+                if request.has_documents:
                     computed_blocks_docs, num_computed_tokens_docs = \
-                        self.kv_cache_manager.get_computed_blocks_documents(request)
-                    # Number of tokens to be scheduled.
-                    num_new_tokens_docs = sum(request.len_documents) - \
-                                          sum(num_computed_tokens_docs)
+                        self.kv_cache_manager.get_computed_blocks_docs(request)
+                    computed_blocks = list(chain.from_iterable(
+                        computed_blocks_docs)) + computed_blocks
+                    num_computed_tokens = sum(
+                        num_computed_tokens_docs) + num_computed_tokens
+                    # Update the prompt
+                    request.merge_documents()
+                    # Update req to block hash
+                    pre_block_hashes = []
+                    for doc_idx in range(len(request.documents_token_ids)):
+                        doc_id = f"{request.request_id}_d{doc_idx}"
+                        pre_block_hashes.extend(
+                            self.kv_cache_manager.req_to_block_hashes[doc_id])
+                    self.kv_cache_manager.req_to_block_hashes[request.request_id] = (
+                        pre_block_hashes + 
+                        self.kv_cache_manager.req_to_block_hashes[request.request_id])
                     
-                # Then we have three cases:
-                #  1. No documents -> num_new_tokens_docs is None
-                #  2. All documents ready -> num_new_tokens_docs == 0
-                #  3. Some documents not ready -> num_new_tokens_docs > 0
-                if num_new_tokens_docs is None:
-                    # Fall back to the original scheduling
-                    num_new_tokens = request.num_tokens - num_computed_tokens
-                    if (0 < self.scheduler_config.long_prefill_token_threshold <
-                            num_new_tokens):
-                        num_new_tokens = (
-                            self.scheduler_config.long_prefill_token_threshold)
-                    num_new_tokens = min(num_new_tokens, token_budget)
-                    assert num_new_tokens > 0
-                    new_blocks = self.kv_cache_manager.allocate_slots(
-                        request, num_new_tokens, computed_blocks)
-                    if new_blocks is None:
+                # Number of tokens to be scheduled.
+                # We use `request.num_tokens` instead of
+                # `request.num_prompt_tokens` to consider the resumed requests,
+                # which have output tokens.
+                num_new_tokens = request.num_tokens - num_computed_tokens
+                if (0 < self.scheduler_config.long_prefill_token_threshold <
+                        num_new_tokens):
+                    num_new_tokens = (
+                        self.scheduler_config.long_prefill_token_threshold)
+                num_new_tokens = min(num_new_tokens, token_budget)
+                assert num_new_tokens > 0
+
+                # Schedule encoder inputs.
+                if request.has_encoder_inputs:
+                    (encoder_inputs_to_schedule, num_new_tokens,
+                     new_encoder_budget) = self._try_schedule_encoder_inputs(
+                         request, num_computed_tokens, num_new_tokens,
+                         encoder_budget)
+                    if num_new_tokens == 0:
                         # The request cannot be scheduled.
                         break
-                    # from waiting to running
-                    self.waiting.popleft()
-                    req_index += 1
-                    self.running.append(request)
-                    self.scheduled_req_ids.add(request.request_id)
-                    if self.log_stats:
-                        request.record_event(EngineCoreEventType.SCHEDULED,
-                                            scheduled_timestamp)
-                    if request.status == RequestStatus.WAITING:
-                        scheduled_new_reqs.append(request)
-                    elif request.status == RequestStatus.PREEMPTED:
-                        scheduled_resumed_reqs.append(request)
-                    else:
-                        raise RuntimeError(
-                            f"Invalid request status: {request.status}")
+                else:
+                    encoder_inputs_to_schedule = None
+                    new_encoder_budget = encoder_budget
 
-                    req_to_b_start_loc_docs[request.request_id] = None
-                    req_to_new_block_ids[request.request_id] = [
-                        b.block_id for b in computed_blocks + new_blocks
-                    ]
-                    num_scheduled_tokens[request.request_id] = num_new_tokens
-                    token_budget -= num_new_tokens
-                    request.status = RequestStatus.RUNNING
-                    request.num_computed_tokens = num_computed_tokens
+                new_blocks = self.kv_cache_manager.allocate_slots(
+                    request, num_new_tokens, computed_blocks)
+                if new_blocks is None:
+                    # The request cannot be scheduled.
+                    break
 
-                elif num_new_tokens_docs == 0:
-                    assert num_computed_tokens_docs[0] != 0  # only test the first doc           
-                    # Documents are ready, we can schedule the request
-                    # We use `request.num_tokens` instead of
-                    # `request.num_prompt_tokens` to consider the resumed requests,
-                    # which have output tokens.
-                    num_new_tokens = request.num_tokens - num_computed_tokens
-                    if (0 < self.scheduler_config.long_prefill_token_threshold <
-                            num_new_tokens):
-                        num_new_tokens = (
-                            self.scheduler_config.long_prefill_token_threshold)
-                    num_new_tokens = min(num_new_tokens, token_budget)
-                    assert num_new_tokens > 0
-                    new_blocks = self.kv_cache_manager.allocate_slots(
-                        request, num_new_tokens, computed_blocks)
-                    if new_blocks is None:
-                        # The request cannot be scheduled.
-                        break
-                    # from waiting to running
-                    self.waiting.popleft()
-                    req_index += 1
-                    self.running.append(request)
-                    self.scheduled_req_ids.add(request.request_id)
-                    if self.log_stats:
-                        request.record_event(EngineCoreEventType.SCHEDULED,
-                                            scheduled_timestamp)
-                    if request.status == RequestStatus.WAITING:
-                        scheduled_new_reqs.append(request)
-                    elif request.status == RequestStatus.PREEMPTED:
-                        scheduled_resumed_reqs.append(request)
-                    else:
-                        raise RuntimeError(
-                            f"Invalid request status: {request.status}")
-                    req_to_b_start_loc_docs[request.request_id] = [0] + \
-                        list(accumulate(len(x) for x in computed_blocks_docs)) 
-                    req_to_new_block_ids[request.request_id] = [
-                        b.block_id for b in 
-                        list(chain.from_iterable(computed_blocks_docs)) + 
-                        computed_blocks + new_blocks
-                    ]
-                    num_scheduled_tokens[request.request_id] = num_new_tokens
-                    token_budget -= num_new_tokens
-                    request.status = RequestStatus.RUNNING
-                    request.num_computed_tokens = num_computed_tokens
-                    request.num_computed_tokens_docs = num_computed_tokens_docs
-
-                elif num_new_tokens_docs > 0:
-                    # This step we only schedule the documents
-                    num_prefill_tokens_docs = []
-                    new_blocks_docs = []
-                    # Just token new tokens for the documents
-                    can_schedule = True
-                    for doc_idx in range(len(request.len_documents)):
-                        if token_budget <= 0:
-                            num_prefill_tokens_docs.append(0)
-                            new_blocks_docs.append([])
-                            continue
-                        num_new_tokens_doc = request.len_documents[doc_idx] - \
-                            num_computed_tokens_docs[doc_idx]
-                        # Some document maybe already ready
-                        assert num_new_tokens_doc >= 0
-                        if num_new_tokens_doc == 0:
-                            continue
-                        if (0 < self.scheduler_config.long_prefill_token_threshold <
-                                num_new_tokens_doc):
-                            num_new_tokens_doc = (
-                                self.scheduler_config.long_prefill_token_threshold)
-                        num_new_tokens_doc = min(num_new_tokens_doc, token_budget)
-                        # TODO(haocheng): whether we need to align the block size
-                        # num_new_tokens_doc = (num_new_tokens // self.block_size) * self.block_size
-                        assert num_new_tokens_doc > 0
-                        num_prefill_tokens_docs.append(num_new_tokens_doc)
-                        new_blocks = self.kv_cache_manager.allocate_slots(
-                            request, num_new_tokens, computed_blocks)
-                        if new_blocks is None:
-                            # The request cannot be scheduled.
-                            can_schedule = False
-                            break
-                        new_blocks_docs.append(new_blocks)
-                    if not can_schedule:
-                        break  # stop scheduling for waiting requests
-                    # If goes here, resource are ready for all documents and reach the budgets
-                    self.waiting.popleft()
-                    req_index += 1
-                    self.running.append(request)
-                    self.scheduled_req_ids.add(request.request_id)
-                    if self.log_stats:
-                        request.record_event(EngineCoreEventType.SCHEDULED,
-                                            scheduled_timestamp)
-                    if request.status == RequestStatus.WAITING:
-                        scheduled_new_reqs.append(request)
-                    elif request.status == RequestStatus.PREEMPTED:
-                        scheduled_resumed_reqs.append(request)
-                    else:
-                        raise RuntimeError(
-                            f"Invalid request status: {request.status}")
-                    
-                    blocks_docs = list(map(lambda x: x[0] + x[1], 
-                                           zip(computed_blocks_docs, 
-                                               new_blocks_docs)))
-                    req_to_b_start_loc_docs[request.request_id] = [0] + \
-                        list(accumulate(len(x) for x in blocks_docs))
-                    req_to_new_block_ids[request.request_id] = [
-                        b.block_id for b in 
-                        list(chain.from_iterable(blocks_docs))
-                    ]
-                    
-                    num_new_tokens = sum(num_prefill_tokens_docs)
-                    num_scheduled_tokens[request.request_id] = num_new_tokens
-                    token_budget -= num_new_tokens
-                    request.status = RequestStatus.RUNNING
-                    request.num_computed_tokens = num_computed_tokens
-                    request.num_computed_tokens_docs = num_computed_tokens_docs
+                self.waiting.popleft()
+                if request.use_structured_output:
+                    structured_output_request_ids[
+                        request.request_id] = req_index
+                req_index += 1
+                self.running.append(request)
+                self.scheduled_req_ids.add(request.request_id)
+                if self.log_stats:
+                    request.record_event(EngineCoreEventType.SCHEDULED,
+                                         scheduled_timestamp)
+                if request.status == RequestStatus.WAITING:
+                    scheduled_new_reqs.append(request)
+                elif request.status == RequestStatus.PREEMPTED:
+                    scheduled_resumed_reqs.append(request)
                 else:
                     raise RuntimeError(
-                        f"Invalid num_new_tokens_docs: {num_new_tokens_docs}")
+                        f"Invalid request status: {request.status}")
+
+                if self.lora_config and request.lora_request:
+                    scheduled_loras.add(request.lora_request.lora_int_id)
+                req_to_new_block_ids[request.request_id] = [
+                    b.block_id for b in computed_blocks + new_blocks
+                ]
+                num_scheduled_tokens[request.request_id] = num_new_tokens
+                token_budget -= num_new_tokens
+                request.status = RequestStatus.RUNNING
+                request.num_computed_tokens = num_computed_tokens
+
+                # Encoder-related.
+                if encoder_inputs_to_schedule:
+                    scheduled_encoder_inputs[request.request_id] = (
+                        encoder_inputs_to_schedule)
+                    # Allocate the encoder cache.
+                    for i in encoder_inputs_to_schedule:
+                        self.encoder_cache_manager.allocate(request, i)
+                    encoder_budget = new_encoder_budget
+
+        # Put back any skipped requests at the head of the waiting queue
+        if skipped_waiting_requests:
+            self.waiting.extendleft(skipped_waiting_requests)
 
         # Put back any skipped requests at the head of the waiting queue
         # TODO(haocheng): since we do not support LoRA and FSM for now,
@@ -534,7 +419,6 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
         assert total_num_scheduled_tokens <= self.max_num_scheduled_tokens
         assert token_budget >= 0
-        # TODO(haocheng): consider subrequests
         assert len(self.running) <= self.max_num_running_reqs
         # Since some requests in the RUNNING queue may not be scheduled in
         # this step, the total number of scheduled requests can be smaller than
@@ -559,8 +443,7 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         # Construct the scheduler output.
         new_reqs_data = [
             NewRequestData.from_request(req,
-                                        req_to_new_block_ids[req.request_id],
-                                        b_start_loc_docs=req_to_b_start_loc_docs[req.request_id])
+                                        req_to_new_block_ids[req.request_id])
             for req in scheduled_new_reqs
         ]
         resumed_reqs_data = [
@@ -570,7 +453,6 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                 len(scheduled_spec_decode_tokens.get(req.request_id, ())),
                 req_to_new_block_ids[req.request_id],
                 resumed_from_preemption=True,
-                b_start_loc_docs=req_to_b_start_loc_docs[req.request_id],
             ) for req in scheduled_resumed_reqs
         ]
         running_reqs_data = [
@@ -580,7 +462,6 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                 len(scheduled_spec_decode_tokens.get(req.request_id, ())),
                 req_to_new_block_ids[req.request_id],
                 resumed_from_preemption=False,
-                b_start_loc_docs=req_to_b_start_loc_docs[req.request_id],
             ) for req in scheduled_running_reqs
         ]
         scheduler_output = SchedulerOutput(
@@ -615,7 +496,7 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
 
         self.finished_req_ids = set()
         print(f"Scheduler output: {scheduler_output}")
-        breakpoint()
+        # breakpoint()
         return scheduler_output
 
     def _make_cached_request_data(
@@ -630,6 +511,8 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         # them at each scheduling step.
         num_computed_tokens = request.num_computed_tokens
         num_regular_tokens = num_scheduled_tokens - num_scheduled_spec_tokens
+        print(f"Make cache {request.all_token_ids}")
+        print(f"Length {len(request.all_token_ids)}")
         new_token_ids = request.all_token_ids[
             num_computed_tokens:num_computed_tokens + num_regular_tokens]
         req_data = self._cached_reqs_data.get(request.request_id)
@@ -723,6 +606,7 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
 
                 # Check for stop and update request state.
                 # This must be called before we make the EngineCoreOutput.
+                print(f"check stop {request.request_id} {request.num_output_tokens}")
                 stopped = check_stop(request, self.max_model_len)
                 if stopped:
                     self._free_request(request)
@@ -818,25 +702,16 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                 self.requests[doc_req.request_id] = doc_req
                 if self.log_stats:
                     doc_req.record_event(EngineCoreEventType.QUEUED)
-                    request.record_event(EngineCoreEventType.DOC_QUEUED)
-            query_req = Request(
-                request_id = f"{request.request_id}_q",
-                prompt = request.prompt,
-                prompt_token_ids = request.prompt_token_ids,
-                multi_modal_inputs = request.mm_inputs,
-                multi_modal_hashes = request.mm_hashes,
-                multi_modal_placeholders = request.mm_positions,
-                sampling_params = request.sampling_params,
-                eos_token_id=request.eos_token_id,
-                # mark that query request is added after the document requests
-                arrival_time=request.arrival_time + 1e-2,
-                document_seq_hash=request.document_seq_hash,
-            )
+            # Modify request as the query request
+            # request.request_id = f"{request.request_id}_q"
+            # mark that query request is added after the document requests
+            request.arrival_time = request.arrival_time + 1e-2
+            query_req = request
             self.waiting.append(query_req)
             self.requests[query_req.request_id] = query_req
+            query_req.status = RequestStatus.WAITING_FOR_DOC
             if self.log_stats:
                 query_req.record_event(EngineCoreEventType.QUEUED)
-                request.record_event(EngineCoreEventType.QUERY_QUEUED)
         else:    
             self.waiting.append(request)
             self.requests[request.request_id] = request
@@ -887,6 +762,7 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         return len(self.waiting) + len(self.running)
 
     def has_finished_requests(self) -> bool:
+        print(f"has unfinished requests {len(self.finished_req_ids) > 0}")
         return len(self.finished_req_ids) > 0
 
     def get_num_unscheduled_requests(self) -> int:
@@ -910,6 +786,17 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
             spec_decoding_stats=spec_decoding_stats,
         )
         
+    def is_doc_ready(self, request: Request) -> bool:
+        """Check if the documents are ready for the request."""
+        assert request.has_documents
+        blks, num_computed_tokens_docs = \
+            self.kv_cache_manager.get_computed_blocks_docs(request)
+        print(f"blks: {blks}")
+        print(f"num_computed_tokens_docs: {num_computed_tokens_docs}")
+        print(f"len_documents: {request.len_documents}")
+        num_new_tokens_docs = sum(request.len_documents) - \
+                              sum(num_computed_tokens_docs)
+        return num_new_tokens_docs == 0
         
 original_scheduler = None
 

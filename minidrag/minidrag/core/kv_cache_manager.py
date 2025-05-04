@@ -299,8 +299,11 @@ class DragKVCacheManager(KVCacheManager):
             if request.has_documents:
                 block_table_limit -= sum([len(req_blocks_doc) for req_blocks_doc in
                                           self.req_to_blocks_docs[request.request_id]])
+            num_pre = self.num_preallocate_blocks
+            if 'd' in request.request_id:
+                num_pre = 0
             num_new_blocks = min(
-                num_new_blocks + self.num_preallocate_blocks,
+                num_new_blocks + num_pre,
                 self.block_pool.get_num_free_blocks(),
                 # Should not exceed the maximum number of blocks per request.
                 # This is especially because the block table has the shape
@@ -440,11 +443,6 @@ class DragKVCacheManager(KVCacheManager):
             request.request_id] = num_full_blocks_after_append_docs
         return new_blocks_docs
     
-    def is_docs_ready(self, request: Request) -> bool:
-        """Use to confirm if the documents are ready to be processed."""
-        assert request.has_documents, "Request does not have documents"
-        pass
-
     def free(self, request: Request) -> None:
         """Free the blocks allocated for the request.
         When caching is enabled, we free the blocks in reverse order so that
@@ -463,19 +461,6 @@ class DragKVCacheManager(KVCacheManager):
 
         self.block_pool.free_blocks(ordered_blocks)
         self.num_cached_block.pop(request.request_id, None)
-        
-        if request.has_documents:
-            # Free the blocks for documents
-            blocks_docs = self.req_to_blocks_docs.pop(request.request_id, None)
-            # TODO(haocheng): add better strategy to free the blocks
-            ordered_blocks_docs: Iterable[KVCacheBlock] = []
-            if blocks_docs is not None:
-                ordered_blocks_docs = chain.from_iterable(blocks_docs)
-                if self.enable_caching:
-                    # Evict tail documents first
-                    ordered_blocks_docs = reversed(ordered_blocks_docs)
-            self.block_pool.free_blocks(ordered_blocks_docs)
-            self.num_cached_block_docs.pop(request.request_id, None)
 
     # TODO(haocheng): consider resetting the prefix cache
     def reset_prefix_cache(self) -> bool:

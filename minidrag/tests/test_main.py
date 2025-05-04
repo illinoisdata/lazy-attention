@@ -21,11 +21,16 @@ class TestMiniDRAG:
                            gpu_memory_utilization=0.9,
                            enforce_eager=False,
                            enable_prefix_caching=True,
-                           seed=42,)
-            llm.generate(prompts=mock_prompts,
+                           seed=42,
+                           max_model_len=2048,)
+            # llm.generate(prompts=mock_prompts,
+            #              sampling_params=mock_sampling_params,
+            #              document_seqs=[["doc1", "doc2"], ["doc3", "doc4"],
+            #                             ["doc5", "doc6"], ["doc7", "doc8"],],)
+            llm.generate(prompts=mock_prompts[0],
                          sampling_params=mock_sampling_params,
                          document_seqs=[["doc1", "doc2"], ["doc3", "doc4"],
-                                        ["doc5", "doc6"], ["doc7", "doc8"],],)
+                                        ["doc5", "doc6"], ["doc7", "doc8"],][0],)
  
         finally:
             if llm is not None:

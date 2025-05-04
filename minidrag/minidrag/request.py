@@ -4,6 +4,13 @@ Request class for minidrag.
 This class is a wrapper around the original Request class from vllm. 
 """
 
+import enum
+from typing import TYPE_CHECKING, Optional, Union
+
+from vllm.sampling_params import SamplingParams
+from vllm.v1.structured_output.request import StructuredOutputRequest
+from vllm.v1.utils import ConstantList
+
 from typing import TYPE_CHECKING, Optional, Union
 
 from vllm import SamplingParams
@@ -97,6 +104,14 @@ class _Request:
             self.len_documents = [len(document_token_ids) for document_token_ids 
                                   in documents_token_ids]
             self.num_computed_tokens_docs = [0 for _ in documents_hash]
+            
+    def merge_documents(self):
+        from itertools import chain
+        assert self.has_documents
+        self.prompt_token_ids = list(chain.from_iterable(self.documents_token_ids)) + self.prompt_token_ids
+        self.num_prompt_tokens = len(self.prompt_token_ids)
+        self._all_token_ids = self.prompt_token_ids.copy()
+        self.all_token_ids = ConstantList(self._all_token_ids)
 
     @classmethod
     def from_engine_core_request(cls, request: EngineCoreRequest) -> "_Request":
@@ -181,6 +196,43 @@ class _Request:
                f"documents_token_ids={self.documents_token_ids}, documents_hash={self.documents_hash}), " \
                f"len_documents={self.len_documents})," \
                f"num_computed_tokens_docs={self.num_computed_tokens_docs})"
+
+
+class RequestStatus(enum.IntEnum):
+    """Status of a request."""
+    WAITING = enum.auto()
+    WAITING_FOR_FSM = enum.auto()
+    RUNNING = enum.auto()
+    PREEMPTED = enum.auto()
+    # Note: anything after PREEMPTED will be considered
+    # as a finished status.
+    FINISHED_STOPPED = enum.auto()
+    FINISHED_LENGTH_CAPPED = enum.auto()
+    FINISHED_ABORTED = enum.auto()
+    FINISHED_IGNORED = enum.auto()
+    
+    WAITING_FOR_DOC = enum.auto()
+
+    @staticmethod
+    def is_finished(status: "RequestStatus") -> bool:
+        return status > RequestStatus.PREEMPTED
+
+    @staticmethod
+    def get_finished_reason(
+            status: "RequestStatus") -> Union[FinishReason, None]:
+        return _FINISHED_REASON_MAP.get(status)
+
+
+# Mapping of finished statuses to their finish reasons.
+# NOTE: The ignored requests are the requests whose prompt lengths
+# are longer than the model's length cap. Therefore, the stop
+# reason should also be "length" as in OpenAI API.
+_FINISHED_REASON_MAP = {
+    RequestStatus.FINISHED_STOPPED: FinishReason.STOP,
+    RequestStatus.FINISHED_LENGTH_CAPPED: FinishReason.LENGTH,
+    RequestStatus.FINISHED_ABORTED: FinishReason.ABORT,
+    RequestStatus.FINISHED_IGNORED: FinishReason.LENGTH,
+}
 
 def apply_patch():
     """Apply the patch to the Request class.
