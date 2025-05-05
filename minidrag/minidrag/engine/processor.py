@@ -93,11 +93,12 @@ def process_inputs(
             # left padding
             pad_length = nearest_multiple - len(doc_token_ids)
             if pad_length > 0:
-                pad_token = "<pad>"
                 try:
                     pad_token = self.tokenizer.tokenizer.pad_token
                 except AttributeError:
                     print("Warning: no pad token in the tokenizer, use '<pad>'.")
+                if pad_token is None: #if tokenizer.tokenizer.pad_token is None
+                    pad_token = "<pad>"
                 pad_token_ids = self.tokenizer.tokenizer(pad_token, 
                                                          add_special_tokens=False)["input_ids"]  # skip the first token
                 pad_token_id = pad_token_ids[-1]
