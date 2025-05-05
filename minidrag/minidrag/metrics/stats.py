@@ -18,3 +18,9 @@ class PrefixCacheStats:
     doc_requests: int = 0
     doc_queries: int = 0
     doc_hits: int = 0
+    
+
+@dataclass
+class BlockUsageStats:
+    """Stores block usage statistics."""
+    num_used_blocks: int = 0

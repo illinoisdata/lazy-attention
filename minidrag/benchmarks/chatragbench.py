@@ -42,7 +42,7 @@ class ChatRAGBenchArgs:
 
     # Others
     tokenizer_model: str = "nvidia/ChatQA-1.5-8B"
-    out_seq_len: int = 512
+    out_seq_len: int = 128
     num_ctx: int = 1000  # Original default was 5.
     max_tokens: int = 512
 

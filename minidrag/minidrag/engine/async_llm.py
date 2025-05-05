@@ -30,10 +30,11 @@ from vllm.v1.engine.output_processor import (OutputProcessor,
 from vllm.v1.engine.core_client import EngineCoreClient
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.v1.engine.processor import Processor
+from vllm.v1.engine.async_llm import logger
 
 from minidrag.engine import EngineCoreRequest
 
-logger = init_logger(__name__)
+# logger = init_logger(__name__)
 
 
 # class AsyncLLM(EngineClient):

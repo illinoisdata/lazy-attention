@@ -16,7 +16,7 @@ from transformers.cache_utils import DynamicCache
 
 from vllm import LLM, SamplingParams
 from vllm.engine.arg_utils import AsyncEngineArgs, EngineArgs
-from vllm.engine.async_llm_engine import AsyncLLMEngine
+from vllm.v1.engine.async_llm import AsyncLLM
 from vllm.transformers_utils.tokenizer import get_tokenizer as vllm_get_tokenizer
 
 from rag.logging import logger
@@ -331,7 +331,7 @@ class CacheParrotRAG(ParrotRAG):
 
 class LLMRAG(RAG):
 
-    def __init__(self, llm: AsyncLLMEngine) -> None:
+    def __init__(self, llm: AsyncLLM) -> None:
         RAG.__init__(self)
         self._llm = llm
         self._docs: Dict[DocumentId, str] = {}
@@ -736,7 +736,7 @@ class PromptCacheRAG(RAG):
 
 # simple adapted from LLMRAG          
 class DynamicRAG(RAG):
-    def __init__(self, llm: AsyncLLMEngine) -> None:
+    def __init__(self, llm: AsyncLLM) -> None:
         RAG.__init__(self)
         self._llm = llm
         self._docs: Dict[DocumentId, str] = {}
@@ -763,7 +763,7 @@ class DynamicRAG(RAG):
             prompt=query,
             sampling_params=sampling_params,
             request_id=request_id,
-            document_seqs=[self._docs[doc_id] for doc_id in doc_ids],
+            document_seq=[self._docs[doc_id] for doc_id in doc_ids],
         ):
             if len(generate_output.outputs) > 1:
                 logger.warning(f"Found {len(generate_output.outputs)} outputs, yielding first one.")
@@ -822,8 +822,9 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
         from minidrag.ctxmgr import MiniDynamicRAG
         MiniDynamicRAG.apply_triton_backend()
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
+        async_engine_args.max_model_len = 8192 * 8
         logger.info(f"[llmrag] Using async engine args: {async_engine_args}")
-        return LLMRAG(llm=AsyncLLMEngine.from_engine_args(async_engine_args))
+        return LLMRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
     elif args.rag_type == "trrag":
         return TransformerRAG(lm_name=args.trrag_lm_name, method=args.trrag_method)
     elif args.rag_type == "pcrag":
@@ -835,9 +836,11 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
         )
     elif args.rag_type == "drag":
         import minidrag.__vllm__
+        from vllm.v1.engine.async_llm import AsyncLLM as _AsyncLLM
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
+        async_engine_args.max_model_len = 8192 * 8
         logger.info(f"[drag] Using async engine args: {async_engine_args}")
-        return DynamicRAG(llm=AsyncLLMEngine.from_engine_args(async_engine_args))
+        return DynamicRAG(llm=_AsyncLLM.from_engine_args(async_engine_args))
     logger.error(f"Invalid RAG type {args.rag_type}")
     sys.exit(1)
     
