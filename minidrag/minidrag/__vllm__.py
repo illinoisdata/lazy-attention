@@ -32,6 +32,10 @@ from minidrag.engine.core import process_input_socket
 # scheduler
 from minidrag.core.sched.scheduler import MiniDynamicRAGScheduler
 
+# async
+from minidrag.engine.async_llm import add_request, generate, _add_request
+from minidrag.engine.async_llm import __init__ as async_llm_init
+
 
 # Step 0: Set environment variable for Triton backend
 os.environ["VLLM_ATTENTION_BACKEND"] = "TRITON_ATTN_VLLM_V1" 
@@ -78,6 +82,12 @@ def proc_patch():
     # Step 3: finally, we patch the backend for scehduling
     import vllm.v1.core.sched.scheduler
     vllm.v1.core.sched.scheduler.Scheduler = MiniDynamicRAGScheduler
-
+    
+    # Step 4: patch for async mode
+    import vllm.v1.engine.async_llm
+    vllm.v1.engine.async_llm.AsyncLLM.add_request = add_request
+    vllm.v1.engine.async_llm.AsyncLLM._add_request = _add_request
+    vllm.v1.engine.async_llm.AsyncLLM.generate = generate
+    vllm.v1.engine.async_llm.AsyncLLM.__init__ = async_llm_init
 
 proc_patch()

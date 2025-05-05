@@ -272,7 +272,6 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         # ///////////////////////////////////////////////////////////////////////
         # Next, schedule the WAITING requests.
         # Here we need to check and assemble query requests and document.
-        print("Scheduling waiting requests")
         if not preempted_reqs:
             while self.waiting and token_budget > 0:
                 if len(self.running) == self.max_num_running_reqs:
@@ -303,17 +302,19 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                 # Skip the request if it is not ready to be scheduled.
                 if request.status == RequestStatus.WAITING_FOR_DOC:
                     if self.is_doc_ready(request):
-                        print("ready to schedule request")
                         request.status = RequestStatus.WAITING
                     else:
                         self.waiting.popleft()
                         skipped_waiting_requests.appendleft(request)
                         continue
-                print(f"Scheduling request {request.request_id} with status {request.status}")
                 # Get already-cached tokens.
                 # If the request has documents, automatically use doc as the prefix
                 computed_blocks, num_computed_tokens = \
                     self.kv_cache_manager.get_computed_blocks(request)
+                # This document is completed before
+                if 'd' in request.request_id and num_computed_tokens == request.num_tokens:
+                    self.waiting.popleft()
+                    continue
                 # Since when a request with docs can reach here, all the
                 # documents are already ready, we can just assemble the 
                 # resources
@@ -495,8 +496,8 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
             self.requests[req_id].num_computed_tokens += num_scheduled_token
 
         self.finished_req_ids = set()
-        print(f"Scheduler output: {scheduler_output}")
-        # breakpoint()
+        # print(f"================================================")
+        # print(f"scheduler_output: {scheduler_output}")
         return scheduler_output
 
     def _make_cached_request_data(
@@ -511,8 +512,6 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         # them at each scheduling step.
         num_computed_tokens = request.num_computed_tokens
         num_regular_tokens = num_scheduled_tokens - num_scheduled_spec_tokens
-        print(f"Make cache {request.all_token_ids}")
-        print(f"Length {len(request.all_token_ids)}")
         new_token_ids = request.all_token_ids[
             num_computed_tokens:num_computed_tokens + num_regular_tokens]
         req_data = self._cached_reqs_data.get(request.request_id)
@@ -606,7 +605,6 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
 
                 # Check for stop and update request state.
                 # This must be called before we make the EngineCoreOutput.
-                print(f"check stop {request.request_id} {request.num_output_tokens}")
                 stopped = check_stop(request, self.max_model_len)
                 if stopped:
                     self._free_request(request)
@@ -762,7 +760,6 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         return len(self.waiting) + len(self.running)
 
     def has_finished_requests(self) -> bool:
-        print(f"has unfinished requests {len(self.finished_req_ids) > 0}")
         return len(self.finished_req_ids) > 0
 
     def get_num_unscheduled_requests(self) -> int:
@@ -789,11 +786,8 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
     def is_doc_ready(self, request: Request) -> bool:
         """Check if the documents are ready for the request."""
         assert request.has_documents
-        blks, num_computed_tokens_docs = \
+        _, num_computed_tokens_docs = \
             self.kv_cache_manager.get_computed_blocks_docs(request)
-        print(f"blks: {blks}")
-        print(f"num_computed_tokens_docs: {num_computed_tokens_docs}")
-        print(f"len_documents: {request.len_documents}")
         num_new_tokens_docs = sum(request.len_documents) - \
                               sum(num_computed_tokens_docs)
         return num_new_tokens_docs == 0

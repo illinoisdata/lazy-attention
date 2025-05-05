@@ -140,7 +140,8 @@ class DragKVCacheManager(KVCacheManager):
 
         self.prefix_cache_stats.requests += 1
         if request.sampling_params.prompt_logprobs is None:
-            if len(block_hashes) * self.block_size == request.num_tokens:
+            if len(block_hashes) * self.block_size == request.num_tokens and \
+                'd' not in request.request_id:
                 # When prompt length is divisible by the block size and all
                 # blocks are cached, we need to recompute the last token. This
                 # have to be achieved by re-computing an entire block because

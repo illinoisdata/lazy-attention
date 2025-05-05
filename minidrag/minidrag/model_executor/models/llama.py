@@ -7,7 +7,6 @@ def forward(
     positions: torch.Tensor,
     hidden_states: torch.Tensor,
 ) -> torch.Tensor:
-    # print("Use customized llama attn forward function")
     qkv, _ = self.qkv_proj(hidden_states)
     q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
 

@@ -64,14 +64,12 @@ def add_request(
                                                 document_seq=document_seq,
                                                 block_size=block_size)
 
-    # print(f"after preprocess: {request}")
     n = params.n if isinstance(params, SamplingParams) else 1
     assert n == 1, "n > 1 is not supported in customized engine now."
     if n == 1:
         # Make a new RequestState and queue.
         self.output_processor.add_request(request, None, 0)
         # Add the request to EngineCore.
-        # print(f"after preprocess, when add to engien core: {request}")
         self.engine_core.add_request(request)  # Send by socket.
         return
     

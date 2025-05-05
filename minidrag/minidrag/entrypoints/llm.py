@@ -40,7 +40,7 @@ def generate(
                        Optional[Union[list[str], list[list[str]]]]] = None,
     ) -> list[RequestOutput]:
         # [DRAG] TAG: print just for debugging 
-        print("Note: You are using the patched version of LLM.generate() to support dynamic requests.")
+        # print("Note: You are using the patched version of LLM.generate() to support dynamic requests.")
         assert prompt_token_ids is None, "[deprecated] prompt_token_ids is not supported in LLM.generate()"
 
         parsed_prompts = cast(Union[PromptType, Sequence[PromptType]], 

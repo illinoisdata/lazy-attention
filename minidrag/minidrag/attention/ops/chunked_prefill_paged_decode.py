@@ -289,7 +289,6 @@ def chunked_prefill_paged_decode(
     cos_sin_cache=None,
     is_neox_style=True,
 ):
-    # print("Use customized chunked_prefill_paged_decode")
     q_dtype_is_f32 = query.dtype is torch.float32
     IN_PRECISION = 'ieee' if IS_TURING and q_dtype_is_f32 else None
     if sm_scale is None:

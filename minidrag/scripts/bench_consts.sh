@@ -255,8 +255,9 @@ function get_sut_args() {
     if [ -z "$SUTS_MODEL" ]
     then
         # SUTS_MODEL="facebook/opt-125m"
-        SUTS_MODEL="meta-llama/Llama-3.1-8B-Instruct"
+        # SUTS_MODEL="meta-llama/Llama-3.1-8B-Instruct"
         # SUTS_MODEL="meta-llama/Llama-3.1-70B-Instruct"
+        SUTS_MODEL="ldsjmdy/Tulu3-RAG"
     fi
     echo "Using SUTS_MODEL=${SUTS_MODEL}"
 

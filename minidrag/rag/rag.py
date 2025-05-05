@@ -757,14 +757,13 @@ class DynamicRAG(RAG):
         sampling_params: SamplingParams,
         position_ids: Optional[List[int]] = None,
     ) -> AsyncGenerator[str, None]:
-        context = "\n\n".join([self._docs[doc_id] for doc_id in doc_ids])
-        prompt = context + "\n\n" + query
         request_id = self._next_request_id()
         latest_idx = 0
         async for generate_output in self._llm.generate(
-            prompt=prompt,
+            prompt=query,
             sampling_params=sampling_params,
             request_id=request_id,
+            document_seqs=[self._docs[doc_id] for doc_id in doc_ids],
         ):
             if len(generate_output.outputs) > 1:
                 logger.warning(f"Found {len(generate_output.outputs)} outputs, yielding first one.")
@@ -774,6 +773,7 @@ class DynamicRAG(RAG):
                 yield generate_output.outputs[0].text[prev_latest_idx:]
 
     def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
+        # Automatically handled by the LLM engine.
         pass
 
     def _next_request_id(self) -> str:
