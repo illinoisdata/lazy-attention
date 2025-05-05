@@ -47,7 +47,6 @@ class EngineCoreRequest(
     lora_request: Optional[LoRARequest]
     # Extra arguments for dynamic rag
     documents_token_ids: Optional[list[list[int]]]
-    documents_hash: Optional[list[str]]
     document_seq_hash: Optional[str]
     
 

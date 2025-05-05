@@ -183,7 +183,6 @@ def process_inputs(
         lora_request=lora_request,
         # Arguments for dynamic rag
         documents_token_ids=documents_token_ids,
-        documents_hash=documents_hash,
         document_seq_hash=document_seq_hash,
     )
 

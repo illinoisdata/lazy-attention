@@ -37,7 +37,6 @@ class NewRequestData:
     # Documents states
     num_computed_tokens_docs: Optional[list[int]]
     # Documents hashes
-    documents_hash: Optional[list[str]]
     document_seq_hash: Optional[str]
 
     @classmethod
@@ -67,7 +66,6 @@ class NewRequestData:
             # Documents states
             num_computed_tokens_docs=request.num_computed_tokens_docs,
             document_seq_hash=request.document_seq_hash,
-            documents_hash=request.documents_hash,
         )
 
 

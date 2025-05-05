@@ -47,7 +47,6 @@ class _Request:
         structured_output_request: Optional["StructuredOutputRequest"] = None,
         # Extra attributes for DynamicRAG
         documents_token_ids: Optional[list[list[int]]] = None,
-        documents_hash: Optional[list[str]] = None,
         document_seq_hash: Optional[str] = None,
     ) -> None:
         self.request_id = request_id
@@ -95,7 +94,6 @@ class _Request:
         self.arrival_time = arrival_time
         # Get extra attributes for DynamicRAG
         self.documents_token_ids = documents_token_ids
-        self.documents_hash = documents_hash
         self.document_seq_hash = document_seq_hash
         # Obtain the length of each document
         self.len_documents = None
@@ -103,7 +101,7 @@ class _Request:
         if documents_token_ids is not None:
             self.len_documents = [len(document_token_ids) for document_token_ids 
                                   in documents_token_ids]
-            self.num_computed_tokens_docs = [0 for _ in documents_hash]
+            self.num_computed_tokens_docs = [0 for _ in documents_token_ids]
             
     def merge_documents(self):
         from itertools import chain
@@ -130,7 +128,6 @@ class _Request:
                 sampling_params=request.sampling_params),
             # Extra attributes for DynamicRAG
             documents_token_ids=request.documents_token_ids,
-            documents_hash=request.documents_hash,
             document_seq_hash=request.document_seq_hash,
         )
 
@@ -193,7 +190,7 @@ class _Request:
         return f"Request(request_id={self.request_id}, prompt={self.prompt}, " \
                f"prompt_token_ids={self.prompt_token_ids}, sampling_params={self.sampling_params}, " \
                f"eos_token_id={self.eos_token_id}, arrival_time={self.arrival_time}, " \
-               f"documents_token_ids={self.documents_token_ids}, documents_hash={self.documents_hash}), " \
+               f"documents_token_ids={self.documents_token_ids}," \
                f"len_documents={self.len_documents})," \
                f"num_computed_tokens_docs={self.num_computed_tokens_docs})"
 

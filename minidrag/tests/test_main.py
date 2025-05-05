@@ -55,13 +55,13 @@ class TestMiniDRAG:
             from vllm.v1.engine.async_llm import AsyncLLM
 
             engine_args = AsyncEngineArgs(model=mock_model_name, 
-                                          enforce_eager=True, 
+                                          enforce_eager=False, 
                                           max_model_len=2048)
             model = AsyncLLM.from_engine_args(engine_args)
 
             async def generate_streaming(prompt):
                 results_generator = model.generate(prompt, 
-                                                SamplingParams(), 
+                                                SamplingParams(seed=42, temperature=0), 
                                                 request_id='1', # DO NOT USE arrival time-like id, will be blocked
                                                 document_seq=["doc1 "*50, "doc2 "*50],)
                 previous_text = ""
