@@ -282,7 +282,7 @@ def sample_longbench_requests(
                 output_len=output_len,
                 document_len=document_len,
                 documents=prompt_doc_ids,
-                sampling_params=SamplingParams(max_tokens=output_len),
+                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42),
             )
         )
         max_len = max(max_len, prompt_len + document_len)
