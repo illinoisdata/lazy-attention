@@ -16,11 +16,6 @@ import psutil
 import zmq
 import zmq.asyncio
 
-from vllm.config import ParallelConfig, VllmConfig
-from vllm.distributed import stateless_destroy_torch_distributed_process_group
-from vllm.executor.multiproc_worker_utils import _add_prefix
-from vllm.logger import init_logger
-from vllm.lora.request import LoRARequest
 from vllm.transformers_utils.config import (
     maybe_register_config_serialize_by_value)
 from vllm.utils import (get_exception_traceback, resolve_obj_by_qualname,
@@ -32,7 +27,6 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.core.sched.scheduler import Scheduler as V1Scheduler
 from vllm.v1.engine import (EngineCoreOutputs, EngineCoreRequest,
                             EngineCoreRequestType, UtilityOutput)
-from vllm.v1.engine.mm_input_cache import MMInputCacheServer
 from vllm.v1.executor.abstract import Executor
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.outputs import ModelRunnerOutput

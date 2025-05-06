@@ -22,11 +22,6 @@ from vllm.multimodal.utils import merge_and_sort_multimodal_metadata
 from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sampling_params import SamplingParams
-from vllm.transformers_utils.tokenizer_group import BaseTokenizerGroup
-from vllm.v1.structured_output.backend_guidance import (
-    validate_guidance_grammar)
-from vllm.v1.structured_output.utils import (
-    validate_structured_output_request_xgrammar)
 from vllm.utils import cdiv, sha256
 
 from minidrag.engine import EngineCoreRequest
