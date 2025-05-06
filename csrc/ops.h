@@ -95,6 +95,8 @@ void batched_rotary_embedding(torch::Tensor& positions, torch::Tensor& query,
                               bool is_neox, int64_t rot_dim,
                               torch::Tensor& cos_sin_cache_offsets);
 
+#include "../minidrag/csrc/ops.h" // inject the customized code
+
 void silu_and_mul(torch::Tensor& out, torch::Tensor& input);
 
 void silu_and_mul_quant(torch::Tensor& out, torch::Tensor& input,

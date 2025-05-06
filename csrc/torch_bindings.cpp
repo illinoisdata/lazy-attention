@@ -190,6 +190,8 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
       "                         Tensor cos_sin_cache_offsets) -> ()");
   ops.impl("batched_rotary_embedding", torch::kCUDA, &batched_rotary_embedding);
 
+  #include "../minidrag/csrc/torch_bindings.cpp" // inject the customized code
+
   // Quantization ops
 #ifndef USE_ROCM
   // Quantized GEMM for AQLM.

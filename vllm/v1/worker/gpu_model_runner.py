@@ -1340,7 +1340,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # Clear KVConnector state after all KVs are generated.
         if has_kv_transfer_group():
             get_kv_transfer_group().clear_connector_metadata()
-
+        torch.cuda.synchronize()
+        end_time = time.perf_counter()
+        logger.info("********* Model execution took %.6f seconds",
+                     end_time - begin_time)
         return ModelRunnerOutput(
             req_ids=self.input_batch.req_ids,
             req_id_to_index=self.input_batch.req_id_to_index,
