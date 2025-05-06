@@ -174,7 +174,6 @@ class EngineCore:
             assert request.mm_inputs is not None
             request.mm_inputs = self.mm_input_cache_server.get_and_update_p1(
                 request.mm_inputs, request.mm_hashes)
-
         req = Request.from_engine_core_request(request)
         if req.use_structured_output:
             # Start grammar compilation asynchronously
@@ -447,7 +446,6 @@ class EngineCoreProc(EngineCore):
     def _handle_client_request(self, request_type: EngineCoreRequestType,
                                request: Any) -> None:
         """Dispatch request from client."""
-
         if request_type == EngineCoreRequestType.ADD:
             self.add_request(request)
         elif request_type == EngineCoreRequestType.ABORT:
