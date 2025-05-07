@@ -1,32 +1,37 @@
 """here we modify the core.py to make it compatible with the dynamic rag EngineCoreRequest"""
 
+import json
 import os
 import queue
 import signal
 import sys
 import threading
 import time
+from collections import deque
 from concurrent.futures import Future
 from inspect import isclass, signature
 from logging import DEBUG
 from typing import Any, Callable, Optional, TypeVar, Union
 
 import msgspec
-import psutil
 import zmq
-import zmq.asyncio
 
+from vllm.config import ParallelConfig, VllmConfig
+from vllm.distributed import stateless_destroy_torch_distributed_process_group
+from vllm.executor.multiproc_worker_utils import _add_prefix
+from vllm.logger import init_logger
+from vllm.lora.request import LoRARequest
 from vllm.transformers_utils.config import (
     maybe_register_config_serialize_by_value)
-from vllm.utils import (get_exception_traceback, resolve_obj_by_qualname,
-                        zmq_socket_ctx)
+from vllm.utils import resolve_obj_by_qualname, zmq_socket_ctx
 from vllm.v1.core.kv_cache_utils import (get_kv_cache_config,
                                          unify_kv_cache_configs)
 from vllm.v1.core.sched.interface import SchedulerInterface
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.core.sched.scheduler import Scheduler as V1Scheduler
-from vllm.v1.engine import (EngineCoreOutputs, EngineCoreRequest,
+from vllm.v1.engine import (EngineCoreOutputs,
                             EngineCoreRequestType, UtilityOutput)
+from vllm.v1.engine.mm_input_cache import MirroredProcessingCache
 from vllm.v1.executor.abstract import Executor
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.outputs import ModelRunnerOutput
@@ -34,32 +39,95 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
 from vllm.v1.structured_output import StructuredOutputManager
 from vllm.version import __version__ as VLLM_VERSION
+from vllm.v1.engine.core import EngineCoreProc, DPEngineCoreProc
 
-from minidrag.engine import EngineCoreRequest
+from minidrag.engine import EngineCoreRequest, EngineCoreEventType
 
+logger = init_logger(__name__)
 
-# class EngineCoreProc(EngineCore):
-def process_input_socket(self, input_path: str):
-    """Input socket IO thread."""
-    # Msgpack serialization decoding.
-    add_request_decoder = MsgpackDecoder(EngineCoreRequest)
-    generic_decoder = MsgpackDecoder()
-    # add_request_decoder = MsgpackDecoder()
-    with zmq_socket_ctx(input_path, zmq.constants.PULL) as socket:
-        while True:
-            # (RequestType, RequestData)
-            type_frame, data_frame = socket.recv_multipart(copy=False)
-            request_type = EngineCoreRequestType(bytes(type_frame.buffer))
-            # Deserialize the request data.
-            decoder = add_request_decoder if (
-                request_type
-                == EngineCoreRequestType.ADD) else generic_decoder
-            request = decoder.decode(data_frame.buffer)
-            # Push to input queue for core busy loop.
-            self.input_queue.put_nowait((request_type, request))
-            
-            
+class LazyEngineCoreProc(EngineCoreProc):
+    def process_input_socket(self, input_path: str, engine_index: int):                
+        """Input socket IO thread."""
+        # Msgpack serialization decoding.
+        add_request_decoder = MsgpackDecoder(EngineCoreRequest)
+        generic_decoder = MsgpackDecoder()
+        identity = engine_index.to_bytes(length=2, byteorder="little")
+        with zmq_socket_ctx(input_path,
+                            zmq.DEALER,
+                            identity=identity,
+                            bind=False) as socket:
+            # Send ready message to front-end once input socket is connected.
+            message_dict = {
+                'type': 'READY',
+                'num_gpu_blocks': self.vllm_config.cache_config.num_gpu_blocks,
+            }
+            message = json.dumps(message_dict).encode('utf-8')
+            socket.send(message)
+            while True:
+                # (RequestType, RequestData)
+                type_frame, *data_frames = socket.recv_multipart(copy=False)
+                request_type = EngineCoreRequestType(bytes(type_frame.buffer))
+                # Deserialize the request data.
+                decoder = add_request_decoder if (
+                    request_type
+                    == EngineCoreRequestType.ADD) else generic_decoder
+                request = decoder.decode(data_frames)
+                # Push to input queue for core busy loop.
+                self.input_queue.put_nowait((request_type, request)) 
+    
+    @staticmethod
+    def run_engine_core(*args,
+                        dp_rank: int = 0,
+                        local_dp_rank: int = 0,
+                        **kwargs):
+        """Launch EngineCore busy loop in background process."""
 
+        # Signal handler used for graceful termination.
+        # SystemExit exception is only raised once to allow this and worker
+        # processes to terminate without error
+        shutdown_requested = False
+
+        # Ensure we can serialize transformer config after spawning
+        maybe_register_config_serialize_by_value()
+
+        def signal_handler(signum, frame):
+            nonlocal shutdown_requested
+            if not shutdown_requested:
+                shutdown_requested = True
+                raise SystemExit()
+
+        # Either SIGTERM or SIGINT will terminate the engine_core
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
+
+        engine_core: Optional[LazyEngineCoreProc] = None
+        try:
+            parallel_config: ParallelConfig = kwargs[
+                "vllm_config"].parallel_config
+            if parallel_config.data_parallel_size > 1:
+                # Set data parallel rank for this engine process.
+                parallel_config.data_parallel_rank = dp_rank
+                parallel_config.data_parallel_rank_local = local_dp_rank
+                engine_core = DPEngineCoreProc(*args, **kwargs)
+            else:
+                engine_core = LazyEngineCoreProc(*args, **kwargs)
+
+            engine_core.run_busy_loop()
+
+        except SystemExit:
+            logger.debug("EngineCore exiting.")
+            raise
+        except Exception as e:
+            if engine_core is None:
+                logger.exception("EngineCore failed to start.")
+            else:
+                logger.exception("EngineCore encountered a fatal error.")
+                engine_core._send_engine_dead()
+            raise e
+        finally:
+            if engine_core is not None:
+                engine_core.shutdown()
+    
 def apply_patch():
     import vllm.v1.engine.core
-    vllm.v1.engine.core.EngineCoreProc.process_input_socket = process_input_socket
+    vllm.v1.engine.core.EngineCoreProc = EngineCoreProc

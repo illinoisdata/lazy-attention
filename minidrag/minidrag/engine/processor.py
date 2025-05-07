@@ -8,7 +8,7 @@ Specifically, we need to do the following:
 
 import time
 from collections.abc import Mapping, Sequence
-from typing import Optional, Union
+from typing import Optional, Union, Any
 
 from vllm.config import VllmConfig
 from vllm.inputs import ProcessorInputs, PromptType
@@ -36,6 +36,7 @@ def process_inputs(
     params: Union[SamplingParams, PoolingParams],
     arrival_time: Optional[float] = None,
     lora_request: Optional[LoRARequest] = None,
+    tokenization_kwargs: Optional[dict[str, Any]] = None,
     trace_headers: Optional[Mapping[str, str]] = None,
     prompt_adapter_request: Optional[PromptAdapterRequest] = None,
     priority: int = 0,
@@ -62,11 +63,19 @@ def process_inputs(
     # 3. Apply prompt adapter to prompt token ids if one exists.
     processed_inputs: ProcessorInputs = self.input_preprocessor.preprocess(
         prompt,
+        tokenization_kwargs=tokenization_kwargs,
         lora_request=lora_request,
         prompt_adapter_request=prompt_adapter_request,
         return_mm_hashes=self.use_hash,
     )
+    from vllm.platforms import current_platform
+    current_platform.validate_request(
+        prompt=prompt,
+        params=params,
+        processed_inputs=processed_inputs,
+    )
     
+    # ////////////////////////////////////////
     documents_token_ids = None
     documents_hash = None
     document_seq_hash = None
@@ -110,7 +119,8 @@ def process_inputs(
             # hash the document sequence
             documents_hash.append(str(sha256(tuple(doc_token_ids))))
             document_seq_hash = str(sha256(tuple(documents_hash)))
-            
+    # ////////////////////////////////////////
+
     eos_token_id = self.input_preprocessor.get_eos_token_id(lora_request)
     self._validate_model_inputs(processed_inputs, lora_request)
     encoder_inputs, decoder_inputs = split_enc_dec_inputs(processed_inputs)
@@ -130,7 +140,7 @@ def process_inputs(
     sampling_params.update_from_tokenizer(
         self.tokenizer.get_lora_tokenizer(lora_request))
     # Multimodal related.
-    sorted_mm_inputs: Optional[list[MultiModalKwargs]] = None
+    sorted_mm_inputs: Optional[Sequence[Optional[MultiModalKwargs]]] = None
     sorted_mm_positions: Optional[list[PlaceholderRange]] = None
     sorted_mm_hashes: Optional[list[str]] = None
     if decoder_inputs["type"] == "multimodal":
@@ -153,22 +163,26 @@ def process_inputs(
         # are multiple modalities.
         unique_modalities = set(sorted_item_modalities)
         if len(unique_modalities) > 1:
-            sorted_mm_inputs = []
+            orig_sorted_mm_inputs = []
             used_indices = {modality: 0 for modality in unique_modalities}
             for modality in sorted_item_modalities:
                 items = decoder_mm_inputs.get_items(modality)
                 item = items[used_indices[modality]]
-                sorted_mm_inputs.append(MultiModalKwargs.from_items([item
-                                                                     ]))
+                orig_sorted_mm_inputs.append(
+                    MultiModalKwargs.from_items([item]))
                 used_indices[modality] += 1
         else:
-            sorted_mm_inputs = [
+            orig_sorted_mm_inputs = [
                 MultiModalKwargs.from_items([item]) for item in
                 decoder_mm_inputs.get_items(sorted_item_modalities[0])
             ]
-    return EngineCoreRequest(
+        if sorted_mm_hashes is not None:
+            sorted_mm_inputs = self.mm_input_cache_client.get_and_update_p0(
+                orig_sorted_mm_inputs, sorted_mm_hashes)
+        else:
+            sorted_mm_inputs = orig_sorted_mm_inputs
+    return decoder_inputs.get("prompt"), EngineCoreRequest(
         request_id=request_id,
-        prompt=decoder_inputs.get("prompt"),
         prompt_token_ids=decoder_inputs["prompt_token_ids"],
         mm_inputs=sorted_mm_inputs,
         mm_hashes=sorted_mm_hashes,
@@ -177,7 +191,8 @@ def process_inputs(
         eos_token_id=eos_token_id,
         arrival_time=arrival_time,
         lora_request=lora_request,
-        # Arguments for dynamic rag
+        cache_salt=decoder_inputs.get("cache_salt"),
+        # For dynamic rag
         documents_token_ids=documents_token_ids,
         document_seq_hash=document_seq_hash,
     )

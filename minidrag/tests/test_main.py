@@ -2,9 +2,7 @@ import pytest
 import torch 
 
 from vllm.distributed import cleanup_dist_env_and_memory
-
 import minidrag.__vllm__
-
 
 class TestMiniDRAG:
     # @pytest.mark.gpu
@@ -23,6 +21,7 @@ class TestMiniDRAG:
     #                        enable_prefix_caching=True,
     #                        seed=42,
     #                        max_model_len=2048,)
+    #         print("llm created")
     #         outputs = llm.generate(prompts=mock_prompts,
     #                      sampling_params=mock_sampling_params,
     #                      document_seqs=[["doc1 "*50, "doc2 "*50], ["doc3 "*50, "doc4 "*50],
@@ -63,7 +62,7 @@ class TestMiniDRAG:
                 results_generator = model.generate(prompt, 
                                                 SamplingParams(seed=42, temperature=0), 
                                                 request_id='1', # DO NOT USE arrival time-like id, will be blocked
-                                                document_seq=["doc1 "*50, "doc2 "*50],)
+                                                document_seq=["doc1 "*5, "doc2 "*5],)
                 previous_text = ""
                 async for request_output in results_generator:
                     text = request_output.outputs[0].text

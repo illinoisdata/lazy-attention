@@ -61,15 +61,15 @@ def build_llm_with_lmcache(lmcache_connector: str, model: str,
             model=model,
             kv_transfer_config=ktc,
             max_model_len=8000,
-            gpu_memory_utilization=0.8,
+            gpu_memory_utilization=0.5,
             enable_chunked_prefill=True,  # Only in v0
         )
     else:
         llm_args = EngineArgs(
             model=model,
-            kv_transfer_config=ktc,
+            # kv_transfer_config=ktc,
             max_model_len=8000,
-            gpu_memory_utilization=0.8,
+            gpu_memory_utilization=0.5,
         )
 
     llm = LLM(**asdict(llm_args))
@@ -133,18 +133,27 @@ def main():
         second_prompt = [
             shared_prompt + "Tell me a very long story",
         ]
+        
+        third_prompt = [
+            "Oh Hello, how are you?" * 1000 + "Tell me a very long story",
+        ]
 
         sampling_params = SamplingParams(temperature=0,
                                          top_p=0.95,
                                          max_tokens=10)
+        for _ in range(10):
+            # Print the first output
+            print_output(llm, first_prompt, sampling_params, "first")
 
-        # Print the first output
-        print_output(llm, first_prompt, sampling_params, "first")
+            time.sleep(1)
 
-        time.sleep(1)
+            # print the second output
+            print_output(llm, second_prompt, sampling_params, "second")
+            
+            time.sleep(1)
 
-        # print the second output
-        print_output(llm, second_prompt, sampling_params, "second")
+            # print the second output
+            print_output(llm, third_prompt, sampling_params, "third")
 
 
 if __name__ == "__main__":

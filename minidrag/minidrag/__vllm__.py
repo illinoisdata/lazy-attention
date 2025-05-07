@@ -26,15 +26,14 @@ from minidrag.entrypoints.llm import (
 )
 from minidrag.engine.llm_engine import add_request as llm_engine_add_request
 from minidrag.engine.processor import process_inputs as llm_engine_process_inputs
-from minidrag.engine import EngineCoreRequest
-from minidrag.engine.core import process_input_socket
+from minidrag.engine import EngineCoreRequest, EngineCoreEventType
+from minidrag.engine.core import LazyEngineCoreProc
 
 # scheduler
 from minidrag.core.sched.scheduler import MiniDynamicRAGScheduler
 
 # async
 from minidrag.engine.async_llm import add_request, generate, _add_request
-from minidrag.engine.async_llm import __init__ as async_llm_init
 
 
 # Step 0: Set environment variable for Triton backend
@@ -62,12 +61,18 @@ def proc_patch():
     vllm.model_executor.models.llama.LlamaAttention.forward = llama_attn_forward
 
     # Step 2: We need to patch the frontend of the vllm to send our dynamic requests to the backend (real model executor)
-    import vllm.v1.engine
     # vllm.v1.engine.__init__.EngineCoreRequest = EngineCoreRequest
-    _vllm.v1.engine.EngineCoreRequest = EngineCoreRequest
-    # import vllm.v1.request
-    _vllm.v1.request.Request = _Request
-    _vllm.v1.engine.core.Request = _Request
+    import vllm.v1.engine
+    global EngineCoreRequest
+    vllm.v1.engine.EngineCoreRequest = EngineCoreRequest
+    vllm.v1.engine.EngineCoreEventType = EngineCoreEventType
+    vllm.v1.engine.core.EngineCoreRequest = EngineCoreRequest
+    vllm.v1.engine.core.Request = _Request
+    vllm.v1.engine.core_client.EngineCoreRequest = EngineCoreRequest
+    
+    import vllm.v1.request
+    vllm.v1.request.Request = _Request
+    
     import vllm.entrypoints.llm
     vllm.entrypoints.llm.LLM.generate = llm_generate
     vllm.entrypoints.llm.LLM._validate_and_add_requests = llm_validate_and_add_requests
@@ -77,7 +82,9 @@ def proc_patch():
     import vllm.v1.engine.processor
     vllm.v1.engine.processor.Processor.process_inputs = llm_engine_process_inputs
     import vllm.v1.engine.core
-    vllm.v1.engine.core.EngineCoreProc.process_input_socket = process_input_socket
+    vllm.v1.engine.core.EngineCoreProc = LazyEngineCoreProc
+    import vllm.v1.engine.core_client
+    vllm.v1.engine.core_client.EngineCoreProc = LazyEngineCoreProc
     
     # Step 3: finally, we patch the backend for scehduling
     import vllm.v1.core.sched.scheduler
@@ -88,6 +95,5 @@ def proc_patch():
     vllm.v1.engine.async_llm.AsyncLLM.add_request = add_request
     vllm.v1.engine.async_llm.AsyncLLM._add_request = _add_request
     vllm.v1.engine.async_llm.AsyncLLM.generate = generate
-    vllm.v1.engine.async_llm.AsyncLLM.__init__ = async_llm_init
 
 proc_patch()

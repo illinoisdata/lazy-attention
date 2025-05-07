@@ -14,8 +14,9 @@ import torch
 import transformers
 from transformers.cache_utils import DynamicCache
 
-from vllm import LLM, SamplingParams
+
 from vllm.engine.arg_utils import AsyncEngineArgs, EngineArgs
+from vllm import SamplingParams
 from vllm.v1.engine.async_llm import AsyncLLM
 from vllm.transformers_utils.tokenizer import get_tokenizer as vllm_get_tokenizer
 
@@ -352,7 +353,7 @@ class LLMRAG(RAG):
         sampling_params: SamplingParams,
         position_ids: Optional[List[int]] = None,
     ) -> AsyncGenerator[str, None]:
-        context = "\n\n".join([self._docs[doc_id] for doc_id in doc_ids])
+        context = "\n\n".join([self._docs[doc_id] for doc_id in doc_ids] * 10)
         prompt = context + "\n\n" + query
         request_id = self._next_request_id()
         latest_idx = 0
@@ -759,11 +760,15 @@ class DynamicRAG(RAG):
     ) -> AsyncGenerator[str, None]:
         request_id = self._next_request_id()
         latest_idx = 0
+        if int(request_id) % 2 == 0:
+            document_seq = ([self._docs[0] * 800] + [self._docs[doc_id] * 400 for doc_id in doc_ids]) * 8
+        else:
+            document_seq = ([self._docs[doc_id] * 400 for doc_id in doc_ids] + [self._docs[0] * 800]) * 8
         async for generate_output in self._llm.generate(
             prompt=query,
             sampling_params=sampling_params,
             request_id=request_id,
-            document_seq=[self._docs[doc_id] for doc_id in doc_ids],
+            document_seq=document_seq,
         ):
             if len(generate_output.outputs) > 1:
                 logger.warning(f"Found {len(generate_output.outputs)} outputs, yielding first one.")
@@ -810,6 +815,28 @@ def make_cache_manager(args: RAGArgs) -> CacheManager:
         return LRUCacheManager(capacity=args.cachep_capacity)
     logger.error(f"Invalid CacheManager type {args.cachep_type}")
     sys.exit(1)
+    
+def prepare_lmcache(async_engine_args: AsyncEngineArgs)-> None:
+    import os
+    # LMCache-related environment variables
+    # Use experimental features in LMCache
+    os.environ["LMCACHE_USE_EXPERIMENTAL"] = "True"
+    # LMCache is set to use 256 tokens per chunk
+    os.environ["LMCACHE_CHUNK_SIZE"] = "256"
+    # Enable local CPU backend in LMCache
+    os.environ["LMCACHE_LOCAL_CPU"] = "True"
+    # Set local CPU memory limit to 5.0 GB
+    os.environ["LMCACHE_MAX_LOCAL_CPU_SIZE"] = "30.0"
+    
+    from vllm.config import KVTransferConfig
+    lmcache_connector = "LMCacheConnectorV1"
+    ktc = KVTransferConfig(
+        kv_connector=lmcache_connector,
+        kv_role="kv_both",
+    )
+    
+    async_engine_args.kv_transfer_config = ktc
+    return async_engine_args
 
 
 def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
@@ -823,6 +850,7 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
         MiniDynamicRAG.apply_triton_backend()
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
         async_engine_args.max_model_len = 8192 * 8
+        # async_engine_args.gpu_memory_utilization = 0.8
         logger.info(f"[llmrag] Using async engine args: {async_engine_args}")
         return LLMRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
     elif args.rag_type == "trrag":
@@ -836,11 +864,12 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
         )
     elif args.rag_type == "drag":
         import minidrag.__vllm__
-        from vllm.v1.engine.async_llm import AsyncLLM as _AsyncLLM
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
         async_engine_args.max_model_len = 8192 * 8
+        # async_engine_args.gpu_memory_utilization = 0.8
+        prepare_lmcache(async_engine_args)
         logger.info(f"[drag] Using async engine args: {async_engine_args}")
-        return DynamicRAG(llm=_AsyncLLM.from_engine_args(async_engine_args))
+        return DynamicRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
     logger.error(f"Invalid RAG type {args.rag_type}")
     sys.exit(1)
     

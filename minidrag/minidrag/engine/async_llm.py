@@ -5,7 +5,7 @@ import logging
 import os
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from copy import copy
-from typing import Optional, Union
+from typing import Optional, Union, Any
 
 import numpy as np
 
@@ -31,77 +31,14 @@ from vllm.v1.engine.core_client import EngineCoreClient
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.v1.engine.processor import Processor
 from vllm.v1.engine.async_llm import logger
+from vllm.v1.engine.exceptions import EngineDeadError, EngineGenerateError
 
 from minidrag.engine import EngineCoreRequest
 
 # logger = init_logger(__name__)
 
 
-# class AsyncLLM(EngineClient):
-def __init__(
-    self,
-    vllm_config: VllmConfig,
-    executor_class: type[Executor],
-    log_stats: bool,
-    usage_context: UsageContext = UsageContext.ENGINE_CONTEXT,
-    mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
-    use_cached_outputs: bool = False,
-    log_requests: bool = True,
-    start_engine_loop: bool = True,
-) -> None:
-    if not envs.VLLM_USE_V1:
-        raise ValueError(
-            "Using V1 AsyncLLMEngine, but envs.VLLM_USE_V1=False. "
-            "This should not happen. As a workaround, try using "
-            "AsyncLLMEngine.from_vllm_config(...) or explicitly set "
-            "VLLM_USE_V1=0 or 1 and report this issue on Github.")
-
-    assert start_engine_loop
-
-    self.model_config = vllm_config.model_config
-    self.cache_config = vllm_config.cache_config
-    self.log_requests = log_requests
-    self.log_stats = log_stats
-
-    # Set up stat loggers; independent set for each DP rank.
-    self.stat_loggers: list[list[StatLoggerBase]] = []
-    if self.log_stats:
-        for i in range(vllm_config.parallel_config.data_parallel_size):
-            loggers: list[StatLoggerBase] = []
-            if logger.isEnabledFor(logging.INFO):
-                loggers.append(LoggingStatLogger(engine_index=i))
-            loggers.append(
-                PrometheusStatLogger(vllm_config, engine_index=i))
-            self.stat_loggers.append(loggers)
-
-    # Tokenizer (+ ensure liveness if running in another process).
-    self.tokenizer = init_tokenizer_from_configs(
-        model_config=vllm_config.model_config,
-        scheduler_config=vllm_config.scheduler_config,
-        parallel_config=vllm_config.parallel_config,
-        lora_config=vllm_config.lora_config)
-    self.tokenizer.ping()
-
-    # Processor (converts Inputs --> EngineCoreRequests).
-    self.processor = Processor(
-        vllm_config=vllm_config,
-        tokenizer=self.tokenizer,
-        mm_registry=mm_registry,
-    )
-    # OutputProcessor (converts EngineCoreOutputs --> RequestOutput).
-    self.output_processor = OutputProcessor(self.tokenizer,
-                                            log_stats=self.log_stats)
-    # EngineCore (starts the engine in background process).
-    self.engine_core = EngineCoreClient.make_client(
-        multiprocess_mode=True,
-        asyncio_mode=True,
-        vllm_config=vllm_config,
-        executor_class=executor_class,
-        log_stats=self.log_stats,
-    )
-
-    self.output_handler: Optional[asyncio.Task] = None
-        
+# class AsyncLLM(EngineClient):        
 async def add_request(
     self,
     request_id: str,
@@ -109,6 +46,7 @@ async def add_request(
     params: Union[SamplingParams, PoolingParams],
     arrival_time: Optional[float] = None,
     lora_request: Optional[LoRARequest] = None,
+    tokenization_kwargs: Optional[dict[str, Any]] = None,
     trace_headers: Optional[Mapping[str, str]] = None,
     prompt_adapter_request: Optional[PromptAdapterRequest] = None,
     priority: int = 0,
@@ -123,23 +61,23 @@ async def add_request(
     # Convert Input --> Request.
     if document_seq is None:
         # Fall back to the default behavior.
-        request = self.processor.process_inputs(request_id, prompt, params,
-                                                arrival_time, lora_request,
-                                                trace_headers,
-                                                prompt_adapter_request,
-                                                priority)
+        prompt_str, request = self.processor.process_inputs(
+            request_id, prompt, params, arrival_time, lora_request,
+            tokenization_kwargs, trace_headers, prompt_adapter_request,
+            priority)
     else:
         # Use customized behavior.
-        block_size = self.cache_config.block_size
-        request = self.processor.process_inputs(request_id, prompt, params,
-                                                arrival_time, lora_request,
-                                                trace_headers,
-                                                prompt_adapter_request,
-                                                priority, 
-                                                block_size=block_size,
-                                                document_seq=document_seq)
+        block_size = self.vllm_config.cache_config.block_size
+        prompt_str, request = self.processor.process_inputs(
+            request_id, prompt, params, arrival_time, lora_request,
+            tokenization_kwargs, trace_headers, prompt_adapter_request,
+            priority,
+            # For dynamic rag
+            block_size=block_size,
+            document_seq=document_seq)
+        
     if params.n == 1:
-        await self._add_request(request, None, 0, queue)
+        await self._add_request(request, prompt_str, None, 0, queue)
         return queue
     # Fan out child requests (for n>1).
     parent_request = ParentRequest(request_id, params)
@@ -148,19 +86,24 @@ async def add_request(
         child_request = request if idx == params.n - 1 else copy(request)
         child_request.request_id = request_id
         child_request.sampling_params = params
-        await self._add_request(child_request, parent_request, idx, queue)
+        await self._add_request(child_request, prompt_str, parent_request,
+                                idx, queue)
     return queue
 
+
 async def _add_request(self, request: EngineCoreRequest,
+                       prompt: Optional[str],
                        parent_req: Optional[ParentRequest], index: int,
                        queue: RequestOutputCollector):
     # Add the request to OutputProcessor (this process).
-    self.output_processor.add_request(request, parent_req, index, queue)
+    self.output_processor.add_request(request, prompt, parent_req, index,
+                                      queue)
     # Add the EngineCoreRequest to EngineCore (separate process).
     await self.engine_core.add_request_async(request)
     if self.log_requests:
         logger.info("Added request %s.", request.request_id)
-        
+
+    
 # TODO: we should support multiple prompts in one call, as you
 # can do with LLM.generate. So that for multi-prompt completion
 # requests we don't need to send multiple messages to core proc,
@@ -194,9 +137,7 @@ async def generate(
         # We start the output_handler on the first call to generate() so
         # we can call __init__ before the event loop, which enables us
         # to handle startup failure gracefully in the OpenAI server.
-        if self.output_handler is None:
-            self.output_handler = asyncio.create_task(
-                self._run_output_handler())
+        self._run_output_handler()
         q = await self.add_request(
             request_id,
             prompt,
@@ -219,9 +160,26 @@ async def generate(
             # own request cleanup based on finished.
             finished = out.finished
             yield out
-    # If the request is disconnected by the client, the
-    # generate() task will be canceled. So, we abort the
-    # request if we end up here.
+    # If the request is disconnected by the client, generate()
+    # is cancelled. So, we abort the request if we end up here.
     except asyncio.CancelledError:
         await self.abort(request_id)
+        if self.log_requests:
+            logger.info("Request %s aborted.", request_id)
         raise
+    # Engine is dead. Do not abort since we shut down.
+    except EngineDeadError:
+        if self.log_requests:
+            logger.info("Request %s failed (engine dead).", request_id)
+        raise
+    # Request validation error.
+    except ValueError:
+        if self.log_requests:
+            logger.info("Request %s failed (bad request).", request_id)
+        raise
+    # Unexpected error in the generate() task (possibly recoverable).
+    except Exception as e:
+        await self.abort(request_id)
+        if self.log_requests:
+            logger.info("Request %s failed.", request_id)
+        raise EngineGenerateError() from e
