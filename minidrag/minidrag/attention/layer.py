@@ -10,6 +10,7 @@ from typing import Optional
 from vllm.forward_context import get_forward_context, ForwardContext
 from vllm.utils import direct_register_custom_op
 from vllm.platforms import _Backend, current_platform
+from vllm.attention.layer import maybe_save_kv_layer_to_connector, wait_for_kv_layer_from_connector
 
 # class Attention(nn.Module):
 def forward(
@@ -100,6 +101,8 @@ def dynamic_unified_attention_with_output(
     rotary_dim: int,
     is_neox_style: bool,
 ) -> None:
+    wait_for_kv_layer_from_connector(layer_name)
+
     forward_context: ForwardContext = get_forward_context()
     attn_metadata = forward_context.attn_metadata
     self = forward_context.no_compile_layers[layer_name]
@@ -114,6 +117,8 @@ def dynamic_unified_attention_with_output(
                       rotary_dim,
                       is_neox_style,
                       output=output)
+    
+    maybe_save_kv_layer_to_connector(layer_name, kv_cache)
 
 
 def dynamic_unified_attention_with_output_fake(
