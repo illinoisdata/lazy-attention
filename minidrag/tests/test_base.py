@@ -2,9 +2,8 @@ import pytest
 import torch 
 
 from vllm.distributed import cleanup_dist_env_and_memory
-import minidrag.__vllm__
 
-class TestMiniDRAG:
+class TestVLLM:
     @pytest.mark.gpu
     @pytest.mark.integration
     def test_e2e_simple_sync(self, 
@@ -22,22 +21,19 @@ class TestMiniDRAG:
                            seed=42,
                            max_model_len=2048,)
             print("llm created")
-            outputs = llm.generate(prompts=mock_prompts,
-                         sampling_params=mock_sampling_params,
-                         document_seqs=
-                         [["doc1 "*50, "doc2 "*50, "doc3 "*50], 
-                          ["doc2 "*50, "doc1 "*50, "doc3 "*50],
-                          ["doc3 "*50, "doc2 "*50, "doc1 "*50],
-                          ["doc1 "*50, "doc3 "*50, "doc2 "*50],],)
+            prompts = []
+            docs = [["doc1 "*50, "doc2 "*50, "doc3 "*50], 
+                    ["doc2 "*50, "doc1 "*50, "doc3 "*50],
+                    ["doc3 "*50, "doc2 "*50, "doc1 "*50],
+                    ["doc1 "*50, "doc3 "*50, "doc2 "*50],]
+            for i in range(len(docs)):
+                prompt = mock_prompts[i]
+                prompt = "\n".join(docs[i]) + "\n" + prompt
+                prompts.append(prompt)
+            outputs = llm.generate(prompts=prompts,
+                                   sampling_params=mock_sampling_params)
             for output in outputs:
                 print(output.outputs[0].text)
-                
-            # outputs = llm.generate(prompts=mock_prompts,
-            #             sampling_params=mock_sampling_params,
-            #             document_seqs=[["doc2 "*50, "doc1 "*50], ["doc4 "*50, "doc3 "*50],
-            #                            ["doc6 "*50, "doc5 "*50], ["doc8 "*50, "doc7 "*50]],)
-            # for output in outputs:
-            #     print(output.outputs[0].text)
         finally:
             if llm is not None:
                 del llm

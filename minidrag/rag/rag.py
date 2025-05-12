@@ -1,5 +1,12 @@
 """Unified RAGs"""
+from __future__ import annotations
 
+import os
+os.environ["VLLM_ATTENTION_BACKEND"] = "TRITON_ATTN_VLLM_V1" 
+
+if os.environ.get("VLLM_USE_LAZY_ATTENTION", "0") == "1":
+    import minidrag.__vllm__
+    
 import asyncio
 import dataclasses
 import sys
@@ -14,10 +21,9 @@ import torch
 import transformers
 from transformers.cache_utils import DynamicCache
 
-
+from vllm.v1.engine.async_llm import AsyncLLM
 from vllm.engine.arg_utils import AsyncEngineArgs, EngineArgs
 from vllm import SamplingParams
-from vllm.v1.engine.async_llm import AsyncLLM
 from vllm.transformers_utils.tokenizer import get_tokenizer as vllm_get_tokenizer
 
 from rag.logging import logger
@@ -332,7 +338,7 @@ class CacheParrotRAG(ParrotRAG):
 
 class LLMRAG(RAG):
 
-    def __init__(self, llm: AsyncLLM) -> None:
+    def __init__(self, llm: "AsyncLLM") -> None:
         RAG.__init__(self)
         self._llm = llm
         self._docs: Dict[DocumentId, str] = {}
@@ -353,9 +359,17 @@ class LLMRAG(RAG):
         sampling_params: SamplingParams,
         position_ids: Optional[List[int]] = None,
     ) -> AsyncGenerator[str, None]:
-        context = "\n\n".join([self._docs[doc_id] for doc_id in doc_ids] * 10)
-        prompt = context + "\n\n" + query
         request_id = self._next_request_id()
+        preamble = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an intelligent AI assistant. Please answer questions based on the user's instructions. Below are some reference documents that may help you in answering the user's question.\n\n"
+        query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
+        document = [self._docs[doc_id] for doc_id in doc_ids]
+        document = [preamble] + document
+        if isinstance(document, str):
+            context = document
+        else:
+            context = "\n".join(document)
+        prompt = context + "\n\n" + query
+        
         latest_idx = 0
         async for generate_output in self._llm.generate(
             prompt=prompt,
@@ -490,6 +504,28 @@ class TransformerRAG(RAG):
                 # logger.debug(f"EOS token found when {i + 1} tokens generated.")
                 break
         return self._tokenizer.decode(output_tokens)
+    
+    async def _iter_generate_m1(self, kv_cache: DynamicCache, query: str, documents: List[str]) -> str:
+        """Masked generation - async version."""
+        output_tokens = torch.tensor([], dtype=torch.int64).to(self._device)
+        
+        for doc in documents:
+            past_len = kv_cache.get_seq_length()
+            current_len = self._tokenizer(doc, return_tensors="pt").input_ids.shape[1]
+            attention_mask = torch.cat([torch.zeros(past_len), torch.ones(current_len)]).unsqueeze(0)
+            next_token, kv_cache = self.prefill(doc, kv_cache, attention_mask)
+        
+        next_token, kv_cache = self.prefill(query, kv_cache)
+        output_tokens = torch.cat([output_tokens, next_token])
+
+        # 生成响应 - 可能的异步点
+        for i in range(self._max_tokens - 1):
+            next_token, kv_cache = await self.decode_async(next_token.unsqueeze(0), kv_cache)
+            output_tokens = torch.cat([output_tokens, next_token])
+            if next_token == self._token_eos:
+                break
+        
+        return self._tokenizer.decode(output_tokens)  
 
     def _generate_m2(self, kv_cache: DynamicCache, query: str, documents: List[str]) -> str:
         """Masked generation with preamble."""
@@ -737,7 +773,7 @@ class PromptCacheRAG(RAG):
 
 # simple adapted from LLMRAG          
 class DynamicRAG(RAG):
-    def __init__(self, llm: AsyncLLM) -> None:
+    def __init__(self, llm: "AsyncLLM") -> None:
         RAG.__init__(self)
         self._llm = llm
         self._docs: Dict[DocumentId, str] = {}
@@ -760,10 +796,14 @@ class DynamicRAG(RAG):
     ) -> AsyncGenerator[str, None]:
         request_id = self._next_request_id()
         latest_idx = 0
-        if int(request_id) % 2 == 0:
-            document_seq = ([self._docs[0] * 800] + [self._docs[doc_id] * 400 for doc_id in doc_ids]) * 8
+        preamble = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an intelligent AI assistant. Please answer questions based on the user's instructions. Below are some reference documents that may help you in answering the user's question.\n\n"
+        document = [self._docs[doc_id] for doc_id in doc_ids]
+        if isinstance(document, str):
+            document_seq = [document]
         else:
-            document_seq = ([self._docs[doc_id] * 400 for doc_id in doc_ids] + [self._docs[0] * 800]) * 8
+            document_seq = document
+        document_seq = [preamble] + document_seq
+        query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
         async for generate_output in self._llm.generate(
             prompt=query,
             sampling_params=sampling_params,
@@ -850,6 +890,7 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
         MiniDynamicRAG.apply_triton_backend()
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
         async_engine_args.max_model_len = 8192 * 8
+        # prepare_lmcache(async_engine_args)
         # async_engine_args.gpu_memory_utilization = 0.8
         logger.info(f"[llmrag] Using async engine args: {async_engine_args}")
         return LLMRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
@@ -863,11 +904,10 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
             cache_max_token=args.pc_cache_max_token,
         )
     elif args.rag_type == "drag":
-        import minidrag.__vllm__
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
         async_engine_args.max_model_len = 8192 * 8
-        # async_engine_args.gpu_memory_utilization = 0.8
-        prepare_lmcache(async_engine_args)
+        # async_engine_args.gpu_memory_utilization = 0.7
+        # prepare_lmcache(async_engine_args)
         logger.info(f"[drag] Using async engine args: {async_engine_args}")
         return DynamicRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
     logger.error(f"Invalid RAG type {args.rag_type}")

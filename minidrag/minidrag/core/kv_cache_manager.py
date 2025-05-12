@@ -329,6 +329,8 @@ class DragKVCacheManager(KVCacheManager):
         num_full_blocks_after_append = (num_computed_tokens + num_tokens - len(
             request.spec_token_ids)) // self.block_size
 
+        # print(f"*** A = {len(self.req_to_block_hashes[request.request_id])}")
+        # print(f"*** B = {num_cached_blocks}")
         self.block_pool.cache_full_blocks(
             request=request,
             blocks=req_blocks,

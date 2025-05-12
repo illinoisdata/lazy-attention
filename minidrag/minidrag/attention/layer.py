@@ -81,6 +81,8 @@ def forward(
                     cos_sin_cache, rotary_dim, is_neox_style)
             return output.view(-1, hidden_size)
         else:
+            raise ValueError(
+                "Attention layer must be configured to use output tensor. ")
             if self.use_direct_call:
                 forward_context = get_forward_context()
                 attn_metadata = forward_context.attn_metadata

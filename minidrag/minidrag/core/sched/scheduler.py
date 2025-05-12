@@ -165,6 +165,7 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         # max_num_seqs: int = 128
 
     def schedule(self) -> SchedulerOutput:
+        # print(f"usage: {self.kv_cache_manager.usage}")
         scheduled_new_reqs: list[Request] = []
         scheduled_resumed_reqs: list[Request] = []
         scheduled_running_reqs: list[Request] = []
@@ -231,6 +232,8 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                 continue
             
             while True:
+                # print(f"is scheduling: {request.request_id}, num_new_tokens: {num_new_tokens}")
+                # print(f'request: {request}')
                 new_blocks = self.kv_cache_manager.allocate_slots(
                     request, 
                     num_new_tokens,
@@ -353,14 +356,14 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                 computed_blocks, num_computed_tokens = \
                     self.kv_cache_manager.get_computed_blocks(request)
                 
-                # Get externally-cached tokens if using a KVConnector.
-                num_external_tokens = (
-                    0 if self.connector is None else
-                    self.connector.get_num_new_matched_tokens(
-                        request, num_computed_tokens))
+                # # Get externally-cached tokens if using a KVConnector.
+                # num_external_tokens = (
+                #     0 if self.connector is None else
+                #     self.connector.get_num_new_matched_tokens(
+                #         request, num_computed_tokens))
                 
-                # Total computed tokens (local + external).
-                num_computed_tokens += num_external_tokens
+                # # Total computed tokens (local + external).
+                # num_computed_tokens += num_external_tokens
                 
                 # This document is completed before
                 if 'd' in request.request_id and num_computed_tokens == request.num_tokens:
@@ -378,6 +381,12 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                         num_computed_tokens_docs) + num_computed_tokens
                     # Update the prompt
                     request.merge_documents()
+                    
+                    pre = self.kv_cache_manager.req_to_block_hashes_docs[request.request_id]
+                    self.kv_cache_manager.req_to_block_hashes[request.request_id] = \
+                        list(chain.from_iterable(pre)) + \
+                        self.kv_cache_manager.req_to_block_hashes[request.request_id]
+                    
                     # Update req to block hash
                     pre_block_hashes = []
                     for doc_idx in range(len(request.documents_token_ids)):
@@ -388,15 +397,15 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                         pre_block_hashes + 
                         self.kv_cache_manager.req_to_block_hashes[request.request_id])
                 
-                    # Get externally-cached tokens if using a KVConnector.
-                    # This step should happen after the documents are assembled.
-                    num_external_tokens = (
-                        0 if self.connector is None else
-                        self.connector.get_num_new_matched_tokens(
-                            request, num_computed_tokens))
+                # Get externally-cached tokens if using a KVConnector.
+                # This step should happen for doc or query after the documents are assembled.
+                num_external_tokens = (
+                    0 if self.connector is None else
+                    self.connector.get_num_new_matched_tokens(
+                        request, num_computed_tokens))
                 
-                    # Total computed tokens (local + external).
-                    num_computed_tokens += num_external_tokens
+                # Total computed tokens (local + external).
+                num_computed_tokens += num_external_tokens
                 
                 # Number of tokens to be scheduled.
                 # We use `request.num_tokens` instead of

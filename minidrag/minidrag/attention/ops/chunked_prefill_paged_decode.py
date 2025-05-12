@@ -6,8 +6,12 @@ import triton.language as tl
 
 from vllm import _custom_ops as ops
 from vllm.platforms.rocm import use_rocm_custom_paged_attention
+from vllm.attention.ops.chunked_prefill_paged_decode import context_attention_fwd as context_attention_fwd_orig
+from vllm.attention.ops.chunked_prefill_paged_decode import kernel_paged_attention_2d as kernel_paged_attention_2d_orig
+
 
 from .prefix_prefill import context_attention_fwd, IS_TURING
+
 
 
 @triton.jit
@@ -87,6 +91,7 @@ def kernel_paged_attention_2d(
     dim_mask_half = tl.where(tl.arange(0, HEAD_SIZE_PADDED // 2) < HEAD_SIZE // 2, 1,
                         0).to(tl.int1)
     # rotary_dim = HEAD_SIZE
+    embed_dim: tl.constexpr = HEAD_SIZE // 2
     offs_d1 = tl.arange(0, HEAD_SIZE_PADDED // 2)
     offs_d2 = offs_d1 + HEAD_SIZE // 2
 
@@ -191,20 +196,15 @@ def kernel_paged_attention_2d(
         
         # fuse rotary embedding
         positions = seq_offset
-        start_n = j * BLOCK_SIZE
 
-        offs_cache_1 = (positions[None, :] * rotary_dim +
-                            offs_d1[:, None])
-        offs_cache_2 = (positions[None, :] * rotary_dim +
-                            offs_d2[:, None])
-        cos_val = tl.load(cos_sin_cache_ptr + offs_cache_1,
-                               mask=dim_mask_half[:, None] &
-                                ((start_n + offs_n[None, :]) < boundary),
-                                other=0.0)
-        sin_val = tl.load(cos_sin_cache_ptr + offs_cache_2, 
-                              mask=dim_mask_half[:, None] &
-                                ((start_n + offs_n[None, :]) < boundary),
-                                other=0.0)
+        cos_val = tl.load(cos_sin_cache_ptr + (positions[None, :] * rotary_dim +
+                          offs_d1[:, None]),
+                          mask=dim_mask_half[:, None],
+                          other=0.0)
+        sin_val = tl.load(cos_sin_cache_ptr + (positions[None, :] * rotary_dim +
+                          offs_d2[:, None]), 
+                          mask=dim_mask_half[:, None],
+                          other=0.0)
 
         # S : (num_queries_per_kv, BLOCK_SIZE,)
         S = tl.where(head_mask[:, None] & seq_mask, 0.0,

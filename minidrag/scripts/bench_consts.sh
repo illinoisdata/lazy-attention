@@ -255,9 +255,9 @@ function get_sut_args() {
     if [ -z "$SUTS_MODEL" ]
     then
         # SUTS_MODEL="facebook/opt-125m"
-        SUTS_MODEL="meta-llama/Llama-3.1-8B-Instruct"
+        # SUTS_MODEL="meta-llama/Llama-3.1-8B-Instruct"
         # SUTS_MODEL="meta-llama/Llama-3.1-70B-Instruct"
-        # SUTS_MODEL="ldsjmdy/Tulu3-RAG"
+        SUTS_MODEL="ldsjmdy/Tulu3-Block-FT"
     fi
     echo "Using SUTS_MODEL=${SUTS_MODEL}"
 
@@ -377,7 +377,19 @@ function prepare_sut() {
     then
         echo "Preparing example"
     else
-        echo "Prepare SUT $_SUT with no-op."
+        echo "Prepare SUT $_SUT."
+            if [[ $_SUT == "drag" ]]
+            then
+                echo "Enabling lazy attention"
+                VLLM_USE_LAZY_ATTENTION="1"
+                export VLLM_USE_LAZY_ATTENTION
+                # echo "VLLM_USE_LAZY_ATTENTION=${VLLM_USE_LAZY_ATTENTION}"
+            else
+                VLLM_USE_LAZY_ATTENTION="0"
+                export VLLM_USE_LAZY_ATTENTION
+                # echo "VLLM_USE_LAZY_ATTENTION=${VLLM_USE_LAZY_ATTENTION}"
+            fi
     fi
+
     return 0
 }

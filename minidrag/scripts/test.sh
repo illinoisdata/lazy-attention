@@ -1,1 +1,1 @@
-PYTHONPATH=.:./promptcache bash scripts/bench_exp1.sh drag 2wikimqa
+PYTHONPATH=.:./promptcache bash scripts/bench_exp1.sh drag,llmrag,trragm1,pcrag 2wikimqa,musique

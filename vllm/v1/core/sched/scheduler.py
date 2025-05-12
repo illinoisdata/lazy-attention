@@ -145,6 +145,7 @@ class Scheduler(SchedulerInterface):
         )
 
     def schedule(self) -> SchedulerOutput:
+        # print(f"usage: {self.kv_cache_manager.usage}")
         # NOTE(woosuk) on the scheduling algorithm:
         # There's no "decoding phase" nor "prefill phase" in the scheduler.
         # Each request just has the num_computed_tokens and
@@ -521,6 +522,8 @@ class Scheduler(SchedulerInterface):
             self.requests[req_id].num_computed_tokens += num_scheduled_token
 
         self.finished_req_ids = set()
+        # print(f"================================================")
+        # print(f"scheduler_output: {scheduler_output}")
         return scheduler_output
 
     def _make_cached_request_data(

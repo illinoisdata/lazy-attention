@@ -39,4 +39,4 @@ def mock_sampling_params():
 
 @pytest.fixture(scope="session")
 def mock_model_name():
-    return "ldsjmdy/Tulu3-RAG"
+    return "ldsjmdy/Tulu3-Block-FT"

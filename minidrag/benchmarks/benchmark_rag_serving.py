@@ -257,14 +257,26 @@ def sample_longbench_requests(
     sum_tokens: int = 0
     for row in longbench_dataset.rows:
         document = row.context  # One document per LongBench prompt.
-        doc_hash = hash(document)
-        document_token = len(tokenizer.encode(document))
-        if doc_hash not in doc_hash_to_id:
-            doc_ids = rag.add_cache([document])
-            assert len(doc_ids) == 1
-            doc_hash_to_id[doc_hash] = doc_ids[0]
-            sum_tokens += document_token
-        doc_ids_by_prompt.append([doc_hash_to_id[doc_hash]])
+        # make sure is list
+        if isinstance(document, str):
+            document = [document]
+            
+        # print(f"Document: {document}")
+        document_token = 0
+        context_doc_ids = []
+        for doc in document:
+            document_token += len(tokenizer.encode(doc))
+            doc_hash = hash(doc)
+            if doc_hash not in doc_hash_to_id:
+                doc_ids = rag.add_cache([doc])
+                doc_id = doc_ids[0]
+                doc_hash_to_id[doc_hash] = doc_id
+            else:
+                doc_id = doc_hash_to_id[doc_hash]
+            context_doc_ids.append(doc_id)
+        assert len(context_doc_ids) == len(document), f"doc_ids: {len(doc_ids)}, document: {len(document)}"
+        sum_tokens += document_token
+        doc_ids_by_prompt.append(context_doc_ids)
         document_len_by_prompt.append(document_token)
     logger.info(f"{len(doc_hash_to_id)} unique documents, sum tokens= {sum_tokens}")
 
@@ -800,7 +812,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--sample-requests",
         type=int,
-        default=100,
+        default=20,
         help="IF set, randomly sample this many requests with replacement to test.",
     )
     parser.add_argument(

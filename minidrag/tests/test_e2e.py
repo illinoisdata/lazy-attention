@@ -56,9 +56,10 @@ class TestE2E:
                         vllm_ref_outputs_simple,):
         ref_outputs = vllm_ref_outputs_simple
         torch.cuda.empty_cache()
+        import minidrag.__vllm__
         llm = None
         try:
-            with MiniDynamicRAG():
+            if True:
                 setup_deterministic_env()
                 import vllm
                 llm = vllm.LLM(model=mock_model_name,                      

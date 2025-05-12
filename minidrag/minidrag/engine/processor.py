@@ -105,14 +105,13 @@ def process_inputs(
                     pad_token = "<pad>"
                 pad_token_ids = self.tokenizer.tokenizer(pad_token, 
                                                          add_special_tokens=False)["input_ids"]  # skip the first token
-                pad_token_id = pad_token_ids[-1]
                 if len(pad_token_ids) > 1:
                     print(f"Warning: the pad token id is not a single token. {pad_token_ids}")
-                doc_token_ids = [pad_token_id] * pad_length + doc_token_ids
-            # right padding
-            # if pad_length > 0:
-            #     pad_token_id = self.tokenizer.get_lora_tokenizer(lora_request).pad_token_id
-            #     doc_token_ids = doc_token_ids + [pad_token_id] * pad_length
+                pad_token_id = pad_token_ids[-1]
+                # left padding
+                # doc_token_ids = [pad_token_id] * pad_length + doc_token_ids
+                # right padding
+                doc_token_ids = doc_token_ids + [pad_token_id] * pad_length
             assert len(doc_token_ids) % block_size == 0, "The length of the document sequence is not a multiple of the block size."
 
             documents_token_ids.append(doc_token_ids)

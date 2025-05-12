@@ -2,8 +2,7 @@ import dataclasses
 import re
 import string
 from collections import Counter
-from typing import List, Optional
-
+from typing import List, Optional, Union
 import datasets
 import jieba
 from fuzzywuzzy import fuzz
@@ -39,7 +38,7 @@ DATASET_NAMES = [
 @dataclasses.dataclass
 class LongBenchArgs:
     longbench_dataset_name: str = "narrativeqa"  # LongBench dataset name.
-    longbench_out_seq_len: int = 32
+    longbench_out_seq_len: int = 512
 
 
 @dataclasses.dataclass
@@ -57,6 +56,7 @@ class LongBenchRow:
 @dataclasses.dataclass
 class LongBenchDataset:
     rows: List[LongBenchRow]
+    name: str = "LongBench"
 
 
 def load_dataset(dataset_name: str) -> LongBenchDataset:
@@ -64,10 +64,11 @@ def load_dataset(dataset_name: str) -> LongBenchDataset:
         logger.error(f"Invalid LongBench dataset_name {dataset_name}; options are {DATASET_NAMES}")
         raise ValueError(f"Invalid LongBench dataset_name {dataset_name}")
     return LongBenchDataset(
+        name=dataset_name,
         rows=[
             LongBenchRow(
                 input=row["input"],
-                context=row["context"],
+                context=split_context(row["context"], dataset_name),
                 answers=row["answers"],
                 length=row["length"],
                 dataset=row["dataset"],
@@ -78,6 +79,42 @@ def load_dataset(dataset_name: str) -> LongBenchDataset:
             for row in datasets.load_dataset("THUDM/LongBench", dataset_name, split="test")
         ]
     )
+    
+    
+def split_context(context: str, dataset_name: str) -> Union[str, List[str]]:
+    """Split context into chunks of max_length."""
+    """
+    Passage 1:
+    ...
+    Passage 2:
+    ...
+    """
+    if dataset_name in ['samsum']:
+        splitor = "Dialogue"
+    elif dataset_name in ["2wikimqa", "musique", "multi_news", "triviaqa", "hotpotqa"]:
+        splitor = "Passage"
+    elif dataset_name in ["narrativeqa"]:
+        return context.split("\n\n\n\n")
+    else:
+        return context
+    
+    res = []
+    lines = context.split("\n")
+    num_passages = 0
+    prev_passage_line = None
+    passage_line = None
+    for i in range(len(lines)):
+        if lines[i].startswith(splitor):
+            if passage_line is not None:
+                prev_passage_line = passage_line
+                current_passage = lines[prev_passage_line:i]
+                res.append("\n".join(current_passage))
+            passage_line = i
+            num_passages += 1
+    res.append("\n".join(lines[passage_line:]))
+    assert num_passages == len(res)
+    return res
+
 
 
 """Accuracy Measurments"""
