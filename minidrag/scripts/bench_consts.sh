@@ -157,6 +157,21 @@ function get_data_args() {
     elif [[ $key == "repobench-p" ]]
     then
         data_args="--dataset-name longbench --longbench_dataset_name repobench-p"
+    elif [[ $key == "2wikimqa_block" ]]
+    then
+        data_args="--dataset-name 2wikimqa_block"
+    elif [[ $key == "hotpotqa_block" ]]
+    then
+        data_args="--dataset-name hotpotqa_block"
+    elif [[ $key == "2wikimqa_cacheblend" ]]
+    then
+        data_args="--dataset-name 2wikimqa_cacheblend"
+    elif [[ $key == "samsum_cacheblend" ]]
+    then
+        data_args="--dataset-name samsum_cacheblend"
+    elif [[ $key == "musique_cacheblend" ]]
+    then
+        data_args="--dataset-name musique_cacheblend"
     else
         echo "ERROR (get_data_args): Unknown dataset ${key}. standard dataset: [ ${DATA_KEYS[*]} ]"
         exit 1
@@ -256,8 +271,10 @@ function get_sut_args() {
     then
         # SUTS_MODEL="facebook/opt-125m"
         # SUTS_MODEL="meta-llama/Llama-3.1-8B-Instruct"
+        # SUTS_MODEL="meta-llama/Llama-3.1-8B-Instruct"
         # SUTS_MODEL="meta-llama/Llama-3.1-70B-Instruct"
         SUTS_MODEL="ldsjmdy/Tulu3-Block-FT"
+        # SUTS_MODEL="ldsjmdy/Tulu3-RAG"
     fi
     echo "Using SUTS_MODEL=${SUTS_MODEL}"
 

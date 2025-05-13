@@ -301,6 +301,287 @@ def sample_longbench_requests(
     logger.info(f"max_len= {max_len} tokens")
     return input_requests
 
+def sample_2wikimqa_block_requests(
+    args,
+    rag,
+    tokenizer: PreTrainedTokenizerBase,
+) -> List:
+    
+    jsonl_path = '/u/mpamnani/vllm/minidrag/scripts/block-attn-bench-datahub/processed_data/2wiki_eval/dataset'
+    data = []
+    with open(jsonl_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            if line.strip():
+                data.append(json.loads(line))
+
+    logger.info(f"Loaded {len(data)} 2WikiMultiHopQA prompts")
+
+    doc_hash_to_id: Dict[int, str] = {}
+    doc_ids_by_prompt: List[List[str]] = []
+    document_len_by_prompt: List[int] = []
+    sum_tokens = 0
+
+    for sample in data:
+        doc_ids = []
+        doc_token_count = 0
+        for doc in sample["documents"]:
+            doc_str = f"Title: {doc['title']}\n{doc['text'].strip()}"
+            doc_hash = hash(doc_str)
+            if doc_hash not in doc_hash_to_id:
+                new_ids = rag.add_cache([doc_str])
+                assert len(new_ids) == 1
+                doc_hash_to_id[doc_hash] = new_ids[0]
+                doc_token_count += len(tokenizer.encode(doc_str))
+            doc_ids.append(doc_hash_to_id[doc_hash])
+        doc_ids_by_prompt.append(doc_ids)
+        document_len_by_prompt.append(doc_token_count)
+        sum_tokens += doc_token_count
+    logger.info(f"{len(doc_hash_to_id)} unique documents, sum tokens={sum_tokens}")
+
+    input_requests = []
+    max_len = 0
+    for sample, prompt_doc_ids, document_len in zip(data, doc_ids_by_prompt, document_len_by_prompt):
+        prompt = sample["prompt"]
+        prompt_len = len(tokenizer.encode(prompt))
+        output_len = 32 # args.longbench_out_seq_len
+        input_requests.append(
+            RAGRequest(
+                prompt=prompt,
+                prompt_len=prompt_len,
+                output_len=output_len,
+                document_len=document_len,
+                documents=prompt_doc_ids,
+                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42),
+            )
+        )
+        max_len = max(max_len, prompt_len + document_len)
+    logger.info(f"max_len= {max_len} tokens")
+
+    return input_requests
+
+def sample_hotpotqa_block_requests(
+    args,
+    rag,
+    tokenizer: PreTrainedTokenizerBase,
+) -> List:
+    
+    jsonl_path = '/u/mpamnani/vllm/minidrag/scripts/block-attn-bench-datahub/processed_data/hqa_eval/dataset'
+    data = []
+    with open(jsonl_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            if line.strip():
+                data.append(json.loads(line))
+
+    logger.info(f"Loaded {len(data)} HotpotQA prompts")
+
+    doc_hash_to_id: Dict[int, str] = {}
+    doc_ids_by_prompt: List[List[str]] = []
+    document_len_by_prompt: List[int] = []
+    sum_tokens = 0
+
+    for sample in data:
+        doc_ids = []
+        doc_token_count = 0
+        for doc in sample["documents"]:
+            doc_str = f"Title: {doc['title']}\n{doc['text'].strip()}"
+            doc_hash = hash(doc_str)
+            if doc_hash not in doc_hash_to_id:
+                new_ids = rag.add_cache([doc_str])
+                assert len(new_ids) == 1
+                doc_hash_to_id[doc_hash] = new_ids[0]
+                doc_token_count += len(tokenizer.encode(doc_str))
+            doc_ids.append(doc_hash_to_id[doc_hash])
+        doc_ids_by_prompt.append(doc_ids)
+        document_len_by_prompt.append(doc_token_count)
+        sum_tokens += doc_token_count
+    logger.info(f"{len(doc_hash_to_id)} unique documents, sum tokens={sum_tokens}")
+
+    input_requests = []
+    max_len = 0
+    for sample, prompt_doc_ids, document_len in zip(data, doc_ids_by_prompt, document_len_by_prompt):
+        prompt = sample["prompt"]
+        prompt_len = len(tokenizer.encode(prompt))
+        output_len = 32 # args.longbench_out_seq_len
+        input_requests.append(
+            RAGRequest(
+                prompt=prompt,
+                prompt_len=prompt_len,
+                output_len=output_len,
+                document_len=document_len,
+                documents=prompt_doc_ids,
+                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42),
+            )
+        )
+        max_len = max(max_len, prompt_len + document_len)
+    logger.info(f"max_len= {max_len} tokens")
+
+    return input_requests
+
+def sample_2wikimqa_cacheblend_requests(
+    args,
+    rag,
+    tokenizer: PreTrainedTokenizerBase,
+) -> List:
+    json_path = '/u/mpamnani/CacheBlend/inputs/wikimqa_s.json' 
+    data = []
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    logger.info(f"Loaded {len(data)} 2wikimqa-cache-blend prompts")
+
+    doc_hash_to_id: Dict[int, str] = {}
+    doc_ids_by_prompt: List[List[str]] = []
+    document_len_by_prompt: List[int] = []
+    sum_tokens = 0
+
+    for sample in data:
+        doc_ids = []
+        doc_token_count = 0
+        for doc in sample["ctxs"]:
+            doc_str = f"Title: {doc['title']}\n{doc['text'].strip()}"
+            doc_hash = hash(doc_str)
+            if doc_hash not in doc_hash_to_id:
+                new_ids = rag.add_cache([doc_str])
+                assert len(new_ids) == 1
+                doc_hash_to_id[doc_hash] = new_ids[0]
+                doc_token_count += len(tokenizer.encode(doc_str))
+            doc_ids.append(doc_hash_to_id[doc_hash])
+        doc_ids_by_prompt.append(doc_ids)
+        document_len_by_prompt.append(doc_token_count)
+        sum_tokens += doc_token_count
+    logger.info(f"{len(doc_hash_to_id)} unique documents, sum tokens={sum_tokens}")
+
+    input_requests = []
+    max_len = 0
+    for sample, prompt_doc_ids, document_len in zip(data, doc_ids_by_prompt, document_len_by_prompt):
+        prompt = sample["question"]
+        prompt_len = len(tokenizer.encode(prompt))
+        output_len = 32  # Change as needed (args.longbench_out_seq_len)
+        input_requests.append(
+            RAGRequest(
+                prompt=prompt,
+                prompt_len=prompt_len,
+                output_len=output_len,
+                document_len=document_len,
+                documents=prompt_doc_ids,
+                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42),
+            )
+        )
+        max_len = max(max_len, prompt_len + document_len)
+    logger.info(f"max_len= {max_len} tokens")
+
+    return input_requests
+
+def sample_samsum_cacheblend_requests(
+    args,
+    rag,
+    tokenizer: PreTrainedTokenizerBase,
+) -> List:
+    json_path = '/u/mpamnani/CacheBlend/inputs/samsum.json'
+    data = []
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    logger.info(f"Loaded {len(data)} Samsum-cache-blend prompts")
+
+    doc_hash_to_id: Dict[int, str] = {}
+    doc_ids_by_prompt: List[List[str]] = []
+    document_len_by_prompt: List[int] = []
+    sum_tokens = 0
+
+    for sample in data:
+        doc_ids = []
+        doc_token_count = 0
+        for doc in sample["ctxs"]:
+            doc_str = f"Title: {doc['title']}\n{doc['text'].strip()}"
+            doc_hash = hash(doc_str)
+            if doc_hash not in doc_hash_to_id:
+                new_ids = rag.add_cache([doc_str])
+                assert len(new_ids) == 1
+                doc_hash_to_id[doc_hash] = new_ids[0]
+                doc_token_count += len(tokenizer.encode(doc_str))
+            doc_ids.append(doc_hash_to_id[doc_hash])
+        doc_ids_by_prompt.append(doc_ids)
+        document_len_by_prompt.append(doc_token_count)
+        sum_tokens += doc_token_count
+    logger.info(f"{len(doc_hash_to_id)} unique documents, sum tokens={sum_tokens}")
+
+    input_requests = []
+    max_len = 0
+    for sample, prompt_doc_ids, document_len in zip(data, doc_ids_by_prompt, document_len_by_prompt):
+        prompt = sample["question"]
+        prompt_len = len(tokenizer.encode(prompt))
+        output_len = 32  # Change as needed (args.longbench_out_seq_len)
+        input_requests.append(
+            RAGRequest(
+                prompt=prompt,
+                prompt_len=prompt_len,
+                output_len=output_len,
+                document_len=document_len,
+                documents=prompt_doc_ids,
+                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42),
+            )
+        )
+        max_len = max(max_len, prompt_len + document_len)
+    logger.info(f"max_len= {max_len} tokens")
+
+    return input_requests
+
+def sample_musique_cacheblend_requests(
+    args,
+    rag,
+    tokenizer: PreTrainedTokenizerBase,
+) -> List:
+    json_path = '/u/mpamnani/CacheBlend/inputs/musique_s.json'
+    data = []
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+
+    logger.info(f"Loaded {len(data)} Musique-cache-blend prompts")
+
+    doc_hash_to_id: Dict[int, str] = {}
+    doc_ids_by_prompt: List[List[str]] = []
+    document_len_by_prompt: List[int] = []
+    sum_tokens = 0
+
+    for sample in data:
+        doc_ids = []
+        doc_token_count = 0
+        for doc in sample["ctxs"]:
+            doc_str = f"Title: {doc['title']}\n{doc['text'].strip()}"
+            doc_hash = hash(doc_str)
+            if doc_hash not in doc_hash_to_id:
+                new_ids = rag.add_cache([doc_str])
+                assert len(new_ids) == 1
+                doc_hash_to_id[doc_hash] = new_ids[0]
+                doc_token_count += len(tokenizer.encode(doc_str))
+            doc_ids.append(doc_hash_to_id[doc_hash])
+        doc_ids_by_prompt.append(doc_ids)
+        document_len_by_prompt.append(doc_token_count)
+        sum_tokens += doc_token_count
+    logger.info(f"{len(doc_hash_to_id)} unique documents, sum tokens={sum_tokens}")
+
+    input_requests = []
+    max_len = 0
+    for sample, prompt_doc_ids, document_len in zip(data, doc_ids_by_prompt, document_len_by_prompt):
+        prompt = sample["question"]
+        prompt_len = len(tokenizer.encode(prompt))
+        output_len = 32  # Change as needed (args.longbench_out_seq_len)
+        input_requests.append(
+            RAGRequest(
+                prompt=prompt,
+                prompt_len=prompt_len,
+                output_len=output_len,
+                document_len=document_len,
+                documents=prompt_doc_ids,
+                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42),
+            )
+        )
+        max_len = max(max_len, prompt_len + document_len)
+    logger.info(f"max_len= {max_len} tokens")
+
+    return input_requests
 
 async def get_request(
     input_requests: List[RAGRequest],
@@ -687,6 +968,31 @@ def load_dataset(
             rag=rag,
             tokenizer=tokenizer,
         )
+    elif args.dataset_name == "2wikimqa_block":
+        return sample_2wikimqa_block_requests(args=args,
+                                        rag=rag, 
+                                        tokenizer=tokenizer,
+                                       )
+    elif args.dataset_name == "hotpotqa_block":
+        return sample_hotpotqa_block_requests(args=args,
+                                        rag=rag, 
+                                        tokenizer=tokenizer,
+                                        )
+    elif args.dataset_name == "2wikimqa_cacheblend":
+        return sample_2wikimqa_cacheblend_requests(args=args,
+                                        rag=rag, 
+                                        tokenizer=tokenizer,
+                                        )    
+    elif args.dataset_name == "samsum_cacheblend":
+        return sample_samsum_cacheblend_requests(args=args,
+                                        rag=rag, 
+                                        tokenizer=tokenizer,
+                                        )
+    elif args.dataset_name == "musique_cacheblend":
+        return sample_musique_cacheblend_requests(args=args,
+                                        rag=rag, 
+                                        tokenizer=tokenizer,
+                                        )
     else:
         raise ValueError(f"Unknown dataset: {args.dataset_name}")
 
@@ -780,7 +1086,7 @@ if __name__ == "__main__":
         "--dataset-name",
         type=str,
         default="random",
-        choices=["random", "chatragbench", "longbench"],
+        choices=["random", "chatragbench", "longbench","2wikimqa_block", "hotpotqa_block", "2wikimqa_cacheblend", "samsum_cacheblend", "musique_cacheblend"],
         help="Name of the dataset to benchmark on.",
     )
     parser.add_argument(
@@ -802,7 +1108,6 @@ if __name__ == "__main__":
         "actual request rate may be lower than specified with --request-rate, "
         "if the server is not processing requests fast enough to keep up.",
     )
-
     # parser.add_argument(
     #     "--tokenizer",
     #     type=str,
@@ -812,7 +1117,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--sample-requests",
         type=int,
-        default=20,
+        default=200,
         help="IF set, randomly sample this many requests with replacement to test.",
     )
     parser.add_argument(
@@ -880,7 +1185,13 @@ if __name__ == "__main__":
         "goodput, refer to DistServe paper: https://arxiv.org/pdf/2401.09670 "
         "and the blog: https://hao-ai-lab.github.io/blogs/distserve",
     )
-
+    #block-bench
+    parser.add_argument(
+        "--json-path",
+        type=str,
+        default=None,
+        help="Path to the preprocessed block-bench dataset JSON file.",
+    )
     random_group = parser.add_argument_group("random dataset options")
     parser.add_argument(
         "--random-num-prompts",

@@ -668,12 +668,13 @@ class PromptCacheRAG(RAG):
 
     @staticmethod
     def _load_lm(lm_name: str) -> promptcache.model.LanguageModel:
-        if lm_name == "meta-llama/Llama-3.1-8B-Instruct":
-            return promptcache.model.AutoModel(lm_name)
-        elif "llama" in lm_name.lower():
-            return promptcache.model.CodeLlama(lm_name, load_in_8bit=True, device_map="auto")
-        else:
-            raise ValueError(f"Invalid language model name {lm_name}")
+        return promptcache.model.AutoModel(lm_name)
+        # if lm_name == "meta-llama/Llama-3.1-8B-Instruct":
+        #     return promptcache.model.AutoModel(lm_name)
+        # elif "llama" in lm_name.lower():
+        #     return promptcache.model.CodeLlama(lm_name, load_in_8bit=True, device_map="auto")
+        # else:
+        #     raise ValueError(f"Invalid language model name {lm_name}")
 
     # From promptcache::benchmark/longbench.py
     @staticmethod

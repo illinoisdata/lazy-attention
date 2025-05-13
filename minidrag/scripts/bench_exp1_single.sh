@@ -1,5 +1,5 @@
 #/!bin/bash
-
+export PYTHONPATH=.:./promptcache
 int_handler() {
     echo "Interrupted."
     kill $PPID
@@ -8,7 +8,7 @@ int_handler() {
 trap 'int_handler' INT
 source scripts/bench_consts.sh
 
-if [ "$#" -ne 2 ]
+if [ "$#" -lt 2 ]
 then
     echo "Require 2 argument (SUT, DATANAME), $# provided"
     echo 'Example: bash scripts/bench_exp1_single.sh parrot randtiny'
@@ -18,6 +18,8 @@ fi
 
 SUT=$1
 DATANAME=$2
+shift 2
+EXTRA_ARGS="$@"
 make_sut_args ${SUT} sut_args
 make_data_args ${DATANAME} datakey dataargs
 
@@ -30,4 +32,5 @@ prepare_sut ${SUT}
 python benchmarks/benchmark_rag_serving.py \
     --exp exp1_${SUT}_${DATANAME} \
     ${dataargs} \
-    ${sut_args}
+    ${sut_args} \
+    ${EXTRA_ARGS}
