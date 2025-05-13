@@ -67,7 +67,13 @@ def kernel_unified_attention_2d(
     BLOCK_Q: tl.constexpr,  # int
     num_seqs: tl.int32,
     # //////////////////////////////////
-    num_docs_ptr, # [num_seqs]
+    num_docs_ptr, # [num_seqs], used to skip
+    # if is a document query, the query is start after the documents
+    # e.g., two docs, one [16, 16, 14] and one [16]
+    # [-2, 0, 0, -46]
+    block_table_offse_ptr, # [num_seqs, max_num_blocks_per_seq] ~ same a block_tables_ptr
+    # [16, 16, 14, 16], here 14 means 2 tokens in the block will be masked
+    block_table_mask_ptr, # [num_seqs, max_num_blocks_per_seq] ~ same a block_tables_ptr
 ):
 
     q_block_global_idx = tl.program_id(0)
