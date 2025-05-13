@@ -796,23 +796,23 @@ class DynamicRAG(RAG):
     ) -> AsyncGenerator[str, None]:
         request_id = self._next_request_id()
         latest_idx = 0
-        # preamble = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an intelligent AI assistant. Please answer questions based on the user's instructions. Below are some reference documents that may help you in answering the user's question.\n\n"
-        # document = [self._docs[doc_id] for doc_id in doc_ids]
-        # if isinstance(document, str):
-        #     document_seq = [document]
-        # else:
-        #     document_seq = document
-        # document_seq = [preamble] + document_seq
         preamble = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an intelligent AI assistant. Please answer questions based on the user's instructions. Below are some reference documents that may help you in answering the user's question.\n\n"
-        query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
         document = [self._docs[doc_id] for doc_id in doc_ids]
-        document = [preamble] + document
         if isinstance(document, str):
-            context = document
+            document_seq = [document]
         else:
-            context = "\n".join(document)
+            document_seq = document
+        document_seq = [preamble] + document_seq
+        # preamble = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an intelligent AI assistant. Please answer questions based on the user's instructions. Below are some reference documents that may help you in answering the user's question.\n\n"
+        # query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
+        # document = [self._docs[doc_id] for doc_id in doc_ids]
+        # document = [preamble] + document
+        # if isinstance(document, str):
+        #     context = document
+        # else:
+        #     context = "\n".join(document)
         
-        document_seq = [context]
+        # document_seq = [context]
         
         query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
         async for generate_output in self._llm.generate(
