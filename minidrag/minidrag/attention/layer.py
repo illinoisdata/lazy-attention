@@ -9,7 +9,7 @@ import torch
 from typing import Optional
 from vllm.forward_context import get_forward_context, ForwardContext
 from vllm.utils import direct_register_custom_op
-from vllm.platforms import _Backend, current_platform
+from vllm.platforms import current_platform
 from vllm.attention.layer import maybe_save_kv_layer_to_connector, wait_for_kv_layer_from_connector
 
 # class Attention(nn.Module):
@@ -62,6 +62,9 @@ def forward(
             if self.use_direct_call:
                 forward_context: ForwardContext = get_forward_context()
                 attn_metadata = forward_context.attn_metadata
+                lazy_metadata = forward_context.lazy_metadata
+                if isinstance(attn_metadata, dict):
+                    attn_metadata = attn_metadata[self.layer_name]
                 self_kv_cache = self.kv_cache[forward_context.virtual_engine]
                 self.impl.forward(self,
                                   query,
@@ -69,6 +72,7 @@ def forward(
                                   value,
                                   self_kv_cache,
                                   attn_metadata,
+                                  lazy_metadata,
                                   cos_sin_cache,
                                   rotary_dim,
                                   is_neox_style,
@@ -83,15 +87,7 @@ def forward(
         else:
             raise ValueError(
                 "Attention layer must be configured to use output tensor. ")
-            if self.use_direct_call:
-                forward_context = get_forward_context()
-                attn_metadata = forward_context.attn_metadata
-                self_kv_cache = self.kv_cache[forward_context.virtual_engine]
-                return self.impl.forward(self, query, key, value,
-                                         self_kv_cache, attn_metadata)
-            else:
-                return torch.ops.vllm.unified_attention(
-                    query, key, value, self.layer_name)
+            
             
 def dynamic_unified_attention_with_output(
     query: torch.Tensor,
@@ -107,6 +103,7 @@ def dynamic_unified_attention_with_output(
 
     forward_context: ForwardContext = get_forward_context()
     attn_metadata = forward_context.attn_metadata
+    lazy_metadata = forward_context.lazy_metadata
     self = forward_context.no_compile_layers[layer_name]
     kv_cache = self.kv_cache[forward_context.virtual_engine]
     self.impl.forward(self,
@@ -115,6 +112,7 @@ def dynamic_unified_attention_with_output(
                       value,
                       kv_cache,
                       attn_metadata,
+                      lazy_metadata,
                       cos_sin_cache,
                       rotary_dim,
                       is_neox_style,

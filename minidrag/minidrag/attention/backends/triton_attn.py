@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Attention layer with PagedAttention and Triton prefix prefill."""
-from typing import Any, Optional
+from typing import Optional
 
 import torch
 
-from vllm.attention.ops.paged_attn import PagedAttention
+from vllm import _custom_ops as ops
+from vllm.platforms import current_platform
 from vllm.v1.attention.backends.flash_attn import (
     FlashAttentionMetadata)
 
-from ..ops.chunked_prefill_paged_decode import chunked_prefill_paged_decode
+from ..ops.triton_unified_attention import unified_attention
 
 # class TritonAttentionImpl(AttentionImpl):
 def forward(
@@ -19,6 +20,7 @@ def forward(
     value: torch.Tensor,
     kv_cache: torch.Tensor,
     attn_metadata: FlashAttentionMetadata,
+    lazy_metadata: Optional[torch.Tensor] = None,
     cos_sin_cache: Optional[torch.Tensor] = None,
     rotary_dim: Optional[int] = None,
     is_neox_style: bool = True,
@@ -35,9 +37,11 @@ def forward(
         shape = [num_tokens, num_heads * head_size]
     """
     assert output is not None, "Output tensor must be provided."
+    
     if attn_metadata is None:
         # Profiling run.
         return output
+    
     assert attn_metadata.use_cascade is False
     # IMPORTANT!
     # NOTE(woosuk): With piece-wise CUDA graphs, this method is executed in
@@ -47,11 +51,11 @@ def forward(
     # Minimize the PyTorch ops in this method as much as possible.
     # Whenever making a change in this method, please benchmark the
     # performance to make sure it does not introduce any overhead.
+
     num_actual_tokens = attn_metadata.num_actual_tokens
-    key_cache, value_cache = PagedAttention.split_kv_cache(
-        kv_cache, self.num_kv_heads, self.head_size)
-    # Reshape the input keys and values and store them in the cache.
-    PagedAttention.write_to_paged_cache(
+
+    key_cache, value_cache = kv_cache.unbind(0)
+    torch.ops._C_cache_ops.reshape_and_cache_flash(
         key,
         value,
         key_cache,
@@ -61,139 +65,67 @@ def forward(
         layer._k_scale,
         layer._v_scale,
     )
+
+    if self.kv_cache_dtype.startswith("fp8"):
+        key_cache = key_cache.view(self.fp8_dtype)
+        value_cache = value_cache.view(self.fp8_dtype)
+        num_tokens, num_heads, head_size = query.shape
+        assert layer._q_scale == 1.0, \
+            "A non 1.0 q_scale is not currently supported."
+        if not current_platform.is_rocm():
+            # Skip Q quantization on ROCm, since dequantizing back to
+            # f32 in the attention kernel is not supported.
+            query, _ = ops.scaled_fp8_quant(
+                query.reshape(
+                    (num_tokens, num_heads * head_size)).contiguous(),
+                layer._q_scale)
+        query = query.reshape((num_tokens, num_heads, head_size))
+
     use_local_attn = \
         (self.use_irope and attn_metadata.local_attn_metadata is not None)
+
     if use_local_attn:
         assert attn_metadata.local_attn_metadata is not None
         local_metadata = attn_metadata.local_attn_metadata
         cu_seqlens_q = local_metadata.local_query_start_loc
-        sequesd_k = local_metadata.local_seqused_k
+        seqused_k = local_metadata.local_seqused_k
         max_seqlen_q = local_metadata.local_max_query_len
         max_seqlen_k = local_metadata.local_max_seq_len
         block_table = local_metadata.local_block_table
     else:
         cu_seqlens_q = attn_metadata.query_start_loc
-        sequesd_k = attn_metadata.seq_lens
+        seqused_k = attn_metadata.seq_lens
         max_seqlen_q = attn_metadata.max_query_len
         max_seqlen_k = attn_metadata.max_seq_len
         block_table = attn_metadata.block_table
-    # Compute attention and update output up to `num_actual_tokens`.
-    chunked_prefill_paged_decode(query=query[:num_actual_tokens],
-                                 key=key[:num_actual_tokens],
-                                 value=value[:num_actual_tokens],
-                                 output=output[:num_actual_tokens],
-                                 kv_cache_dtype=self.kv_cache_dtype,
-                                 key_cache=key_cache,
-                                 value_cache=value_cache,
-                                 block_table=block_table,
-                                 query_start_loc=cu_seqlens_q,
-                                 seq_lens=sequesd_k,
-                                 max_seq_len=max_seqlen_k,
-                                 max_query_len=max_seqlen_q,
-                                 k_scale=layer._k_scale,
-                                 v_scale=layer._v_scale,
-                                 alibi_slopes=self.alibi_slopes,
-                                 sliding_window=self.sliding_window[0],
-                                 sm_scale=self.scale,
-                                 # //////////////
-                                 cos_sin_cache=cos_sin_cache,
-                                 rotary_dim=rotary_dim,
-                                 is_neox_style=is_neox_style,
-                                 )
+
+    descale_shape = (cu_seqlens_q.shape[0] - 1, key.shape[1])
+
+    unified_attention(
+        q=query[:num_actual_tokens],
+        k=key_cache,
+        v=value_cache,
+        out=output[:num_actual_tokens],
+        cu_seqlens_q=cu_seqlens_q,
+        max_seqlen_q=max_seqlen_q,
+        seqused_k=seqused_k,
+        max_seqlen_k=max_seqlen_k,
+        softmax_scale=self.scale,
+        causal=True,
+        alibi_slopes=self.alibi_slopes,
+        window_size=self.sliding_window,
+        block_table=block_table,
+        softcap=self.logits_soft_cap,
+        q_descale=None,  # Not supported
+        k_descale=layer._k_scale.expand(descale_shape),
+        v_descale=layer._v_scale.expand(descale_shape),
+        lazy_metadata=lazy_metadata,
+        cos_sin_cache=cos_sin_cache,
+        rotary_dim=rotary_dim,
+        is_neox_style=is_neox_style,
+    )
+
     return output
-
-
-# def forward(
-#     self,
-#     layer: torch.nn.Module,
-#     query: torch.Tensor,
-#     key: torch.Tensor,  # key is not rotated when passing to this function
-#     value: torch.Tensor,
-#     kv_cache: torch.Tensor,
-#     attn_metadata: FlashAttentionMetadata,
-#     cos_sin_cache: Optional[torch.Tensor] = None,
-#     rotary_dim: Optional[int] = None,
-#     is_neox_style: bool = True,
-#     output: Optional[torch.Tensor] = None,
-# ) -> torch.Tensor:
-#     """Forward pass impl with triton.
-#     Core attention computation is done in two functions called by `chunked_prefill_paged_decode`
-#     - `context_attention_fwd`
-#     - `kernel_paged_attention_2d`
-
-#     Note: We pass the `cos_sin_cache`, `rotary_dim`, and `is_neox_style` to the both for internal
-#     rotary embedding computation.
-
-#     Args:
-#         query: shape = [num_tokens, num_heads, head_size]
-#         key: shape = [num_tokens, num_kv_heads, head_size]
-#         value: shape = [num_tokens, num_kv_heads, head_size]
-#         kv_cache = [2, num_blocks, block_size, num_kv_heads, head_size]
-#         attn_metadata: Metadata for attention.
-#         cos_sin_cache: Cosine and sine cache for rotary embedding.
-#         rotary_dim: Dimension of rotary embedding.
-#         is_neox_style: Whether to use neox/gptj style rotary embedding.
-#     Returns:
-#         shape = [num_tokens, num_heads * head_size]
-#     """
-#     assert output is not None, "Output tensor must be provided."
-
-#     if attn_metadata is None:
-#         # Profiling run.
-#         return output
-
-#     assert attn_metadata.use_cascade is False
-
-#     # IMPORTANT!
-#     # NOTE(woosuk): With piece-wise CUDA graphs, this method is executed in
-#     # eager-mode PyTorch. Thus, we need to be careful about any CPU overhead
-#     # in this method. For example, `view` and `slice` (or `[:n]`) operations
-#     # are surprisingly slow even in the case they do not invoke any GPU ops.
-#     # Minimize the PyTorch ops in this method as much as possible.
-#     # Whenever making a change in this method, please benchmark the
-#     # performance to make sure it does not introduce any overhead.
-
-#     num_actual_tokens = attn_metadata.num_actual_tokens
-#     key_cache, value_cache = PagedAttention.split_kv_cache(
-#         kv_cache, self.num_kv_heads, self.head_size)
-
-#     # Reshape the input keys and values and store them in the cache.
-#     PagedAttention.write_to_paged_cache(
-#         key,
-#         value,
-#         key_cache,
-#         value_cache,
-#         attn_metadata.slot_mapping,
-#         self.kv_cache_dtype,
-#         layer._k_scale,
-#         layer._v_scale,
-#     )
-
-#     # Compute attention and update output up to `num_actual_tokens`.
-#     chunked_prefill_paged_decode(
-#         query=query[:num_actual_tokens],
-#         key=key[:num_actual_tokens],
-#         value=value[:num_actual_tokens],
-#         output=output[:num_actual_tokens],
-#         kv_cache_dtype=self.kv_cache_dtype,
-#         key_cache=key_cache,
-#         value_cache=value_cache,
-#         block_table=attn_metadata.block_table,
-#         query_start_loc=attn_metadata.query_start_loc,
-#         seq_lens=attn_metadata.seq_lens,
-#         max_seq_len=attn_metadata.max_seq_len,
-#         max_query_len=attn_metadata.max_query_len,
-#         k_scale=layer._k_scale,
-#         v_scale=layer._v_scale,
-#         alibi_slopes=self.alibi_slopes,
-#         sliding_window=self.sliding_window[0],
-#         sm_scale=self.scale,
-#         cos_sin_cache=cos_sin_cache,
-#         rotary_dim=rotary_dim,
-#         is_neox_style=is_neox_style,
-#     )
-
-#     return output
 
 
 original_forward = None

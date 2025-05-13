@@ -6,6 +6,7 @@ from vllm.distributed import cleanup_dist_env_and_memory
 from minidrag.ctxmgr import MiniDynamicRAG
 from utils import setup_deterministic_env
 
+MiniDynamicRAG.apply_triton_backend()
 
 # -----------------------------------------------------------------------------
 # TritonAttn V1 Backend
@@ -18,7 +19,6 @@ def vllm_ref_outputs_simple(mock_prompts,
     torch.cuda.empty_cache()
     llm = None
     try:
-        MiniDynamicRAG.apply_triton_backend()
         value = []
         setup_deterministic_env()
         import vllm
@@ -56,7 +56,7 @@ class TestE2E:
                         vllm_ref_outputs_simple,):
         ref_outputs = vllm_ref_outputs_simple
         torch.cuda.empty_cache()
-        import minidrag.__vllm__
+        # import minidrag.__vllm__
         llm = None
         try:
             if True:

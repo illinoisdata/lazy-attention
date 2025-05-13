@@ -111,9 +111,9 @@ cmake .. \
     -DVLLM_PYTHON_EXECUTABLE=$(which python) \
     -DVLLM_PYTHON_PATH=$(python -c "import sys; print(':'.join(sys.path))") \
     -DFETCHCONTENT_BASE_DIR=$(pwd)/../.deps \
-    -DNVCC_THREADS=16 \
+    -DNVCC_THREADS=8 \
     -DCMAKE_JOB_POOL_COMPILE:STRING=compile \
-    -DCMAKE_JOB_POOLS:STRING=compile=16
+    -DCMAKE_JOB_POOLS:STRING=compile=8
 
 
 cmake --build . --target _C _vllm_fa2_C  # fa3 easy to OOM

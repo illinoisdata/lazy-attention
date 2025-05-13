@@ -4,14 +4,12 @@ import torch
 from minidrag.attention.layer import apply_patch as apply_attn_layer_patch
 from minidrag.attention.backends.triton_attn import apply_patch as apply_triton_attn_patch
 # from minidrag.core.kv_cache_utils import apply_patch as apply_kv_cache_utils_patch
-from minidrag.model_executor.layers.rotary_embedding import apply_patch as apply_rotary_embedding_patch
 from minidrag.model_executor.models.llama import apply_patch as apply_llama_patch
 from minidrag._custom_ops import apply_patch as apply_custom_ops_patch
 
 from minidrag.attention.layer import revert_patch as revert_attn_layer_patch
 from minidrag.attention.backends.triton_attn import revert_patch as revert_triton_attn_patch
 # from minidrag.core.kv_cache_utils import revert_patch as revert_kv_cache_utils_patch
-from minidrag.model_executor.layers.rotary_embedding import revert_patch as revert_rotary_embedding_patch
 from minidrag.model_executor.models.llama import revert_patch as revert_llama_patch
 from minidrag._custom_ops import revert_patch as revert_custom_ops_patch
 
