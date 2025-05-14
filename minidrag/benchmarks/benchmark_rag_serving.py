@@ -10,6 +10,8 @@ Example
         --tokenizer facebook/opt-125m
 """
 
+from __future__ import annotations
+
 import argparse
 import asyncio
 import dataclasses
@@ -38,6 +40,33 @@ from vllm.engine.arg_utils import EngineArgs
 from vllm.transformers_utils.tokenizer import get_tokenizer
 
 MILLISECONDS_TO_SECONDS_CONVERSION = 1000
+
+
+SamplingMethod = Literal["uniform", "zipf"]
+
+
+def sample_elems(
+    rng: Any,
+    num_elems: int,
+    num_sample_elems: int,
+    elem_sampling_method: SamplingMethod = "uniform",
+    zipf_param: float = 1.5,
+):
+    if elem_sampling_method == "zipf":
+        elem_ids = []
+        shuffled_ids = list(range(num_elems))
+        np.random.shuffle(shuffled_ids)
+        while len(elem_ids) < num_sample_elems:
+            sampled = zipf.rvs(a=zipf_param, size=num_sample_elems, random_state=rng)
+            valid = [shuffled_ids[x - 1] for x in sampled if 0 <= x - 1 < num_elems]
+            elem_ids.extend(valid)
+        elem_ids = elem_ids[:num_sample_elems]
+    elif elem_sampling_method == "uniform":
+        elem_ids = list(rng.integers(0, high=len(input_elems), size=num_sample_elems))
+    else:
+        raise ValueError(f"Unknown sampling method: {elem_sampling_method}")
+    elem_ids = list(map(int, elem_ids))
+    return elem_ids
 
 
 @dataclasses.dataclass
@@ -79,6 +108,38 @@ class RAGRequest:
     documents: List[DocumentId]
     sampling_params: SamplingParams
     ground_truth: Optional[str] = None
+
+    def sample_documents(
+        self,
+        rng,
+        document_samples: int,
+        document_sampling_method: Optional[SamplingMethod],
+        zipf_param: float = 1.5,
+    ) -> RAGRequest:
+        if document_sampling_method is None:
+            return self
+
+        local_doc_ids = sample_elems(
+            rng=rng,
+            num_elems=len(self.documents),
+            num_sample_elems=document_samples,
+            elem_sampling_method=document_sampling_method,
+            zipf_param=zipf_param,
+        )
+        sampled_documents = []
+        for local_doc_id in local_doc_ids:
+            if self.documents[local_doc_id] not in sampled_documents:
+                sampled_documents.append(self.documents[local_doc_id])
+        logger.trace(f"{sampled_documents=}")
+        return RAGRequest(
+            prompt=self.prompt,
+            prompt_len=self.prompt_len,
+            output_len=self.output_len,
+            document_len=self.document_len,
+            documents=sampled_documents,
+            sampling_params=self.sampling_params,
+            ground_truth=self.ground_truth,
+        )
 
 
 @dataclasses.dataclass
@@ -605,39 +666,39 @@ def sample_musique_cacheblend_requests(
     return input_requests
 
 
-SamplingMethod = Literal["uniform", "zipf"]
-
-
 async def get_request(
     input_requests: List[RAGRequest],
     request_rate: float,
     sample_requests: Optional[int],
-    seed: int = 1111,
     request_sampling_method: SamplingMethod = "uniform",
-    zipf_param: float = 1.5,
+    request_zipf_param: float = 1.5,
+    sample_documents: Optional[int] = None,
+    document_sampling_method: SamplingMethod = "uniform",
+    document_zipf_param: float = 1.5,
+    seed: int = 1111,
 ) -> AsyncGenerator[Tuple[int, RAGRequest], None]:
     request_ids = list(range(len(input_requests)))
     rng = np.random.default_rng(seed=seed)
     if sample_requests is not None:
-        if request_sampling_method == "zipf":
-            request_ids = []
-            num_requests = len(input_requests)
-            shuffled_ids = list(range(num_requests))
-            np.random.shuffle(shuffled_ids)
-            while len(request_ids) < sample_requests:
-                sampled = zipf.rvs(a=zipf_param, size=sample_requests, random_state=rng)
-                valid = [shuffled_ids[x - 1] for x in sampled if 0 <= x - 1 < num_requests]
-                request_ids.extend(valid)
-            request_ids = request_ids[:sample_requests]
-        elif request_sampling_method == "uniform":
-            request_ids = list(rng.integers(0, high=len(input_requests), size=sample_requests))
-        else:
-            raise ValueError(f"Unknown sampling method: {request_sampling_method}")
-        request_ids = list(map(int, request_ids))
+        request_ids = sample_elems(
+            rng=rng,
+            num_elems=len(input_requests),
+            num_sample_elems=sample_requests,
+            elem_sampling_method=request_sampling_method,
+            zipf_param=request_zipf_param,
+        )
 
     logger.info(f"{request_ids=}")
     for request_id in request_ids:
         request = input_requests[request_id]
+        if sample_documents is not None:
+            request = request.sample_documents(
+                rng=rng,
+                document_samples=sample_documents,
+                document_sampling_method=document_sampling_method,
+                zipf_param=document_zipf_param,
+            )
+
         yield int(request_id), request
 
         if request_rate == float("inf"):
@@ -814,8 +875,11 @@ async def benchmark(
     selected_percentiles: List[float],
     gootput_config_dict: Dict[str, float],
     max_concurrency: Optional[int],
-    zipf_param: float,
-    request_sampling_method: SamplingMethod,
+    request_sampling_method: SamplingMethod = "uniform",
+    request_zipf_param: float = 1.5,
+    sample_documents: Optional[int] = None,
+    document_sampling_method: SamplingMethod = "uniform",
+    document_zipf_param: float = 1.5,
 ):
     if backend in ASYNC_REQUEST_FUNCS:
         request_func = ASYNC_REQUEST_FUNCS[backend]
@@ -857,7 +921,17 @@ async def benchmark(
     benchmark_start_time = time.perf_counter()
     input_request_ids: List[int] = []
     tasks: List[asyncio.Task] = []
-    async for request_id, request in get_request(input_requests, request_rate, sample_requests=sample_requests, zipf_param=zipf_param,request_sampling_method=request_sampling_method):
+    async_request = get_request(
+        input_requests,
+        request_rate,
+        sample_requests=sample_requests,
+        request_sampling_method=request_sampling_method,
+        request_zipf_param=request_zipf_param,
+        sample_documents=sample_documents,
+        document_sampling_method=document_sampling_method,
+        document_zipf_param=document_zipf_param,
+    )
+    async for request_id, request in async_request:
         request_func_input = RAGRequestFuncInput(
             rag=rag,
             request=request,
@@ -1081,8 +1155,11 @@ def main(args: argparse.Namespace):
             selected_percentiles=[float(p) for p in args.metric_percentiles.split(",")],
             gootput_config_dict=gootput_config_dict,
             max_concurrency=args.max_concurrency,
-            zipf_param=args.zipf_param,
             request_sampling_method=args.request_sampling_method,
+            request_zipf_param=args.request_zipf_param,
+            sample_documents=args.sample_documents,
+            document_sampling_method=args.document_sampling_method,
+            document_zipf_param=args.document_zipf_param,
         )
     )
 
@@ -1192,10 +1269,28 @@ if __name__ == "__main__":
         help=f"Method to sample requests {get_args(SamplingMethod)}.",
     )
     parser.add_argument(
-        "--zipf-param",
+        "--request-zipf-param",
         type=float,
         default=1.5,
         help="Zipfian parameter.",
+    )
+    parser.add_argument(
+        "--sample-documents",
+        type=int,
+        default=200,
+        help="IF set, randomly sample this many document with replacement to test.",
+    )
+    parser.add_argument(
+        "--document-sampling-method",
+        type=str,
+        default="uniform",
+        help=f"Method to sample documents {get_args(SamplingMethod)}.",
+    )
+    parser.add_argument(
+        "--document-zipf-param",
+        type=float,
+        default=1.5,
+        help="Zipfian parameter for document sampling.",
     )
     # parser.add_argument("--seed", type=int, default=42)
     # parser.add_argument(
