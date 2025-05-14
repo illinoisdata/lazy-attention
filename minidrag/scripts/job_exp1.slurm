@@ -29,7 +29,7 @@ module reset # drop modules and explicitly load the ones needed
 module load anaconda3_gpu
 conda deactivate
 conda deactivate
-cd /projects/bdjx/${USER}/DynamicRAG/drag
+cd /projects/bdjx/${USER}/vllm/minidrag
 source .venv/bin/activate
 module list  # job documentation and metadata
 echo "Job is starting on `hostname`"

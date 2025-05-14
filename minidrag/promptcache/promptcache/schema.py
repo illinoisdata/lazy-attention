@@ -329,36 +329,36 @@ class Module(Element):
                 offset += len(seq)
 
         for e in root:
-            match e.tag:
-                case "module":
-                    m = Module(offset, e, lm, max_tokens=max_tokens)
-                    self._contains_union = self._contains_union or m._contains_union
+            if e.tag == "module":
+                m = Module(offset, e, lm, max_tokens=max_tokens)
+                self._contains_union = self._contains_union or m._contains_union
 
-                    # check namespace conflicts
-                    submodule_names = [c.name for c in self.modules()]
-                    if m.name in submodule_names:
-                        raise ValueError(f"Module {m.name} is already defined")
+                # check namespace conflicts
+                submodule_names = [c.name for c in self.modules()]
+                if m.name in submodule_names:
+                    raise ValueError(f"Module {m.name} is already defined")
 
-                case "union":
-                    m = UnionModule(offset, e, lm, max_tokens=max_tokens)
-                    self._contains_union = True
-                    submodule_names = [c.name for c in self.modules()]
-                    for c in m.modules:
-                        if c.name in submodule_names:
-                            raise ValueError(f"Module {c.name} is already defined")
+            elif e.tag == "union":
+                m = UnionModule(offset, e, lm, max_tokens=max_tokens)
+                self._contains_union = True
+                submodule_names = [c.name for c in self.modules()]
+                for c in m.modules:
+                    if c.name in submodule_names:
+                        raise ValueError(f"Module {c.name} is already defined")
 
-                case "parameter":
-                    if self._is_root:
-                        raise ValueError("Parameters are not allowed in schema")
+            elif e.tag == "parameter":
+                if self._is_root:
+                    raise ValueError("Parameters are not allowed in schema")
 
-                    m = Parameter(offset, e, lm)
+                m = Parameter(offset, e, lm)
 
-                    parameter_names = [c.name for c in self.parameters()]
-                    if m.name in parameter_names:
-                        raise ValueError(f"Parameter {m.name} is already defined")
+                parameter_names = [c.name for c in self.parameters()]
+                if m.name in parameter_names:
+                    raise ValueError(f"Parameter {m.name} is already defined")
 
-                case _:
-                    m = TokenSequence(offset, lxml.etree.tostring(e), lm, max_tokens=max_tokens)
+            else:
+                m = TokenSequence(offset, lxml.etree.tostring(e), lm, max_tokens=max_tokens)
+
 
             self.children.append(m)
             offset += len(m)

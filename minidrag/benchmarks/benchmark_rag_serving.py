@@ -1064,7 +1064,7 @@ def main(args: argparse.Namespace):
     result_path = Path(args.result_dir) / f"{exp}.json"
     result_path.parent.mkdir(parents=True, exist_ok=True)
     with open(result_path, "w", encoding="utf-8") as f:
-        json.dump(result_json, f)
+        json.dump(result_json, f, default=str)
     logger.info(f"Save results to {result_path}")
     logger.info(f"RAG: {rag}")
 
