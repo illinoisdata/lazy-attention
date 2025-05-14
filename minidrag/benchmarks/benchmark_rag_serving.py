@@ -77,6 +77,7 @@ class RAGRequest:
     document_len: int
     documents: List[DocumentId]
     sampling_params: SamplingParams
+    ground_truth: Optional[str] = None
 
 
 @dataclasses.dataclass
@@ -319,11 +320,14 @@ def sample_2wikimqa_block_requests(
     doc_hash_to_id: Dict[int, str] = {}
     doc_ids_by_prompt: List[List[str]] = []
     document_len_by_prompt: List[int] = []
+    ground_truths: List[str] = []
     sum_tokens = 0
 
     for sample in data:
         doc_ids = []
         doc_token_count = 0
+        ground_truth = sample["answers"]
+        ground_truths.append(ground_truth)
         for doc in sample["documents"]:
             doc_str = f"Title: {doc['title']}\n{doc['text'].strip()}"
             doc_hash = hash(doc_str)
@@ -340,8 +344,8 @@ def sample_2wikimqa_block_requests(
 
     input_requests = []
     max_len = 0
-    for sample, prompt_doc_ids, document_len in zip(data, doc_ids_by_prompt, document_len_by_prompt):
-        prompt = sample["prompt"]
+    for sample, prompt_doc_ids, document_len, ground_truth in zip(data, doc_ids_by_prompt, document_len_by_prompt, ground_truths):
+        prompt = sample["question"]
         prompt_len = len(tokenizer.encode(prompt))
         output_len = 32 # args.longbench_out_seq_len
         input_requests.append(
@@ -352,6 +356,7 @@ def sample_2wikimqa_block_requests(
                 document_len=document_len,
                 documents=prompt_doc_ids,
                 sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42),
+                ground_truth=ground_truth,
             )
         )
         max_len = max(max_len, prompt_len + document_len)
@@ -377,11 +382,14 @@ def sample_hotpotqa_block_requests(
     doc_hash_to_id: Dict[int, str] = {}
     doc_ids_by_prompt: List[List[str]] = []
     document_len_by_prompt: List[int] = []
+    ground_truths: List[str] = []
     sum_tokens = 0
 
     for sample in data:
         doc_ids = []
         doc_token_count = 0
+        ground_truth = sample["answers"]
+        ground_truths.append(ground_truth)
         for doc in sample["documents"]:
             doc_str = f"Title: {doc['title']}\n{doc['text'].strip()}"
             doc_hash = hash(doc_str)
@@ -398,8 +406,8 @@ def sample_hotpotqa_block_requests(
 
     input_requests = []
     max_len = 0
-    for sample, prompt_doc_ids, document_len in zip(data, doc_ids_by_prompt, document_len_by_prompt):
-        prompt = sample["prompt"]
+    for sample, prompt_doc_ids, document_len, ground_truth in zip(data, doc_ids_by_prompt, document_len_by_prompt, ground_truths):
+        prompt = sample["question"]
         prompt_len = len(tokenizer.encode(prompt))
         output_len = 32 # args.longbench_out_seq_len
         input_requests.append(
@@ -410,6 +418,7 @@ def sample_hotpotqa_block_requests(
                 document_len=document_len,
                 documents=prompt_doc_ids,
                 sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42),
+                ground_truth=ground_truth
             )
         )
         max_len = max(max_len, prompt_len + document_len)
@@ -432,11 +441,14 @@ def sample_2wikimqa_cacheblend_requests(
     doc_hash_to_id: Dict[int, str] = {}
     doc_ids_by_prompt: List[List[str]] = []
     document_len_by_prompt: List[int] = []
+    ground_truths: List[str] = []
     sum_tokens = 0
 
     for sample in data:
         doc_ids = []
         doc_token_count = 0
+        ground_truth = sample["answers"]
+        ground_truths.append(ground_truth)
         for doc in sample["ctxs"]:
             doc_str = f"Title: {doc['title']}\n{doc['text'].strip()}"
             doc_hash = hash(doc_str)
@@ -453,7 +465,7 @@ def sample_2wikimqa_cacheblend_requests(
 
     input_requests = []
     max_len = 0
-    for sample, prompt_doc_ids, document_len in zip(data, doc_ids_by_prompt, document_len_by_prompt):
+    for sample, prompt_doc_ids, document_len, ground_truth in zip(data, doc_ids_by_prompt, document_len_by_prompt, ground_truths):
         prompt = sample["question"]
         prompt_len = len(tokenizer.encode(prompt))
         output_len = 32  # Change as needed (args.longbench_out_seq_len)
@@ -465,6 +477,7 @@ def sample_2wikimqa_cacheblend_requests(
                 document_len=document_len,
                 documents=prompt_doc_ids,
                 sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42),
+                ground_truth=ground_truth,
             )
         )
         max_len = max(max_len, prompt_len + document_len)
@@ -487,11 +500,13 @@ def sample_samsum_cacheblend_requests(
     doc_hash_to_id: Dict[int, str] = {}
     doc_ids_by_prompt: List[List[str]] = []
     document_len_by_prompt: List[int] = []
+    ground_truths: List[str] = []
     sum_tokens = 0
 
     for sample in data:
         doc_ids = []
         doc_token_count = 0
+        ground_truth = sample["answers"]
         for doc in sample["ctxs"]:
             doc_str = f"Title: {doc['title']}\n{doc['text'].strip()}"
             doc_hash = hash(doc_str)
@@ -508,7 +523,7 @@ def sample_samsum_cacheblend_requests(
 
     input_requests = []
     max_len = 0
-    for sample, prompt_doc_ids, document_len in zip(data, doc_ids_by_prompt, document_len_by_prompt):
+    for sample, prompt_doc_ids, document_len, ground_truth in zip(data, doc_ids_by_prompt, document_len_by_prompt, ground_truths):
         prompt = sample["question"]
         prompt_len = len(tokenizer.encode(prompt))
         output_len = 32  # Change as needed (args.longbench_out_seq_len)
@@ -520,6 +535,7 @@ def sample_samsum_cacheblend_requests(
                 document_len=document_len,
                 documents=prompt_doc_ids,
                 sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42),
+                ground_truth=ground_truth,
             )
         )
         max_len = max(max_len, prompt_len + document_len)
@@ -543,11 +559,14 @@ def sample_musique_cacheblend_requests(
     doc_hash_to_id: Dict[int, str] = {}
     doc_ids_by_prompt: List[List[str]] = []
     document_len_by_prompt: List[int] = []
+    ground_truths: List[str] = []
     sum_tokens = 0
 
     for sample in data:
         doc_ids = []
         doc_token_count = 0
+        ground_truth = sample["answers"]
+        ground_truths.append(ground_truth)
         for doc in sample["ctxs"]:
             doc_str = f"Title: {doc['title']}\n{doc['text'].strip()}"
             doc_hash = hash(doc_str)
@@ -564,7 +583,7 @@ def sample_musique_cacheblend_requests(
 
     input_requests = []
     max_len = 0
-    for sample, prompt_doc_ids, document_len in zip(data, doc_ids_by_prompt, document_len_by_prompt):
+    for sample, prompt_doc_ids, document_len, ground_truth in zip(data, doc_ids_by_prompt, document_len_by_prompt, ground_truths):
         prompt = sample["question"]
         prompt_len = len(tokenizer.encode(prompt))
         output_len = 32  # Change as needed (args.longbench_out_seq_len)
@@ -576,6 +595,7 @@ def sample_musique_cacheblend_requests(
                 document_len=document_len,
                 documents=prompt_doc_ids,
                 sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42),
+                ground_truth=ground_truth,
             )
         )
         max_len = max(max_len, prompt_len + document_len)
@@ -626,14 +646,23 @@ async def rag_request_func(
         ):
             timestamp = time.perf_counter()
             if ttft == 0.0:
-                # First token.
-                ttft = time.perf_counter() - st
-                output.ttft = ttft
+                    # First token.
+                    ttft = time.perf_counter() - st
+                    output.ttft = ttft
             else:
                 output.itl.append(timestamp - most_recent_timestamp)
 
             most_recent_timestamp = timestamp
-            generated_texts.append(response)
+            
+            if isinstance(response, str):
+                generated_texts.append(response)
+            elif isinstance(response, tuple) and len(response) == 5:
+                final_response = response
+                final_text, *_ = final_response
+                generated_texts.append(final_text) 
+            else:
+                logger.warning(f"Unexpected response format: {response}")
+
 
         latency = time.perf_counter() - st
         output.generated_text = "".join(generated_texts)
@@ -852,7 +881,6 @@ async def benchmark(
         "total_token_throughput": metrics.total_token_throughput,
         "input_request_ids": input_request_ids,
         "input_lens": [output.prompt_len for output in outputs],
-        "input_texts": [input_requests[i].prompt for i in input_request_ids],
         "document_lens": [input_requests[i].document_len for i in input_request_ids],
         "documents_list": [input_requests[i].documents for i in input_request_ids],
         "output_lens": actual_output_lens,
@@ -860,6 +888,7 @@ async def benchmark(
         "itls": [output.itl for output in outputs],
         "generated_texts": [output.generated_text for output in outputs],
         "errors": [output.error for output in outputs],
+        "ground_truths": [input_requests[i].ground_truth for i in input_request_ids],
     }
 
     def process_one_metric(

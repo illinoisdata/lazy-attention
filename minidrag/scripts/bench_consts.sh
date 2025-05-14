@@ -273,8 +273,8 @@ function get_sut_args() {
         # SUTS_MODEL="meta-llama/Llama-3.1-8B-Instruct"
         # SUTS_MODEL="meta-llama/Llama-3.1-8B-Instruct"
         # SUTS_MODEL="meta-llama/Llama-3.1-70B-Instruct"
-        SUTS_MODEL="ldsjmdy/Tulu3-Block-FT"
-        # SUTS_MODEL="ldsjmdy/Tulu3-RAG"
+        # SUTS_MODEL="ldsjmdy/Tulu3-Block-FT"
+        SUTS_MODEL="ldsjmdy/Tulu3-RAG"
     fi
     echo "Using SUTS_MODEL=${SUTS_MODEL}"
 

@@ -721,7 +721,7 @@ class PromptCacheRAG(RAG):
         self._cache_engine.add_schema(schema, max_tokens=self._cache_max_token)
         self._cached_schemas[doc_set] = schema_name
         logger.info(f"Generated and added PromptCache schema {schema_name} of length {len(schema)}")
-        return schema_name
+        return schema_name, schema
 
     async def iter_generate(
         self,
@@ -730,7 +730,11 @@ class PromptCacheRAG(RAG):
         sampling_params: SamplingParams,
         position_ids: Optional[List[int]] = None,
     ) -> AsyncGenerator[str, None]:
-        schema_name = await self._load_schema_if_not_cached(frozenset(doc_ids))
+        schema_start_time = time.time()
+        schema_name, schema = await self._load_schema_if_not_cached(frozenset(doc_ids))
+        schema_end_time = time.time()
+        schema_time = float((schema_end_time - schema_start_time)*1000)
+        logger.info(f"Schema generation time: {schema_time:.2f} ms")
 
         # Compile XML prompt.
         document_tags = [PROMPT_CACHE_DOCUMENT_TAG_TEMPLATE.format(document_name=f"doc_{doc_id}") for doc_id in doc_ids]
@@ -745,6 +749,7 @@ class PromptCacheRAG(RAG):
             return_full_position_ids=self._lm.use_full_position_ids,
         )
 
+        prompt_inference_start_time = time.time()
         # Generate response.
         output_stream = self._gen_engine.generate(
             token_ids=token_ids,
@@ -754,6 +759,9 @@ class PromptCacheRAG(RAG):
             stream_interval=1,
             use_full_position_ids=self._lm.use_full_position_ids,
         )
+        prompt_inference_end_time = time.time()
+        prompt_inference_time = float((prompt_inference_end_time - prompt_inference_start_time)*1000)
+        logger.info(f"Prompt inference time: {prompt_inference_time:.2f} ms")
 
         # Parse response from output stream. Copied from promptcache::eval.py.
         pre = 0
@@ -765,7 +773,7 @@ class PromptCacheRAG(RAG):
                 yield tt + " "
                 pre = now
         tt = " ".join(output_text[pre:])
-        yield tt
+        yield tt, prompt, schema, schema_time, prompt_inference_time
 
     def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
         for _, schema_name in self._cached_schemas:

@@ -1,5 +1,5 @@
 #/!bin/bash
-
+export PYTHONPATH=.:./promptcache
 int_handler() {
     echo "Interrupted."
     kill $PPID

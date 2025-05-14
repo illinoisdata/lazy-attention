@@ -116,12 +116,52 @@ def grade_chatragbench(
 
     return result_scores
 
+def grade_blockbench_cacheblendbench(
+    args: longbench.LongBenchArgs,
+    result_jsons: Dict[Path, Dict[str, Any]],
+) -> Dict[Path, float]:
 
+    longbench_dataset = longbench.load_dataset(args.longbench_dataset_name)
+    logger.info(f"Loaded {len(longbench_dataset.rows)} LongBench prompts")
+
+    all_classes = longbench_dataset.rows[0].all_classes
+
+    result_scores: Dict[Path, float] = {}
+    for result_path, result_json in result_jsons.items():
+        predictions: List[str] = result_json["generated_texts"]
+        answers: List[List[str]] = result_json["ground_truths"]
+
+        if len(predictions) != len(answers):
+            raise ValueError(
+                f"Mismatch in counts for {result_path.stem}: "
+                f"{len(predictions)} predictions vs {len(answers)} ground_truths"
+            )
+
+        # Compute the LongBench score
+        total_score = longbench.scorer(
+            dataset=args.longbench_dataset_name,
+            predictions=predictions,
+            answers=answers,
+            all_classes=all_classes,
+        )
+        result_scores[result_path] = total_score
+
+        logger.info(
+            f"Block Bench[{args.longbench_dataset_name},{result_path.stem}]: "
+            f"{len(predictions)} predictions, score= {total_score:.4f}"
+        )
+
+    return result_scores
+
+block_bench_dataset_names = ["2wikimqa_block", "hotpotqa_block", "nq_block", "triviaqa_block"]
+cache_blendbench_dataset_names = ["2wikimqa_cacheblend", "samsum_cacheblend", "musique_cacheblend"]
 def grade(args: argparse.Namespace, result_jsons: Dict[Path, Dict[str, Any]]):
     if args.dataset_name == "longbench":
         grade_longbench(args.longbench, result_jsons)
     elif args.dataset_name == "chatragbench":
         grade_chatragbench(args.chatragbench, result_jsons)
+    elif args.dataset_name in block_bench_dataset_names or args.dataset_name in cache_blendbench_dataset_names:
+        grade_blockbench_cacheblendbench(args.longbench, result_jsons)
     else:
         raise ValueError(f"Unknown dataset for grading: {args.dataset_name}")
 
@@ -133,7 +173,7 @@ if __name__ == "__main__":
         "--dataset-name",
         type=str,
         default="random",
-        choices=["random", "chatragbench", "longbench"],
+        choices=["random", "chatragbench", "longbench", "2wikimqa_block", "hotpotqa_block","2wikimqa_cacheblend", "samsum_cacheblend", "musique_cacheblend"],
         help="Name of the dataset to benchmark on.",
     )
     random_group = parser.add_argument_group("random dataset options")
