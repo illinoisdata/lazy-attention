@@ -21,12 +21,16 @@ import torch
 import transformers
 from transformers.cache_utils import DynamicCache
 
-from vllm.v1.engine.async_llm import AsyncLLM
 from vllm.engine.arg_utils import AsyncEngineArgs, EngineArgs
-from vllm import SamplingParams
+from vllm import LLM, SamplingParams
 from vllm.transformers_utils.tokenizer import get_tokenizer as vllm_get_tokenizer
 
 from rag.logging import logger
+
+try:
+    from vllm.v1.engine.async_llm import AsyncLLM
+except ImportError:
+    logger.warning("Missing vllm.v1.engine.async_llm.AsyncLLM (ok for cacheblend)")
 
 DocumentId = int
 
@@ -382,6 +386,72 @@ class LLMRAG(RAG):
             latest_idx = len(generate_output.outputs[0].text)
             if prev_latest_idx < latest_idx:
                 yield generate_output.outputs[0].text[prev_latest_idx:]
+
+    def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
+        pass
+
+    def _next_request_id(self) -> str:
+        request_id = str(self._last_request_id)
+        self._last_request_id += 1
+        return request_id
+
+
+"""
+WARNING: Only works with CacheBlend's vllm
+"""
+class CacheBlendRAG(RAG):
+    def __init__(self, llm: "LLM") -> None:
+        RAG.__init__(self)
+        self._llm = llm
+        self._docs: Dict[DocumentId, str] = {}
+        self._last_request_id: int = 0
+
+        # Enable CacheBlend feature
+        cache_fuse_metadata = (
+            self._llm
+                .llm_engine
+                .model_executor
+                .driver_worker
+                .model_runner
+                .model
+                .model
+                .cache_fuse_metadata
+        )
+        cache_fuse_metadata['collect'] = True
+        cache_fuse_metadata['check'] = False
+
+    def add_cache(self, docs: List[str]) -> List[int]:
+        doc_ids = []
+        for doc in docs:
+            doc_id = len(self._docs)
+            self._docs[doc_id] = doc
+            doc_ids.append(doc_id)
+        return doc_ids
+
+    async def iter_generate(
+        self,
+        doc_ids: List[DocumentId],
+        query: str,
+        sampling_params: SamplingParams,
+        position_ids: Optional[List[int]] = None,
+    ) -> AsyncGenerator[str, None]:
+        request_id = self._next_request_id()
+        preamble = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an intelligent AI assistant. Please answer questions based on the user's instructions. Below are some reference documents that may help you in answering the user's question.\n\n"
+        query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
+        document = [self._docs[doc_id] for doc_id in doc_ids]
+        document = [preamble] + document
+        if isinstance(document, str):
+            context = document
+        else:
+            context = "\n".join(document)
+        prompt = context + "\n\n" + query
+        
+        generate_output = self._llm.generate(
+            prompts=[prompt],
+            sampling_params=sampling_params,
+        )
+        for output in generate_output:
+            yield output.outputs[0].text
 
     def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
         pass
@@ -914,6 +984,11 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
         # async_engine_args.gpu_memory_utilization = 0.8
         logger.info(f"[llmrag] Using async engine args: {async_engine_args}")
         return LLMRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
+    elif args.rag_type == "cacheblend":
+        engine_args = EngineArgs(**dataclasses.asdict(engine_args))
+        engine_args.max_model_len = 8192 * 8
+        logger.info(f"[cacheblend] Using engine args: {engine_args}")
+        return CacheBlendRAG(llm=LLM(**dataclasses.asdict(engine_args)))
     elif args.rag_type == "trrag":
         return TransformerRAG(lm_name=args.trrag_lm_name, method=args.trrag_method)
     elif args.rag_type == "pcrag":

@@ -260,6 +260,7 @@ SUTS=(
     "trragm2v2"
     "trragm3"
     "pcrag"
+    "cacheblend"
     "drag"
 )
 
@@ -317,6 +318,9 @@ function get_sut_args() {
     elif [[ $_SUT == "pcrag" ]]
     then
         sut_args="--rag_type=pcrag --tokenizer ${SUTS_MODEL} --pc_lm_name ${SUTS_MODEL}"
+    elif [[ $_SUT == "cacheblend" ]]
+    then
+        sut_args="--rag_type=cacheblend --tokenizer ${SUTS_MODEL} --model ${SUTS_MODEL}"
     elif [[ $_SUT == "drag" ]]
     then
         sut_args="--rag_type=drag --tokenizer ${SUTS_MODEL} --model ${SUTS_MODEL} --gpu-memory-utilization 0.9 --enforce-eager --enable-prefix-caching"
