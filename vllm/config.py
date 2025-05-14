@@ -3835,6 +3835,7 @@ class CompilationConfig:
         """Parse the CLI value for the compilation config."""
         if cli_value in ["0", "1", "2", "3"]:
             return cls(level=int(cli_value))
+        print(cli_value)
         return cls(**json.loads(cli_value))
 
     def __post_init__(self) -> None:

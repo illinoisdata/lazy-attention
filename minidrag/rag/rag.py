@@ -825,6 +825,61 @@ class DynamicRAG(RAG):
         request_id = str(self._last_request_id)
         self._last_request_id += 1
         return request_id
+    
+class BaseDynamicRAG(RAG):
+    def __init__(self, llm: "AsyncLLM") -> None:
+        RAG.__init__(self)
+        self._llm = llm
+        self._docs: Dict[DocumentId, str] = {}
+        self._last_request_id: int = 0
+
+    def add_cache(self, docs: List[str]) -> List[int]:
+        doc_ids = []
+        for doc in docs:
+            doc_id = len(self._docs)
+            self._docs[doc_id] = doc
+            doc_ids.append(doc_id)
+        return doc_ids
+
+    async def iter_generate(
+        self,
+        doc_ids: List[DocumentId],
+        query: str,
+        sampling_params: SamplingParams,
+        position_ids: Optional[List[int]] = None,
+    ) -> AsyncGenerator[str, None]:
+        request_id = self._next_request_id()
+        latest_idx = 0
+        preamble = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an intelligent AI assistant. Please answer questions based on the user's instructions. Below are some reference documents that may help you in answering the user's question.\n\n"
+        query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
+        document = [self._docs[doc_id] for doc_id in doc_ids]
+        document = [preamble] + document
+        if isinstance(document, str):
+            context = document
+        else:
+            context = "\n".join(document)
+        prompt = context + "\n\n"
+        async for generate_output in self._llm.generate(
+            prompt=query,
+            sampling_params=sampling_params,
+            request_id=request_id,
+            document_seq=[prompt],
+        ):
+            if len(generate_output.outputs) > 1:
+                logger.warning(f"Found {len(generate_output.outputs)} outputs, yielding first one.")
+            prev_latest_idx = latest_idx
+            latest_idx = len(generate_output.outputs[0].text)
+            if prev_latest_idx < latest_idx:
+                yield generate_output.outputs[0].text[prev_latest_idx:]
+
+    def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
+        # Automatically handled by the LLM engine.
+        pass
+
+    def _next_request_id(self) -> str:
+        request_id = str(self._last_request_id)
+        self._last_request_id += 1
+        return request_id
 
 
 @dataclasses.dataclass
@@ -880,6 +935,7 @@ def prepare_lmcache(async_engine_args: AsyncEngineArgs)-> None:
 
 
 def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
+    engine_args.compilation_config=None
     if args.rag_type == "parrot":
         return ParrotRAG()
     elif args.rag_type == "cachep":
@@ -891,7 +947,7 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
         async_engine_args.max_model_len = 8192 * 8
         # prepare_lmcache(async_engine_args)
-        # async_engine_args.gpu_memory_utilization = 0.8
+        async_engine_args.gpu_memory_utilization = 0.7
         logger.info(f"[llmrag] Using async engine args: {async_engine_args}")
         return LLMRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
     elif args.rag_type == "trrag":
@@ -904,12 +960,13 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
             cache_max_token=args.pc_cache_max_token,
         )
     elif args.rag_type == "drag":
+        logger.info(engine_args)
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
         async_engine_args.max_model_len = 8192 * 8
-        # async_engine_args.gpu_memory_utilization = 0.7
+        async_engine_args.gpu_memory_utilization = 0.7
         # prepare_lmcache(async_engine_args)
         logger.info(f"[drag] Using async engine args: {async_engine_args}")
-        return DynamicRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
+        return BaseDynamicRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
     logger.error(f"Invalid RAG type {args.rag_type}")
     sys.exit(1)
     

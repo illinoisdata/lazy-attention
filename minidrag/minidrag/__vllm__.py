@@ -2,14 +2,6 @@ from __future__ import annotations  # isort:skip
 
 import os
 
-from minidrag._custom_ops import (
-    rotary_embedding_q, 
-    batched_rotary_embedding_q,
-)
-from minidrag.model_executor.layers.rotary_embedding import (
-    forward_cuda as rotary_embedding_forward_cuda,
-    forward_native as rotary_embedding_forward_native,
-)
 from minidrag.attention.backends.triton_attn import forward as triton_attn_forward
 from minidrag.attention.layer import (
     forward as attn_layer_forward,
@@ -29,6 +21,9 @@ from minidrag.engine.processor import process_inputs as llm_engine_process_input
 from minidrag.engine import EngineCoreRequest, EngineCoreEventType
 from minidrag.engine.core import LazyEngineCoreProc
 
+from minidrag.worker.gpu_input_batch import CachedRequestState
+from minidrag.worker.gpu_model_runner import LazyGPUModelRunner
+
 # scheduler
 from minidrag.core.sched.scheduler import MiniDynamicRAGScheduler
 
@@ -44,12 +39,12 @@ def proc_patch():
     import vllm as _vllm
     # TODO: fix the routering problem, when reuse and when not reuse
     # # Step 1.1: Patch hash function for block content (Removed)
-    # Step 1.2: Patch custom ops
-    _vllm._custom_ops.rotary_embedding_q = rotary_embedding_q
-    _vllm._custom_ops.batched_rotary_embedding_q = batched_rotary_embedding_q
-    # Step 1.3: Patch RotaryEmbedding forward functions
-    _vllm.model_executor.layers.rotary_embedding.RotaryEmbedding.forward_cuda = rotary_embedding_forward_cuda
-    _vllm.model_executor.layers.rotary_embedding.RotaryEmbedding.forward_native = rotary_embedding_forward_native
+    # # Step 1.2: Patch custom ops
+    # _vllm._custom_ops.rotary_embedding_q = rotary_embedding_q
+    # _vllm._custom_ops.batched_rotary_embedding_q = batched_rotary_embedding_q
+    # # Step 1.3: Patch RotaryEmbedding forward functions
+    # _vllm.model_executor.layers.rotary_embedding.RotaryEmbedding.forward_cuda = rotary_embedding_forward_cuda
+    # _vllm.model_executor.layers.rotary_embedding.RotaryEmbedding.forward_native = rotary_embedding_forward_native
     # Step 1.4: Patch triton attention forward function
     import vllm.v1.attention.backends.triton_attn
     vllm.v1.attention.backends.triton_attn.TritonAttentionImpl.forward = triton_attn_forward
@@ -85,6 +80,12 @@ def proc_patch():
     vllm.v1.engine.core.EngineCoreProc = LazyEngineCoreProc
     import vllm.v1.engine.core_client
     vllm.v1.engine.core_client.EngineCoreProc = LazyEngineCoreProc
+    
+    # Patch the model runner
+    import vllm.v1.worker
+    vllm.v1.worker.gpu_input_batch.CachedRequestState = CachedRequestState
+    vllm.v1.worker.gpu_model_runner.GPUModelRunner = LazyGPUModelRunner
+    
     
     # Step 3: finally, we patch the backend for scehduling
     import vllm.v1.core.sched.scheduler

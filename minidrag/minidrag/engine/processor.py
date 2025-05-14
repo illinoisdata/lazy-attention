@@ -47,15 +47,17 @@ def process_inputs(
     # TODO(woosuk): Support pooling models.
     # TODO(woosuk): Support encoder-decoder models.
     self._validate_lora(lora_request)
-    self._validate_params(params)
+    self._validate_params(params, lora_request)
     if priority != 0:
         raise ValueError("V1 does not support priority yet.")
     if trace_headers is not None:
         raise ValueError("V1 does not support tracing yet.")
     if prompt_adapter_request is not None:
         raise ValueError("V1 does not support prompt_adapter_request.")
+    
     if arrival_time is None:
         arrival_time = time.time()
+        
     # Process inputs, which includes:
     # 1. Tokenize text prompt, with LoRA request if one exists.
     # 2. For multimodal models with a merged preprocessor, preprocess
@@ -79,9 +81,11 @@ def process_inputs(
     documents_token_ids = None
     documents_hash = None
     document_seq_hash = None
+    real_doc_lens = None
     if document_seq is not None:
         documents_token_ids = []
         documents_hash = []
+        real_doc_lens = []
         for doc in document_seq:
             processed_document_seq: ProcessorInputs = self.input_preprocessor.preprocess(
                 doc,
@@ -92,6 +96,7 @@ def process_inputs(
             encoder_inputs, decoder_inputs = split_enc_dec_inputs(processed_document_seq)
             # check the length of the document sequence
             doc_token_ids = decoder_inputs["prompt_token_ids"]
+            real_doc_lens.append(len(doc_token_ids))
             nearest_multiple = ((len(doc_token_ids) + block_size - 1) // block_size) * block_size
             # pad the document sequence
             # left padding
@@ -121,11 +126,15 @@ def process_inputs(
     # ////////////////////////////////////////
 
     eos_token_id = self.input_preprocessor.get_eos_token_id(lora_request)
+    
     self._validate_model_inputs(processed_inputs, lora_request)
+    
     encoder_inputs, decoder_inputs = split_enc_dec_inputs(processed_inputs)
+    
     # TODO: Impl encoder-decoder
     if encoder_inputs is not None:
         raise NotImplementedError
+    
     assert isinstance(params, SamplingParams)
     # TODO: can we avoid cloning here in multiproc case?
     sampling_params = params.clone()
@@ -138,6 +147,7 @@ def process_inputs(
         self.generation_config_fields, eos_token_id)
     sampling_params.update_from_tokenizer(
         self.tokenizer.get_lora_tokenizer(lora_request))
+    
     # Multimodal related.
     sorted_mm_inputs: Optional[Sequence[Optional[MultiModalKwargs]]] = None
     sorted_mm_positions: Optional[list[PlaceholderRange]] = None
@@ -155,6 +165,7 @@ def process_inputs(
             decoder_inputs["mm_placeholders"],
             decoder_inputs["mm_hashes"] if self.use_hash else None,
         )
+        
         # The output of merged multi-modal processor (`decoder_mm_inputs`)
         # is a single MultiModalKwargs for all items from all modalities.
         # This code flattens kwargs for individual items in a list and
@@ -164,6 +175,7 @@ def process_inputs(
         if len(unique_modalities) > 1:
             orig_sorted_mm_inputs = []
             used_indices = {modality: 0 for modality in unique_modalities}
+            
             for modality in sorted_item_modalities:
                 items = decoder_mm_inputs.get_items(modality)
                 item = items[used_indices[modality]]
@@ -175,11 +187,13 @@ def process_inputs(
                 MultiModalKwargs.from_items([item]) for item in
                 decoder_mm_inputs.get_items(sorted_item_modalities[0])
             ]
+            
         if sorted_mm_hashes is not None:
             sorted_mm_inputs = self.mm_input_cache_client.get_and_update_p0(
                 orig_sorted_mm_inputs, sorted_mm_hashes)
         else:
             sorted_mm_inputs = orig_sorted_mm_inputs
+            
     return decoder_inputs.get("prompt"), EngineCoreRequest(
         request_id=request_id,
         prompt_token_ids=decoder_inputs["prompt_token_ids"],
@@ -192,6 +206,7 @@ def process_inputs(
         lora_request=lora_request,
         cache_salt=decoder_inputs.get("cache_salt"),
         # For dynamic rag
+        real_doc_lens=real_doc_lens,
         documents_token_ids=documents_token_ids,
         document_seq_hash=document_seq_hash,
     )

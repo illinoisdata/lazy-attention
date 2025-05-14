@@ -58,13 +58,6 @@ class FlashAttentionMetadata:
     seq_lens: torch.Tensor
     block_table: torch.Tensor
     slot_mapping: torch.Tensor
-    
-    # For lazy attention.
-    # Each query can has document(s) optionally. When the number of 
-    # documents is 0, it means that the query is not a document query. 
-    nums_docs: torch.Tensor
-    lens_docs: torch.Tensor  
-    doc_padding_lens: torch.Tensor
 
     # For cascade attention.
     use_cascade: bool
@@ -76,6 +69,14 @@ class FlashAttentionMetadata:
     # Optional aot scheduling
     scheduler_metadata: Optional[torch.Tensor] = None
     prefix_scheduler_metadata: Optional[torch.Tensor] = None
+    
+    # For lazy attention.
+    # Each query can has document(s) optionally. When the number of 
+    # documents is 0, it means that the query is not a document query. 
+    is_lazy_req: Optional[torch.Tensor] = None
+    # shape as block_table
+    lazy_offset: Optional[torch.Tensor] = None  
+    lazy_mask: Optional[torch.Tensor] = None
 
     # for local attention
     @dataclass
@@ -86,5 +87,9 @@ class FlashAttentionMetadata:
         local_max_query_len: int
         local_max_seq_len: int
         local_scheduler_metadata: Optional[torch.Tensor]
+        
+        local_is_lazy_req: Optional[torch.Tensor] = None
+        local_lazy_offset: Optional[torch.Tensor] = None
+        local_lazy_mask: Optional[torch.Tensor] = None
 
     local_attn_metadata: Optional[LocalAttentionMetadata] = None

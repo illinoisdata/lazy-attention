@@ -6,9 +6,8 @@ import torch
 
 from vllm import _custom_ops as ops
 from vllm.platforms import current_platform
-from vllm.v1.attention.backends.flash_attn import (
-    FlashAttentionMetadata)
 
+from .flash_attn import FlashAttentionMetadata
 from ..ops.triton_unified_attention import unified_attention
 
 # class TritonAttentionImpl(AttentionImpl):
@@ -20,7 +19,6 @@ def forward(
     value: torch.Tensor,
     kv_cache: torch.Tensor,
     attn_metadata: FlashAttentionMetadata,
-    lazy_metadata: Optional[torch.Tensor] = None,
     cos_sin_cache: Optional[torch.Tensor] = None,
     rotary_dim: Optional[int] = None,
     is_neox_style: bool = True,
@@ -92,12 +90,20 @@ def forward(
         max_seqlen_q = local_metadata.local_max_query_len
         max_seqlen_k = local_metadata.local_max_seq_len
         block_table = local_metadata.local_block_table
+        # ////
+        is_lazy_req = local_metadata.local_is_lazy_req
+        lazy_mask = local_metadata.local_lazy_mask
+        lazy_offset = local_metadata.local_lazy_offset
     else:
         cu_seqlens_q = attn_metadata.query_start_loc
         seqused_k = attn_metadata.seq_lens
         max_seqlen_q = attn_metadata.max_query_len
         max_seqlen_k = attn_metadata.max_seq_len
         block_table = attn_metadata.block_table
+        # ////
+        is_lazy_req = attn_metadata.is_lazy_req
+        lazy_mask = attn_metadata.lazy_mask
+        lazy_offset = attn_metadata.lazy_offset
 
     descale_shape = (cu_seqlens_q.shape[0] - 1, key.shape[1])
 
@@ -119,8 +125,10 @@ def forward(
         q_descale=None,  # Not supported
         k_descale=layer._k_scale.expand(descale_shape),
         v_descale=layer._v_scale.expand(descale_shape),
-        lazy_metadata=lazy_metadata,
         cos_sin_cache=cos_sin_cache,
+        is_lazy_req=is_lazy_req,
+        lazy_mask=lazy_mask,
+        lazy_offset=lazy_offset,
         rotary_dim=rotary_dim,
         is_neox_style=is_neox_style,
     )

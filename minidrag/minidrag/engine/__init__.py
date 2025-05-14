@@ -47,6 +47,7 @@ class EngineCoreRequest(
     # Extra arguments for dynamic rag
     documents_token_ids: Optional[list[list[int]]]
     document_seq_hash: Optional[str]
+    real_doc_lens: Optional[list[int]]
 
     # Used in DP case to indicate which wave of requests this is expected to
     # belong to, to cover a race condition where the request is sent before

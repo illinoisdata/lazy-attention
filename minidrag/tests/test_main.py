@@ -44,37 +44,37 @@ class TestMiniDRAG:
             cleanup_dist_env_and_memory()
             torch.cuda.synchronize()
 
-    # @pytest.mark.gpu
-    # @pytest.mark.integration
-    # def test_e2e_simple_async(self, 
-    #                     mock_model_name,):
-    #     torch.cuda.empty_cache()
-    #     model = None
-    #     try:    
-    #         import asyncio
-    #         import time
-    #         from vllm import AsyncEngineArgs, SamplingParams
-    #         from vllm.v1.engine.async_llm import AsyncLLM
+    @pytest.mark.gpu
+    @pytest.mark.integration
+    def test_e2e_simple_async(self, 
+                        mock_model_name,):
+        torch.cuda.empty_cache()
+        model = None
+        try:    
+            import asyncio
+            import time
+            from vllm import AsyncEngineArgs, SamplingParams
+            from vllm.v1.engine.async_llm import AsyncLLM
 
-    #         engine_args = AsyncEngineArgs(model=mock_model_name, 
-    #                                       enforce_eager=False, 
-    #                                       max_model_len=2048)
-    #         model = AsyncLLM.from_engine_args(engine_args)
+            engine_args = AsyncEngineArgs(model=mock_model_name, 
+                                          enforce_eager=False, 
+                                          max_model_len=2048)
+            model = AsyncLLM.from_engine_args(engine_args)
 
-    #         async def generate_streaming(prompt):
-    #             results_generator = model.generate(prompt, 
-    #                                             SamplingParams(seed=42, temperature=0), 
-    #                                             request_id='1', # DO NOT USE arrival time-like id, will be blocked
-    #                                             document_seq=["doc1 "*5, "doc2 "*5],)
-    #             previous_text = ""
-    #             async for request_output in results_generator:
-    #                 text = request_output.outputs[0].text
-    #                 print(text[len(previous_text):], end="")
-    #                 previous_text = text
+            async def generate_streaming(prompt):
+                results_generator = model.generate(prompt, 
+                                                SamplingParams(seed=42, temperature=0), 
+                                                request_id='1', # DO NOT USE arrival time-like id, will be blocked
+                                                document_seq=["doc1 "*5, "doc2 "*5],)
+                previous_text = ""
+                async for request_output in results_generator:
+                    text = request_output.outputs[0].text
+                    print(text[len(previous_text):], end="")
+                    previous_text = text
 
-    #         asyncio.run(generate_streaming("Hello world! Jane is a student in"))
-    #     finally:
-    #         if model is not None:
-    #             del model
-    #         cleanup_dist_env_and_memory()
-    #         torch.cuda.synchronize()
+            asyncio.run(generate_streaming("Hello world! Jane is a student in"))
+        finally:
+            if model is not None:
+                del model
+            cleanup_dist_env_and_memory()
+            torch.cuda.synchronize()

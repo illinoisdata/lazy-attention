@@ -5,7 +5,7 @@ This class is a wrapper around the original Request class from vllm.
 """
 
 import enum
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Optional, Union, Any
 
 from vllm.multimodal.inputs import MultiModalKwargs, PlaceholderRange
 from vllm.sampling_params import SamplingParams
@@ -14,6 +14,7 @@ from vllm.v1.engine import (EngineCoreEvent,
                             FinishReason)
 from vllm.v1.structured_output.request import StructuredOutputRequest
 from vllm.v1.utils import ConstantList
+from vllm.distributed.kv_transfer.kv_connector.v1 import KVTransferParams
 
 if TYPE_CHECKING:
     from vllm.lora.request import LoRARequest
@@ -41,6 +42,7 @@ class _Request:
         # Extra attributes for DynamicRAG
         documents_token_ids: Optional[list[list[int]]] = None,
         document_seq_hash: Optional[str] = None,
+        real_doc_lens: Optional[int] = None,
     ) -> None:
         self.request_id = request_id
         self.sampling_params = sampling_params
@@ -71,6 +73,15 @@ class _Request:
         self.mm_hashes: list[str] = multi_modal_hashes or []
         self.num_encoder_inputs = len(self.mm_inputs)
         self.has_encoder_inputs = self.num_encoder_inputs > 0
+        
+        # P/D: KV transfer parameters (raw and parsed).
+        raw_params = (None if sampling_params.extra_args is None
+                      else sampling_params.extra_args.get(
+                          "kv_transfer_params", None))
+        self.raw_kv_transfer_params: Optional[dict[str, Any]] = raw_params
+        # Each connector parses the raw dictionary and sets this
+        # attr the first time that the request is processed.
+        self.kv_transfer_params: Optional[KVTransferParams] = None
 
         # Sanity check
         assert len(self.mm_inputs) == len(self.mm_positions)
@@ -88,6 +99,7 @@ class _Request:
         # Get extra attributes for DynamicRAG
         self.documents_token_ids = documents_token_ids
         self.document_seq_hash = document_seq_hash
+        self.real_doc_lens = real_doc_lens
         # Obtain the length of each document
         self.len_documents = None
         self.num_computed_tokens_docs = None
@@ -128,6 +140,7 @@ class _Request:
             # Extra attributes for DynamicRAG
             documents_token_ids=request.documents_token_ids,
             document_seq_hash=request.document_seq_hash,
+            real_doc_lens=request.real_doc_lens,
         )
 
     def append_output_token_ids(
@@ -198,6 +211,7 @@ class RequestStatus(enum.IntEnum):
     """Status of a request."""
     WAITING = enum.auto()
     WAITING_FOR_FSM = enum.auto()
+    WAITING_FOR_REMOTE_KVS = enum.auto()
     RUNNING = enum.auto()
     PREEMPTED = enum.auto()
     # Note: anything after PREEMPTED will be considered

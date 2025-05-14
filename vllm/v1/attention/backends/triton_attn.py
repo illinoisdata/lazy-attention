@@ -138,9 +138,6 @@ class TritonAttentionImpl(AttentionImpl):
             # Profiling run.
             return output
         
-        print(f"Attention Metadata block_table: {attn_metadata.block_table}")
-        print(f"Attention Metadata block_table shape: {attn_metadata.block_table.shape}")
-        
         assert attn_metadata.use_cascade is False
 
         # IMPORTANT!

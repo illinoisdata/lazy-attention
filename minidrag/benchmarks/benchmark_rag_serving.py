@@ -812,7 +812,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--sample-requests",
         type=int,
-        default=20,
+        default=5,
         help="IF set, randomly sample this many requests with replacement to test.",
     )
     parser.add_argument(

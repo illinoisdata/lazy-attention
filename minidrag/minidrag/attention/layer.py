@@ -62,7 +62,6 @@ def forward(
             if self.use_direct_call:
                 forward_context: ForwardContext = get_forward_context()
                 attn_metadata = forward_context.attn_metadata
-                lazy_metadata = forward_context.lazy_metadata
                 if isinstance(attn_metadata, dict):
                     attn_metadata = attn_metadata[self.layer_name]
                 self_kv_cache = self.kv_cache[forward_context.virtual_engine]
@@ -72,7 +71,6 @@ def forward(
                                   value,
                                   self_kv_cache,
                                   attn_metadata,
-                                  lazy_metadata,
                                   cos_sin_cache,
                                   rotary_dim,
                                   is_neox_style,
@@ -103,7 +101,8 @@ def dynamic_unified_attention_with_output(
 
     forward_context: ForwardContext = get_forward_context()
     attn_metadata = forward_context.attn_metadata
-    lazy_metadata = forward_context.lazy_metadata
+    if isinstance(attn_metadata, dict):
+        attn_metadata = attn_metadata[layer_name]
     self = forward_context.no_compile_layers[layer_name]
     kv_cache = self.kv_cache[forward_context.virtual_engine]
     self.impl.forward(self,
@@ -112,7 +111,6 @@ def dynamic_unified_attention_with_output(
                       value,
                       kv_cache,
                       attn_metadata,
-                      lazy_metadata,
                       cos_sin_cache,
                       rotary_dim,
                       is_neox_style,

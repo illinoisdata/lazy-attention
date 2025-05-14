@@ -33,8 +33,8 @@ def apply_softcap(S, x):
 def kernel_unified_attention_2d(
     output_ptr,  # [num_tokens, num_query_heads, head_size]
     query_ptr,  # [num_tokens, num_query_heads, head_size]
-    key_cache_ptr,  # [num_blks, num_kv_heads, head_size // x, blk_size, x]
-    value_cache_ptr,  # [num_blks, num_kv_heads, head_size, blk_size]
+    key_cache_ptr,  # [num_blks, blk_size, num_kv_heads, head_size]
+    value_cache_ptr,  # [num_blks, blk_size, num_kv_heads, head_size]
     block_tables_ptr,  # [num_seqs, max_num_blocks_per_seq]
     seq_lens_ptr,  # [num_seqs]
     alibi_slopes_ptr,  # [num_query_heads]
@@ -67,14 +67,19 @@ def kernel_unified_attention_2d(
     BLOCK_Q: tl.constexpr,  # int
     num_seqs: tl.int32,
     # //////////////////////////////////
-    num_docs_ptr, # [num_seqs], used to skip
+    cos_sin_cache_ptr,
+    # ROTARY_DIM: tl.constexpr, # int not used
+    # IS_NEOX_STYLE: tl.constexpr, # not used
+    is_lazy_req_ptr, # [num_seqs], used to skip
     # if is a document query, the query is start after the documents
     # e.g., two docs, one [16, 16, 14] and one [16]
     # [-2, 0, 0, -46]
-    block_table_offse_ptr, # [num_seqs, max_num_blocks_per_seq] ~ same a block_tables_ptr
+    lazy_offset_ptr, # [num_seqs, max_num_blocks_per_seq] ~ same a block_tables_ptr
     # [16, 16, 14, 16], here 14 means 2 tokens in the block will be masked
-    block_table_mask_ptr, # [num_seqs, max_num_blocks_per_seq] ~ same a block_tables_ptr
-):
+    lazy_mask_ptr, # [num_seqs, max_num_blocks_per_seq] ~ same a block_tables_ptr
+):  
+    # Note(haocheng): assume rotary_dim is always equal to head_size
+    # assert ROTARY_DIM == HEAD_SIZE, "rotary_dim should be equal to head_size"
 
     q_block_global_idx = tl.program_id(0)
     kv_head_idx = tl.program_id(1)
@@ -98,10 +103,10 @@ def kernel_unified_attention_2d(
     cur_batch_in_all_start_index = tl.load(query_start_len_ptr + seq_idx)
     cur_batch_in_all_stop_index = tl.load(query_start_len_ptr + seq_idx + 1)
     
-    # Note(haocheng): If cur_num_docs is 0, it means that the query is not a 
+    # Note(haocheng): If is_lazy_req is false, it means that the query is not a 
     # document query, in this case, no need to do anything.
     # Otherwise, we need to rotate the query according to the document layout.
-    cur_num_docs = tl.load(num_docs_ptr + seq_idx)
+    is_lazy = tl.load(is_lazy_req_ptr + seq_idx)
 
     cur_batch_query_len = cur_batch_in_all_stop_index \
         - cur_batch_in_all_start_index
@@ -110,10 +115,12 @@ def kernel_unified_attention_2d(
         return
 
     offs_m = tl.arange(0, BLOCK_Q * num_queries_per_kv)
-    # offs_d = tl.arange(0, HEAD_SIZE_PADDED)
+    offs_d = tl.arange(0, HEAD_SIZE_PADDED)
+    
+    embed_dim: tl.constexpr = HEAD_SIZE // 2
     offs_d_0 = tl.arange(0, HEAD_SIZE_PADDED // 2)
-    # offs_d_1 = offs_d_0 + HEAD_SIZE // 2
-
+    offs_d_1 = offs_d_0 + embed_dim
+    
     query_pos = q_block_local_idx * BLOCK_Q + offs_m // num_queries_per_kv
 
     query_offset_0 = cur_batch_in_all_start_index + query_pos
@@ -122,19 +129,31 @@ def kernel_unified_attention_2d(
 
     # query_offset = (query_offset_0[:, None] * query_stride_0 +
     #                 query_offset_1[:, None] * query_stride_1 + offs_d[None, :])
-    query_offset_0 = (query_offset_0[:, None] * query_stride_0 + 
-                      query_offset_1[:, None] * query_stride_1 + offs_d_0[None, :])
-    # query_offset_1 = query_offset_0 + HEAD_SIZE // 2
+    query_load_offset_0 = (query_offset_0[:, None] * query_stride_0 + 
+                           query_offset_1[:, None] * query_stride_1 + offs_d_0[None, :])
+    # query_load_offset_1 = query_load_offset_0 + embed_dim
 
-    # dim_mask = tl.where(offs_d < HEAD_SIZE, 1, 0).to(tl.int1)
-    dim_mask_half = tl.where(offs_d_0 < HEAD_SIZE // 2, 1, 0).to(tl.int1)
+    dim_mask = tl.where(offs_d < HEAD_SIZE, 1, 0).to(tl.int1)
+    dim_mask_half = tl.where(offs_d_0 < embed_dim, 1, 0).to(tl.int1)
     query_mask_0 = tl.where(query_pos < cur_batch_query_len, 1, 0).to(tl.int1)
     query_mask_1 = tl.where(query_offset_1 < num_query_heads, 1, 0).to(tl.int1)
 
-    # Q : (BLOCK_Q * num_queries_per_kv, HEAD_SIZE,)
-    Q = tl.load(
-        query_ptr + query_offset,
-        mask=dim_mask[None, :] & query_mask_0[:, None] & query_mask_1[:, None],
+    # # Q : (BLOCK_Q * num_queries_per_kv, HEAD_SIZE,)
+    # Q = tl.load(
+    #     query_ptr + query_offset,
+    #     mask=dim_mask[None, :] & query_mask_0[:, None] & query_mask_1[:, None],
+    #     other=0.0,
+    # )
+    
+    Q_0 = tl.load(
+        query_ptr + query_load_offset_0,
+        mask=dim_mask_half[None, :] & query_mask_0[:, None] & query_mask_1[:, None],
+        other=0.0,
+    )
+    
+    Q_1 = tl.load(
+        query_ptr + query_load_offset_0 + embed_dim,
+        mask=dim_mask_half[None, :] & query_mask_0[:, None] & query_mask_1[:, None],
         other=0.0,
     )
 
@@ -163,6 +182,46 @@ def kernel_unified_attention_2d(
 
     # iterate through tiles
     for j in range(0, num_blocks):
+        
+        if is_lazy:
+            # try to rotate the query according to the document layout
+            rotate_offset = tl.load(lazy_offset_ptr + block_table_offset + j)
+            if rotate_offset > 0:
+                # rotate backwards
+                # clockwise rotation: reverse position embedding
+                # [ cos sin]
+                # [-sin cos]
+                position = tl.full([BLOCK_Q * num_queries_per_kv], 
+                                   rotate_offset, dtype=tl.int32)
+                cos_val = tl.load(cos_sin_cache_ptr + 
+                                  (position[:, None] * HEAD_SIZE +
+                                  offs_d_0[None,:]),
+                                  mask=dim_mask_half[None,:],
+                                  other=0.0)
+                sin_val = tl.load(cos_sin_cache_ptr + 
+                                  (position[:, None] * HEAD_SIZE +
+                                  offs_d_1[None,:]),
+                                  mask=dim_mask_half[None,:],
+                                  other=0.0)
+                # Note(haocheng): it is reverse rotation
+                temp_Q_0 = Q_0 * cos_val + Q_1 * sin_val
+                temp_Q_1 = -Q_0 * sin_val + Q_1 * cos_val
+                Q_0 = temp_Q_0
+                Q_1 = temp_Q_1
+                
+            elif rotate_offset < 0:
+                # reload
+                Q_0 = tl.load(
+                    query_ptr + query_load_offset_0,
+                    mask=dim_mask_half[None, :] & query_mask_0[:, None] & query_mask_1[:, None],
+                    other=0.0,
+                )
+                    
+                Q_1 = tl.load(
+                    query_ptr + query_load_offset_0 + embed_dim,
+                    mask=dim_mask_half[None, :] & query_mask_0[:, None] & query_mask_1[:, None],
+                    other=0.0,
+                )
 
         physical_block_idx = tl.load(block_tables_ptr + block_table_offset + j)
 
@@ -173,24 +232,48 @@ def kernel_unified_attention_2d(
                     offs_d[None, :] * stride_v_cache_3 +
                     offs_n[:, None] * stride_v_cache_1)
 
-        k_offset = (physical_block_idx * stride_k_cache_0 +
-                    kv_head_idx * stride_k_cache_2 +
-                    offs_d[:, None] * stride_k_cache_3 +
-                    offs_n[None, :] * stride_k_cache_1)
+        # k_offset = (physical_block_idx * stride_k_cache_0 +
+        #             kv_head_idx * stride_k_cache_2 +
+        #             offs_d[:, None] * stride_k_cache_3 +
+        #             offs_n[None, :] * stride_k_cache_1)
 
-        # K : (HEAD_SIZE, BLOCK_SIZE)
-        K_load = tl.load(key_cache_ptr + k_offset,
-                         mask=dim_mask[:, None],
-                         other=0.0)
+        # # K : (HEAD_SIZE, BLOCK_SIZE)
+        # K_load = tl.load(key_cache_ptr + k_offset,
+        #                  mask=dim_mask[:, None],
+        #                  other=0.0)
 
-        if K_load.dtype.is_fp8():
-            if Q.dtype.is_fp8():
-                K = K_load
+        # if K_load.dtype.is_fp8():
+        #     if Q.dtype.is_fp8():
+        #         K = K_load
+        #     else:
+        #         K = (K_load.to(tl.float32) * tl.load(k_scale)).to(Q.dtype)
+        # else:
+        #     K = K_load
+        
+        # Note(haocheng): load K in two parts as well
+        k_offset_0 = (physical_block_idx * stride_k_cache_0 +
+                      kv_head_idx * stride_k_cache_2 +
+                      offs_d_0[:, None] * stride_k_cache_3 +
+                      offs_n[None, :] * stride_k_cache_1)
+        
+        K_load_0 = tl.load(key_cache_ptr + k_offset_0,
+                           mask=dim_mask_half[:,None],
+                           other=0.0)
+        K_load_1 = tl.load(key_cache_ptr + k_offset_0 + embed_dim * stride_k_cache_3,
+                           mask=dim_mask_half[:,None],
+                           other=0.0)
+        
+        if K_load_0.dtype.is_fp8():
+            if Q_0.dtype.is_fp8():
+                K_0 = K_load_0
+                K_1 = K_load_1
             else:
-                K = (K_load.to(tl.float32) * tl.load(k_scale)).to(Q.dtype)
+                K_0 = (K_load_0.to(tl.float32) * tl.load(k_scale)).to(Q_0.dtype)
+                K_1 = (K_load_1.to(tl.float32) * tl.load(k_scale)).to(Q_1.dtype)
         else:
-            K = K_load
-
+            K_0 = K_load_0
+            K_1 = K_load_1
+        
         # V : (BLOCK_SIZE, HEAD_SIZE)
         V_load = tl.load(value_cache_ptr + v_offset,
                          mask=dim_mask[None, :],
@@ -212,13 +295,21 @@ def kernel_unified_attention_2d(
         S = tl.zeros(shape=(BLOCK_Q * num_queries_per_kv, BLOCK_SIZE),
                      dtype=tl.float32)
 
-        S += scale * tl.dot(Q, K)
+        # S += scale * tl.dot(Q, K)
+        S += scale * (tl.dot(Q_0, K_0) + tl.dot(Q_1, K_1))
 
         if USE_SOFTCAP:
             S = apply_softcap(S, softcap)
 
-        S = tl.where(query_mask_1[:, None] & query_mask_0[:, None] & seq_mask,
+        # Note(haocheng): here we use mask to mask out padding tokens
+        lazy_padding_mask = (tl.arange(0, BLOCK_SIZE) < 
+            tl.load(lazy_mask_ptr + block_table_offset + j))
+        S = tl.where(query_mask_1[:, None] & query_mask_0[:, None] & 
+                     lazy_padding_mask[None, :] & seq_mask,
                      S, float("-inf"))
+        # S = tl.where(query_mask_1[:, None] & query_mask_0[:, None] & seq_mask,
+        #              S, float("-inf"))
+
 
         if SLIDING_WINDOW > 0:
             S = tl.where((context_len + query_pos[:, None] - seq_offset)
@@ -285,6 +376,14 @@ def unified_attention(
     k_descale,
     v_descale,
     alibi_slopes=None,
+    # ////////////////////////////////////
+    cos_sin_cache=None,
+    is_lazy_req=None,
+    lazy_offset=None,
+    lazy_mask=None,
+    # TODO(haocheng): not used
+    rotary_dim=None,
+    is_neox_style=None,
 ):
     assert causal, "Only causal attention is supported"
     assert q_descale is None, "Q scales not supported"
@@ -351,4 +450,9 @@ def unified_attention(
         query_start_len_ptr=cu_seqlens_q,
         BLOCK_Q=BLOCK_Q,
         num_seqs=num_seqs,
+        # //////////////////////////////////
+        cos_sin_cache_ptr=cos_sin_cache,
+        is_lazy_req_ptr=is_lazy_req,
+        lazy_offset_ptr=lazy_offset,
+        lazy_mask_ptr=lazy_mask,
     )

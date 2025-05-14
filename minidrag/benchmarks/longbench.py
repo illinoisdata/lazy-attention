@@ -38,7 +38,7 @@ DATASET_NAMES = [
 @dataclasses.dataclass
 class LongBenchArgs:
     longbench_dataset_name: str = "narrativeqa"  # LongBench dataset name.
-    longbench_out_seq_len: int = 512
+    longbench_out_seq_len: int = 32
 
 
 @dataclasses.dataclass
@@ -114,8 +114,6 @@ def split_context(context: str, dataset_name: str) -> Union[str, List[str]]:
     res.append("\n".join(lines[passage_line:]))
     assert num_passages == len(res)
     return res
-
-
 
 """Accuracy Measurments"""
 

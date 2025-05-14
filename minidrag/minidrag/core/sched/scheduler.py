@@ -30,13 +30,14 @@ from vllm.v1.structured_output import StructuredOutputManager
 
 from vllm.v1.core.sched.scheduler import Scheduler as OriginalV1Scheduler
 
-# from minidrag.core.sched.output import NewRequestData, CachedRequestData, SchedulerOutput
-from vllm.v1.core.sched.output import SchedulerOutput, NewRequestData, CachedRequestData
+from vllm.v1.core.kv_cache_manager import KVCacheBlocks
+from vllm.v1.core.sched.output import SchedulerOutput, CachedRequestData
 
 from minidrag.core.kv_cache_manager import DragKVCacheManager as KVCacheManager
 from minidrag.request import _Request as Request
 from minidrag.request import RequestStatus
 from minidrag.engine import EngineCoreRequest, EngineCoreEventType
+from minidrag.core.sched.output import NewRequestData
 
 
 """ Different from the original V1Scheduler, this scheduler need to process the documents inner the 
@@ -109,6 +110,9 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         # This is flushed at the end of each scheduling step.
         self.finished_req_ids: set[str] = set()
 
+        # P/D: requests in process of recving KV transfers
+        self.finished_recving_kv_req_ids: set[str] = set()
+        
         # OPTIMIZATION: Cache the CachedRequestData objects to avoid creating
         # them at each scheduling step.
         # Request id -> deque of CachedRequestData
@@ -185,6 +189,9 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
 
         # For logging.
         scheduled_timestamp = time.monotonic()
+        
+        req_to_lazy_mask: dict[str, list[int]] = {}
+        req_to_lazy_offset: dict[str, list[int]] = {}
 
         # ///////////////////////////////////////////////////////////////////////
         # First, schedule the RUNNING requests.
@@ -271,9 +278,7 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                 # Therefore, we might introduce some additional
                 # cycle to fill in the bitmask, which could be a big no-op.
                 structured_output_request_ids[request.request_id] = req_index
-            req_to_new_block_ids[request.request_id] = [
-                b.block_id for b in new_blocks
-            ]
+            req_to_new_block_ids[request.request_id] = new_blocks.get_block_ids()
             num_scheduled_tokens[request.request_id] = num_new_tokens
             token_budget -= num_new_tokens
             req_index += 1
@@ -320,6 +325,16 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                 
                 request = self.waiting[0]
                 
+                # P/D: skip request if still waiting for remote kvs.
+                if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
+                    is_ready = self._update_waiting_for_remote_kv(request)
+                    if is_ready:
+                        request.status = RequestStatus.WAITING
+                    else:
+                        self.waiting.popleft()
+                        skipped_waiting_requests.appendleft(request)
+                        continue
+                
                 # Skip request if the structured output request is still waiting
                 # for FSM compilation.
                 if request.status == RequestStatus.WAITING_FOR_FSM:
@@ -353,36 +368,58 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                 
                 # Get already-cached tokens.
                 # If the request has documents, automatically use doc as the prefix
-                computed_blocks, num_computed_tokens = \
+                new_computed_blocks, num_computed_tokens = \
                     self.kv_cache_manager.get_computed_blocks(request)
-                
-                # # Get externally-cached tokens if using a KVConnector.
-                # num_external_tokens = (
-                #     0 if self.connector is None else
-                #     self.connector.get_num_new_matched_tokens(
-                #         request, num_computed_tokens))
-                
-                # # Total computed tokens (local + external).
-                # num_computed_tokens += num_external_tokens
                 
                 # This document is completed before
                 if 'd' in request.request_id and num_computed_tokens == request.num_tokens:
                     self.waiting.popleft()
                     continue
+                
                 # Since when a request with docs can reach here, all the
                 # documents are already ready, we can just assemble the 
                 # resources
                 if request.has_documents:
                     computed_blocks_docs, num_computed_tokens_docs = \
                         self.kv_cache_manager.get_computed_blocks_docs(request)
-                    computed_blocks = list(chain.from_iterable(
-                        computed_blocks_docs)) + computed_blocks
+                    tmp_blk_list = [blk_doc.blocks for blk_doc in computed_blocks_docs]
+                    new_computed_blocks = list(chain.from_iterable(
+                        tmp_blk_list)) + new_computed_blocks.blocks
                     num_computed_tokens = sum(
                         num_computed_tokens_docs) + num_computed_tokens
                     # Update the prompt
                     request.merge_documents()
+                    print(f"num blocks for docs: {(sum(num_computed_tokens_docs) // self.block_size)}")
+                    print(f"num blocks for query: {num_computed_tokens // self.block_size}")
+                    num_blocks = len(new_computed_blocks)
+                    # Generat the mask and offset information
+                    lazy_mask = [self.block_size for _ in range(num_blocks+1)]
+                    lazy_offset = [0 for _ in range(num_blocks+1)]
+                    num_docs = len(request.documents_token_ids)
+                    acc_padded_doc_len = 0
+                    for doc_idx in range(num_docs):
+                        # before acc
+                        if doc_idx == 0:
+                            lazy_offset[acc_padded_doc_len // self.block_size] = \
+                                sum(num_computed_tokens_docs) - sum(request.real_doc_lens)
+                        else:
+                            lazy_offset[acc_padded_doc_len // self.block_size] = \
+                                request.real_doc_lens[doc_idx - 1]
+                        
+                        acc_padded_doc_len += len(request.documents_token_ids[doc_idx])
+                        doc_len = request.real_doc_lens[doc_idx]
+                        tail = doc_len % self.block_size
+                        if tail != 0:
+                            lazy_mask[acc_padded_doc_len // self.block_size - 1] = tail
                     
+                    lazy_offset[acc_padded_doc_len // self.block_size] = -1 # let the q reload  
+                    
+                    req_to_lazy_mask[request.request_id] = lazy_mask
+                    req_to_lazy_offset[request.request_id] = lazy_offset                    
+                    
+                    # Update the kv_cache_manager
                     pre = self.kv_cache_manager.req_to_block_hashes_docs[request.request_id]
+                    
                     self.kv_cache_manager.req_to_block_hashes[request.request_id] = \
                         list(chain.from_iterable(pre)) + \
                         self.kv_cache_manager.req_to_block_hashes[request.request_id]
@@ -396,47 +433,56 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                     self.kv_cache_manager.req_to_block_hashes[request.request_id] = (
                         pre_block_hashes + 
                         self.kv_cache_manager.req_to_block_hashes[request.request_id])
+                    
+                    new_computed_blocks = KVCacheBlocks(new_computed_blocks)
                 
-                # Get externally-cached tokens if using a KVConnector.
                 # This step should happen for doc or query after the documents are assembled.
-                num_external_tokens = (
-                    0 if self.connector is None else
+                # Get externally-cached tokens if using a KVConnector.
+                num_external_tokens, load_kv_async = (
+                    (0, False) if self.connector is None else
                     self.connector.get_num_new_matched_tokens(
                         request, num_computed_tokens))
-                
+
                 # Total computed tokens (local + external).
                 num_computed_tokens += num_external_tokens
                 
-                # Number of tokens to be scheduled.
-                # We use `request.num_tokens` instead of
-                # `request.num_prompt_tokens` to consider the resumed requests,
-                # which have output tokens.
-                num_new_tokens = request.num_tokens - num_computed_tokens
-                if (0 < self.scheduler_config.long_prefill_token_threshold <
-                        num_new_tokens):
-                    num_new_tokens = (
-                        self.scheduler_config.long_prefill_token_threshold)
-                num_new_tokens = min(num_new_tokens, token_budget)
-                assert num_new_tokens > 0
+                encoder_inputs_to_schedule = None
+                new_encoder_budget = encoder_budget
 
-                # Schedule encoder inputs.
-                if request.has_encoder_inputs:
-                    (encoder_inputs_to_schedule, num_new_tokens,
-                     new_encoder_budget) = self._try_schedule_encoder_inputs(
-                         request, num_computed_tokens, num_new_tokens,
-                         encoder_budget)
-                    if num_new_tokens == 0:
-                        # The request cannot be scheduled.
-                        break
+                # P/D: loading remote KV, do not allocate for new work.
+                if load_kv_async:
+                    num_new_tokens = 0
+                # Number of tokens to be scheduled.
                 else:
-                    encoder_inputs_to_schedule = None
-                    new_encoder_budget = encoder_budget
+                    # We use `request.num_tokens` instead of
+                    # `request.num_prompt_tokens` to consider the resumed
+                    # requests, which have output tokens.
+                    num_new_tokens = request.num_tokens - num_computed_tokens
+                    if (0 < self.scheduler_config.long_prefill_token_threshold
+                            < num_new_tokens):
+                        num_new_tokens = (
+                            self.scheduler_config.long_prefill_token_threshold)
+                    num_new_tokens = min(num_new_tokens, token_budget)
+                    assert num_new_tokens > 0
+
+                    # Schedule encoder inputs.
+                    if request.has_encoder_inputs:
+                        (encoder_inputs_to_schedule, num_new_tokens,
+                         new_encoder_budget
+                         ) = self._try_schedule_encoder_inputs(
+                             request, num_computed_tokens, num_new_tokens,
+                             encoder_budget)
+                        if num_new_tokens == 0:
+                            # The request cannot be scheduled.
+                            break
 
                 new_blocks = self.kv_cache_manager.allocate_slots(
-                    request, 
-                    num_new_tokens + num_external_tokens, 
-                    computed_blocks,
-                    num_lookahead_tokens=self.num_lookahead_tokens,)
+                    request,
+                    num_new_tokens + num_external_tokens,
+                    new_computed_blocks,
+                    num_lookahead_tokens=self.num_lookahead_tokens,
+                    delay_cache_blocks=load_kv_async,
+                )
                 if new_blocks is None:
                     # The request cannot be scheduled.
                     break
@@ -447,13 +493,22 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                 if self.connector is not None:
                     self.connector.update_state_after_alloc(
                         request,
+                        new_computed_blocks + new_blocks,
                         num_external_tokens,
                     )
-                    
+
                 self.waiting.popleft()
+                if load_kv_async:
+                    # If loading async, allocate memory and put request
+                    # into the WAITING_FOR_REMOTE_KV state.
+                    skipped_waiting_requests.appendleft(request)
+                    request.status = RequestStatus.WAITING_FOR_REMOTE_KVS
+                    continue
+
                 if request.use_structured_output:
                     structured_output_request_ids[
                         request.request_id] = req_index
+            
                 req_index += 1
                 self.running.append(request)
                 if self.log_stats:
@@ -469,9 +524,11 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
 
                 if self.lora_config and request.lora_request:
                     scheduled_loras.add(request.lora_request.lora_int_id)
-                req_to_new_block_ids[request.request_id] = [
-                    b.block_id for b in computed_blocks + new_blocks
-                ]
+                    
+                # TODO(haocheng): we need to check 
+                req_to_new_block_ids[request.request_id] = (
+                    self.kv_cache_manager.get_block_ids(request.request_id))
+                
                 num_scheduled_tokens[request.request_id] = num_new_tokens
                 token_budget -= num_new_tokens
                 request.status = RequestStatus.RUNNING
@@ -519,7 +576,9 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         # Construct the scheduler output.
         new_reqs_data = [
             NewRequestData.from_request(req,
-                                        req_to_new_block_ids[req.request_id])
+                                        req_to_new_block_ids[req.request_id],
+                                        req_to_lazy_mask.get(req.request_id, None),
+                                        req_to_lazy_offset.get(req.request_id, None))
             for req in scheduled_new_reqs
         ]
         resumed_reqs_data = [
@@ -586,6 +645,7 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         self.finished_req_ids = set()
         # print(f"================================================")
         # print(f"scheduler_output: {scheduler_output}")
+        # breakpoint()
         return scheduler_output
 
     def add_request(self, request: Request) -> None:

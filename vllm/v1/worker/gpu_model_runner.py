@@ -1067,7 +1067,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         scheduler_output: "SchedulerOutput",
         intermediate_tensors: Optional[IntermediateTensors] = None,
     ) -> Union[ModelRunnerOutput, IntermediateTensors]:
-
         self._update_states(scheduler_output)
         if not scheduler_output.total_num_scheduled_tokens:
             if not has_kv_transfer_group():
@@ -1079,6 +1078,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # Prepare the decoder inputs.
         attn_metadata, logits_indices, spec_decode_metadata = (
             self._prepare_inputs(scheduler_output))
+        # print(f"attn_metadata: {attn_metadata}")
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         if (self.use_cuda_graph
                 and num_scheduled_tokens <= self.cudagraph_batch_sizes[-1]):
@@ -1145,7 +1145,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 k: v[:num_input_tokens]
                 for k, v in self.intermediate_tensors.items()
             })
-
+        torch.cuda.synchronize()
+        begin_time = time.perf_counter()
         # Run the decoder.
         # Use persistent buffers for CUDA graphs.
         with set_forward_context(attn_metadata,
@@ -1340,10 +1341,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # Clear KVConnector state after all KVs are generated.
         if has_kv_transfer_group():
             get_kv_transfer_group().clear_connector_metadata()
-        # torch.cuda.synchronize()
-        # end_time = time.perf_counter()
-        # logger.info("********* Model execution took %.6f seconds",
-        #              end_time - begin_time)
+        torch.cuda.synchronize()
+        end_time = time.perf_counter()
+        logger.info("********* Model execution took %.6f seconds",
+                     end_time - begin_time)
         return ModelRunnerOutput(
             req_ids=self.input_batch.req_ids,
             req_id_to_index=self.input_batch.req_id_to_index,
