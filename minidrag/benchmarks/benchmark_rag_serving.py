@@ -21,7 +21,7 @@ import traceback
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, Tuple, get_args
 
 import chatragbench
 import longbench
@@ -29,6 +29,7 @@ import numpy as np
 from simple_parsing import ArgumentParser
 from tqdm.asyncio import tqdm
 from transformers import PreTrainedTokenizerBase
+from scipy.stats import zipf
 
 from rag.logging import logger
 from rag.rag import RAG, DocumentId, RAGArgs, make_rag
@@ -603,16 +604,38 @@ def sample_musique_cacheblend_requests(
 
     return input_requests
 
+
+SamplingMethod = Literal["uniform", "zipf"]
+
+
 async def get_request(
     input_requests: List[RAGRequest],
     request_rate: float,
     sample_requests: Optional[int],
     seed: int = 1111,
+    request_sampling_method: SamplingMethod = "uniform",
+    zipf_param: float = 1.5,
 ) -> AsyncGenerator[Tuple[int, RAGRequest], None]:
     request_ids = list(range(len(input_requests)))
+    rng = np.random.default_rng(seed=seed)
     if sample_requests is not None:
-        rng = np.random.default_rng(seed=seed)
-        request_ids = list(rng.integers(0, high=len(input_requests), size=sample_requests))
+        if request_sampling_method == "zipf":
+            request_ids = []
+            num_requests = len(input_requests)
+            shuffled_ids = list(range(num_requests))
+            np.random.shuffle(shuffled_ids)
+            while len(request_ids) < sample_requests:
+                sampled = zipf.rvs(a=zipf_param, size=sample_requests, random_state=rng)
+                valid = [shuffled_ids[x - 1] for x in sampled if 0 <= x - 1 < num_requests]
+                request_ids.extend(valid)
+            request_ids = request_ids[:sample_requests]
+        elif request_sampling_method == "uniform":
+            request_ids = list(rng.integers(0, high=len(input_requests), size=sample_requests))
+        else:
+            raise ValueError(f"Unknown sampling method: {request_sampling_method}")
+        request_ids = list(map(int, request_ids))
+
+    logger.info(f"{request_ids=}")
     for request_id in request_ids:
         request = input_requests[request_id]
         yield int(request_id), request
@@ -791,6 +814,8 @@ async def benchmark(
     selected_percentiles: List[float],
     gootput_config_dict: Dict[str, float],
     max_concurrency: Optional[int],
+    zipf_param: float,
+    request_sampling_method: SamplingMethod,
 ):
     if backend in ASYNC_REQUEST_FUNCS:
         request_func = ASYNC_REQUEST_FUNCS[backend]
@@ -832,7 +857,7 @@ async def benchmark(
     benchmark_start_time = time.perf_counter()
     input_request_ids: List[int] = []
     tasks: List[asyncio.Task] = []
-    async for request_id, request in get_request(input_requests, request_rate, sample_requests=sample_requests):
+    async for request_id, request in get_request(input_requests, request_rate, sample_requests=sample_requests, zipf_param=zipf_param,request_sampling_method=request_sampling_method):
         request_func_input = RAGRequestFuncInput(
             rag=rag,
             request=request,
@@ -1056,6 +1081,8 @@ def main(args: argparse.Namespace):
             selected_percentiles=[float(p) for p in args.metric_percentiles.split(",")],
             gootput_config_dict=gootput_config_dict,
             max_concurrency=args.max_concurrency,
+            zipf_param=args.zipf_param,
+            request_sampling_method=args.request_sampling_method,
         )
     )
 
@@ -1157,6 +1184,18 @@ if __name__ == "__main__":
         "then all the requests are sent at time 0. "
         "Otherwise, we use Poisson process to synthesize "
         "the request arrival times.",
+    )
+    parser.add_argument(
+        "--request-sampling-method",
+        type=str,
+        default="uniform",
+        help=f"Method to sample requests {get_args(SamplingMethod)}.",
+    )
+    parser.add_argument(
+        "--zipf-param",
+        type=float,
+        default=1.5,
+        help="Zipfian parameter.",
     )
     # parser.add_argument("--seed", type=int, default=42)
     # parser.add_argument(
