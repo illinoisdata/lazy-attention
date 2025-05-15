@@ -140,6 +140,7 @@ def kernel_paged_attention_2d(
 
         num_blocks = cdiv_fn(seq_len, BLOCK_SIZE)
         
+        prev_offset = 0
         # iterate through tiles
         for j in range(0, num_blocks):
 
@@ -204,42 +205,51 @@ def kernel_paged_attention_2d(
             boundary = tl.full([BLOCK_SIZE], seq_len, dtype=tl.int32)
             seq_mask = seq_offset[None, :] < boundary
             
-            # -----------------------------------------------------
-            # Here we rotate the query instead of rotate the key
-            # (num_queries_per_kv, HEAD_SIZE // 2)
-            positions = tl.full([num_queries_per_kv_padded], rot_offset_val, dtype=tl.int32)
-            # load cos and sin
-            cos_val = tl.load(cos_sin_cache_ptr + (positions[:, None] * rotary_dim +
-                            offs_d1[None,:]),
-                            mask=dim_mask_half[None,:],
-                            other=0.0)
-            sin_val = tl.load(cos_sin_cache_ptr + (positions[:, None] * rotary_dim +
-                            offs_d2[None,:]),
-                            mask=dim_mask_half[None,:],
-                            other=0.0)
-            
-            
-            # -----------------------------------------------------
-            
-            # # fuse rotary embedding
-            # positions = seq_offset
+            if prev_offset != rot_offset_val:
+                # -----------------------------------------------------
+                # Here we rotate the query instead of rotate the key
+                # (num_queries_per_kv, HEAD_SIZE // 2)
+                relative_rot = rot_offset_val - prev_offset
+                
+                positions = tl.full([num_queries_per_kv_padded], tl.abs(relative_rot), dtype=tl.int32)
+                # load cos and sin
+                cos_val = tl.load(cos_sin_cache_ptr + (positions[:, None] * rotary_dim +
+                                offs_d1[None,:]),
+                                mask=dim_mask_half[None,:],
+                                other=0.0)
+                sin_val = tl.load(cos_sin_cache_ptr + (positions[:, None] * rotary_dim +
+                                offs_d2[None,:]),
+                                mask=dim_mask_half[None,:],
+                                other=0.0)
+                if relative_rot < 0:
+                    sin_val = -sin_val
+                
+                # -----------------------------------------------------
+                
+                # # fuse rotary embedding
+                # positions = seq_offset
 
-            # cos_val = tl.load(cos_sin_cache_ptr + (positions[None, :] * rotary_dim +
-            #                 offs_d1[:, None]),
-            #                 mask=dim_mask_half[:, None],
-            #                 other=0.0)
-            # sin_val = tl.load(cos_sin_cache_ptr + (positions[None, :] * rotary_dim +
-            #                 offs_d2[:, None]), 
-            #                 mask=dim_mask_half[:, None],
-            #                 other=0.0)
+                # cos_val = tl.load(cos_sin_cache_ptr + (positions[None, :] * rotary_dim +
+                #                 offs_d1[:, None]),
+                #                 mask=dim_mask_half[:, None],
+                #                 other=0.0)
+                # sin_val = tl.load(cos_sin_cache_ptr + (positions[None, :] * rotary_dim +
+                #                 offs_d2[:, None]), 
+                #                 mask=dim_mask_half[:, None],
+                #                 other=0.0)
+                # update Q
+                Q1 = Q_1 * cos_val + Q_2 * sin_val
+                Q_2 = Q_1 * -sin_val + Q_2 * cos_val
+                Q_1 = Q1
+                prev_offset = rot_offset_val
 
             # S : (num_queries_per_kv, BLOCK_SIZE,)
             S = tl.where(head_mask[:, None] & seq_mask, 0.0,
-                        float("-inf")).to(tl.float32)
+                            float("-inf")).to(tl.float32)
             qk = tl.zeros([num_queries_per_kv_padded, BLOCK_SIZE],
-                        dtype=tl.float32)
-            qk = tl.dot((Q_1 * cos_val + Q_2 * sin_val), K_1, acc=qk, input_precision=IN_PRECISION)
-            qk = tl.dot((Q_2 * cos_val + -Q_1 * sin_val), K_2, acc=qk, input_precision=IN_PRECISION)
+                            dtype=tl.float32)
+            qk = tl.dot(Q_1, K_1, acc=qk, input_precision=IN_PRECISION)
+            qk = tl.dot(Q_2, K_2, acc=qk, input_precision=IN_PRECISION)
             # rotated_k1 = K_1 * cos_val - K_2 * sin_val
             # rotated_k2 = K_1 * sin_val + K_2 * cos_val
             # qk1 = tl.dot(Q_1, rotated_k1, input_precision=IN_PRECISION)
