@@ -84,289 +84,507 @@ def _fwd_kernel(Q,
                 rotary_dim: tl.constexpr,
                 rotary_dim_pow2: tl.constexpr,
                 is_neox_style: tl.constexpr,
+                # ///////////////
+                is_lazy_ptr,
+                q_offset_ptr,
                 # /////////////////
                 MAX_Q_LEN: tl.constexpr = 0,
                 MAX_CTX_LEN: tl.constexpr = 0
 ):
     cur_batch = tl.program_id(0)
-    cur_head = tl.program_id(1)
-    start_m = tl.program_id(2)
-
-    cur_kv_head = cur_head // num_queries_per_kv
-
-    cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)
-    cur_batch_in_all_start_index = tl.load(B_Start_Loc + cur_batch)
-    cur_batch_in_all_stop_index = tl.load(B_Start_Loc + cur_batch + 1)
-    cur_batch_query_len = (cur_batch_in_all_stop_index -
-                           cur_batch_in_all_start_index)
-    cur_batch_ctx_len = cur_batch_seq_len - cur_batch_query_len
-
-    if SKIP_DECODE and cur_batch_query_len == 1:
-        return
-
-    # start position inside of the query
-    # generally, N goes over kv, while M goes over query_len
-    block_start_loc = BLOCK_M * start_m
-
-    # initialize offsets
-    # [BLOCK_SIZE]; starts at 0
-    offs_bs_n = tl.arange(0, BLOCK_SIZE)
-    # [N]; starts at 0
-    offs_n = tl.arange(0, BLOCK_N)
-    # [D]; starts at 0
-    offs_d = tl.arange(0, BLOCK_DMODEL_PADDED)
-    # [M]; starts at current position in query
-    offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
-    # # [M,D]
-    # off_q = ((cur_batch_in_all_start_index + offs_m[:, None]) * stride_qbs +
-    #          cur_head * stride_qh + offs_d[None, :] * stride_qd)
-
-    dim_mask = tl.where(
-        tl.arange(0, BLOCK_DMODEL_PADDED) < BLOCK_DMODEL, 1,
-        0).to(tl.int1)  # [D]
     
-    embed_dim: tl.constexpr = rotary_dim // 2
-    # embed_dim_pow2: tl.constexpr = rotary_dim_pow2 // 2
-    # Note(haocheng): assumption: BLOCK_DMODEL_PADDED = embed_dim_pow2
-    offs_d1 = tl.arange(0, BLOCK_DMODEL_PADDED // 2)
-    offs_d2 = offs_d1 + embed_dim
-    
-    dim_mask_half = tl.where(
-        offs_d1 < BLOCK_DMODEL // 2, 1,
-        0).to(tl.int1)  # [D//2]
-    
-    # [M,D//2]
-    off_q_1 = ((cur_batch_in_all_start_index + offs_m[:, None]) * stride_qbs +
-             cur_head * stride_qh + offs_d1[None, :] * stride_qd)
-    
-    q_1 = tl.load(Q + off_q_1,
-                mask=dim_mask_half[None, :] &
-                (offs_m[:, None] < cur_batch_query_len),
-                other=0.0)  # [M,D//2]
-    q_2 = tl.load(Q + off_q_1 + embed_dim * stride_qd,
-                mask=dim_mask_half[None, :] &
-                (offs_m[:, None] < cur_batch_query_len),
-                other=0.0)  # [M,D//2]
+    # Get the condition as early as possible
+    is_lazy = tl.load(is_lazy_ptr + cur_batch)
 
-    # initialize pointer to m and l
-    m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
-    l_i = tl.full([BLOCK_M], 1.0, dtype=tl.float32)
-    acc = tl.zeros([BLOCK_M, BLOCK_DMODEL_PADDED], dtype=tl.float32)  # [M,D]
+# ////////////////////////////////////////////////////////
+    if is_lazy:
+        cur_head = tl.program_id(1)
+        start_m = tl.program_id(2)
 
-    # compute query against context (no causal mask here)
-    for start_n in tl.range(0, cur_batch_ctx_len, BLOCK_SIZE, \
-                            loop_unroll_factor=num_unroll_cache):
-        start_n = tl.multiple_of(start_n, BLOCK_SIZE)
-        # -- compute qk ----
-        bn = tl.load(B_Loc + cur_batch * stride_b_loc_b +
-                     (start_n // BLOCK_SIZE) * stride_b_loc_s)
-        # [D,BLOCK_SIZE]
-        off_k_1 = (
-            bn[None, :] * stride_k_cache_bs + cur_kv_head * stride_k_cache_h +
-            (offs_d1[:, None] // x) * stride_k_cache_d +
-            ((start_n + offs_bs_n[None, :]) % BLOCK_SIZE) * stride_k_cache_bl +
-            (offs_d1[:, None] % x) * stride_k_cache_x)
-        off_k_2 = (
-            bn[None, :] * stride_k_cache_bs + cur_kv_head * stride_k_cache_h +
-            (offs_d2[:, None] // x) * stride_k_cache_d +
-            ((start_n + offs_bs_n[None, :]) % BLOCK_SIZE) * stride_k_cache_bl +
-            (offs_d2[:, None] % x) * stride_k_cache_x)
+        cur_kv_head = cur_head // num_queries_per_kv
 
-        off_cos = ((start_n + offs_bs_n[None, :]) * rotary_dim +
-                offs_d1[:, None])
+        cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)
+        cur_batch_in_all_start_index = tl.load(B_Start_Loc + cur_batch)
+        cur_batch_in_all_stop_index = tl.load(B_Start_Loc + cur_batch + 1)
+        cur_batch_query_len = (cur_batch_in_all_stop_index -
+                            cur_batch_in_all_start_index)
+        cur_batch_ctx_len = cur_batch_seq_len - cur_batch_query_len
 
-        # [BLOCK_SIZE,D]
-        off_v = (bn[:, None] * stride_v_cache_bs +
-                 cur_kv_head * stride_v_cache_h +
-                 offs_d[None, :] * stride_v_cache_d +
-                 offs_bs_n[:, None] * stride_v_cache_bl)
+        if SKIP_DECODE and cur_batch_query_len == 1:
+            return
 
-        if start_n + BLOCK_SIZE > cur_batch_ctx_len or \
-            BLOCK_DMODEL != BLOCK_DMODEL_PADDED:
-            # k_load = tl.load(
-            #     K_cache + off_k,
-            #     mask=dim_mask[:, None] &
-            #     ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
-            #     other=0.0)  # [D,N]
+        # start position inside of the query
+        # generally, N goes over kv, while M goes over query_len
+        block_start_loc = BLOCK_M * start_m
+
+        # initialize offsets
+        # [BLOCK_SIZE]; starts at 0
+        offs_bs_n = tl.arange(0, BLOCK_SIZE)
+        # [N]; starts at 0
+        offs_n = tl.arange(0, BLOCK_N)
+        # [D]; starts at 0
+        offs_d = tl.arange(0, BLOCK_DMODEL_PADDED)
+        # [M]; starts at current position in query
+        offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+        # # [M,D]
+        # off_q = ((cur_batch_in_all_start_index + offs_m[:, None]) * stride_qbs +
+        #          cur_head * stride_qh + offs_d[None, :] * stride_qd)
+
+        dim_mask = tl.where(
+            tl.arange(0, BLOCK_DMODEL_PADDED) < BLOCK_DMODEL, 1,
+            0).to(tl.int1)  # [D]
+        
+        embed_dim: tl.constexpr = rotary_dim // 2
+        # embed_dim_pow2: tl.constexpr = rotary_dim_pow2 // 2
+        # Note(haocheng): assumption: BLOCK_DMODEL_PADDED = embed_dim_pow2
+        offs_d1 = tl.arange(0, BLOCK_DMODEL_PADDED // 2)
+        offs_d2 = offs_d1 + embed_dim
+        
+        dim_mask_half = tl.where(
+            offs_d1 < BLOCK_DMODEL // 2, 1,
+            0).to(tl.int1)  # [D//2]
+        
+        # [M,D//2]
+        off_q_1 = ((cur_batch_in_all_start_index + offs_m[:, None]) * stride_qbs +
+                cur_head * stride_qh + offs_d1[None, :] * stride_qd)
+        
+        q_1 = tl.load(Q + off_q_1,
+                    mask=dim_mask_half[None, :] &
+                    (offs_m[:, None] < cur_batch_query_len),
+                    other=0.0)  # [M,D//2]
+        q_2 = tl.load(Q + off_q_1 + embed_dim * stride_qd,
+                    mask=dim_mask_half[None, :] &
+                    (offs_m[:, None] < cur_batch_query_len),
+                    other=0.0)  # [M,D//2]
+
+        # initialize pointer to m and l
+        m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
+        l_i = tl.full([BLOCK_M], 1.0, dtype=tl.float32)
+        acc = tl.zeros([BLOCK_M, BLOCK_DMODEL_PADDED], dtype=tl.float32)  # [M,D]
+
+        # compute query against context (no causal mask here)
+        for start_n in tl.range(0, cur_batch_ctx_len, BLOCK_SIZE, \
+                                loop_unroll_factor=num_unroll_cache):
+            start_n = tl.multiple_of(start_n, BLOCK_SIZE)
+            # -- compute qk ----
+            bn = tl.load(B_Loc + cur_batch * stride_b_loc_b +
+                        (start_n // BLOCK_SIZE) * stride_b_loc_s)
             
-            k_load_1 = tl.load(
-                K_cache + off_k_1,
-                mask=dim_mask_half[:, None] &
-                ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
-                other=0.0)  # [D,N]
-            k_load_2 = tl.load(
-                K_cache + off_k_2,
-                mask=dim_mask_half[:, None] &
-                ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
-                other=0.0)  # [D,N]
-            cos_val = tl.load(cos_sin_cache + off_cos,
-                mask=dim_mask_half[:, None] &
-                ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
-                other=0.0)
-            sin_val = tl.load(cos_sin_cache + off_cos + embed_dim, 
-                mask=dim_mask_half[:, None] &
-                ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
-                other=0.0)
-        else:
-            # k_load = tl.load(K_cache + off_k)
-            k_load_1 = tl.load(K_cache + off_k_1)
-            k_load_2 = tl.load(K_cache + off_k_2)
+            # tl.device_print("bn:", bn)
+            # ****************
+            # TODO(haocheng): check
+            # here we get M tokens in the query
+            # NUM_BLOCKS_OVER_Q: tl.constexpr = BLOCK_M // BLOCK_SIZE
+            # Q is [M,D//2]
+            rot_offset_val = tl.load(
+                q_offset_ptr + cur_batch * stride_b_loc_b +
+                (start_n // BLOCK_SIZE) * stride_b_loc_s)
+            positions = tl.full([BLOCK_M], rot_offset_val, dtype=tl.int32)
+            # Then we need to rotate the query
+            # tl.device_print("rot_offset_val:", rot_offset_val)
+            off_cos = ((positions[:, None]) * rotary_dim +
+                    offs_d1[None,:])
             cos_val = tl.load(cos_sin_cache + off_cos)
             sin_val = tl.load(cos_sin_cache + off_cos + embed_dim)
-
-        # if k_load.dtype.is_fp8():
-        #     k = (k_load.to(tl.float32) * tl.load(k_scale)).to(q.dtype)
-        # else:
-        #     k = k_load
             
-        if k_load_1.dtype.is_fp8():
-            k_1 = (k_load_1.to(tl.float32) * tl.load(k_scale)).to(q_1.dtype)
-            k_2 = (k_load_2.to(tl.float32) * tl.load(k_scale)).to(q_1.dtype)
-        else:
-            k_1 = k_load_1
-            k_2 = k_load_2
-            
-        # fuse rotary embedding
-        qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)  # [M,N]
-        qk_1 = tl.dot(q_1, (k_1 * cos_val - k_2 * sin_val), input_precision=IN_PRECISION)
-        qk_2 = tl.dot(q_2, (k_1 * sin_val + k_2 * cos_val), input_precision=IN_PRECISION)
-        qk = qk_1 + qk_2
-        qk = tl.where((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len, qk,
-                        float("-inf"))
+            # [D,BLOCK_SIZE]
+            off_k_1 = (
+                bn[None, :] * stride_k_cache_bs + cur_kv_head * stride_k_cache_h +
+                (offs_d1[:, None] // x) * stride_k_cache_d +
+                ((start_n + offs_bs_n[None, :]) % BLOCK_SIZE) * stride_k_cache_bl +
+                (offs_d1[:, None] % x) * stride_k_cache_x)
+            off_k_2 = (
+                bn[None, :] * stride_k_cache_bs + cur_kv_head * stride_k_cache_h +
+                (offs_d2[:, None] // x) * stride_k_cache_d +
+                ((start_n + offs_bs_n[None, :]) % BLOCK_SIZE) * stride_k_cache_bl +
+                (offs_d2[:, None] % x) * stride_k_cache_x)
 
-        # qk = tl.zeros([BLOCK_M, BLOCK_SIZE], dtype=tl.float32)  # [M,N]
-        # qk = tl.dot(q, k, acc=qk, input_precision=IN_PRECISION)
-        # qk = tl.where((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len, qk,
-        #               float("-inf"))
-        qk *= sm_scale
-        if SLIDING_WINDOW > 0:
-            # (cur_batch_ctx_len + offs_m[:, None]) are the positions of
-            # Q entries in sequence
-            # (start_n + offs_bs_n[None, :]) are the positions of
-            # KV entries in sequence
-            # So the condition makes sure each entry in Q only attends
-            # to KV entries not more than SLIDING_WINDOW away.
-            #
-            # We can't use -inf here, because the
-            # sliding window may lead to the entire row being masked.
-            # This then makes m_ij contain -inf, which causes NaNs in
-            # exp().
-            qk = tl.where((cur_batch_ctx_len + offs_m[:, None]) -
-                          (start_n + offs_bs_n[None, :]) < SLIDING_WINDOW, qk,
-                          -10000)
+            # [BLOCK_SIZE,D]
+            off_v = (bn[:, None] * stride_v_cache_bs +
+                    cur_kv_head * stride_v_cache_h +
+                    offs_d[None, :] * stride_v_cache_d +
+                    offs_bs_n[:, None] * stride_v_cache_bl)
 
-        # compute running maximum
-        m_ij = tl.maximum(m_i, tl.max(qk, axis=1))
-        p = tl.exp(qk - m_ij[:, None])
-        l_ij = tl.sum(p, axis=1)
-        alpha = tl.exp(m_i - m_ij)
-        acc = acc * alpha[:, None]
-
-        # update acc
-        if start_n + BLOCK_SIZE > cur_batch_ctx_len or \
-            BLOCK_DMODEL != BLOCK_DMODEL_PADDED:
-            v_load = tl.load(
-                V_cache + off_v,
-                mask=dim_mask[None, :] &
-                ((start_n + offs_bs_n[:, None]) < cur_batch_ctx_len),
-                other=0.0)  # [N,D]
-        else:
-            v_load = tl.load(V_cache + off_v)
-
-        if v_load.dtype.is_fp8():
-            v = (v_load.to(tl.float32) * tl.load(v_scale)).to(q.dtype)
-        else:
-            v = v_load
-        p = p.to(v.dtype)
-
-        acc = tl.dot(p, v, acc=acc, input_precision=IN_PRECISION)
-        # # update m_i and l_i
-        l_i = l_i * alpha + l_ij
-        m_i = m_ij
-
-    off_k_1 = (offs_n[None, :] * stride_kbs + cur_kv_head * stride_kh +
-             offs_d1[:, None] * stride_kd)
-    off_v = (offs_n[:, None] * stride_vbs + cur_kv_head * stride_vh +
-             offs_d[None, :] * stride_vd)
-    k_ptrs_1 = K + off_k_1
-    v_ptrs = V + off_v
-
-    # block_mask is 0 when we're already past the current query length
-    block_mask = tl.where(block_start_loc < cur_batch_query_len, 1, 0)
-
-    # compute query against itself (with causal mask)
-    for start_n in tl.range(0, \
-                        block_mask * (start_m + 1) * BLOCK_M, BLOCK_N, \
-                        loop_unroll_factor=num_unroll_request):
-        start_n = tl.multiple_of(start_n, BLOCK_N)
-        # -- compute qk ----
-        k_1 = tl.load(k_ptrs_1 +
-                    (cur_batch_in_all_start_index + start_n) * stride_kbs,
+            if start_n + BLOCK_SIZE > cur_batch_ctx_len or \
+                BLOCK_DMODEL != BLOCK_DMODEL_PADDED:
+                # k_load = tl.load(
+                #     K_cache + off_k,
+                #     mask=dim_mask[:, None] &
+                #     ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
+                #     other=0.0)  # [D,N]
+                
+                k_load_1 = tl.load(
+                    K_cache + off_k_1,
                     mask=dim_mask_half[:, None] &
-                    ((start_n + offs_n[None, :]) < cur_batch_query_len),
-                    other=0.0)
-        k_2 = tl.load(k_ptrs_1 + embed_dim * stride_kd +
-                    (cur_batch_in_all_start_index + start_n) * stride_kbs,
+                    ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
+                    other=0.0)  # [D,N]
+                k_load_2 = tl.load(
+                    K_cache + off_k_2,
                     mask=dim_mask_half[:, None] &
-                    ((start_n + offs_n[None, :]) < cur_batch_query_len),
-                    other=0.0)
+                    ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
+                    other=0.0)  # [D,N]
+                # cos_val = tl.load(cos_sin_cache + off_cos,
+                #     mask=dim_mask_half[:, None] &
+                #     ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
+                #     other=0.0)
+                # sin_val = tl.load(cos_sin_cache + off_cos + embed_dim, 
+                #     mask=dim_mask_half[:, None] &
+                #     ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
+                #     other=0.0)
+            else:
+                # k_load = tl.load(K_cache + off_k)
+                k_load_1 = tl.load(K_cache + off_k_1)
+                k_load_2 = tl.load(K_cache + off_k_2)
+                
+                # cos_val = tl.load(cos_sin_cache + off_cos)
+                # sin_val = tl.load(cos_sin_cache + off_cos + embed_dim)
 
-        off_cos = ((cur_batch_ctx_len + start_n + offs_n[None, :]) * rotary_dim +
-                    offs_d1[:, None])
-            
-        cos_val = tl.load(cos_sin_cache + off_cos, 
-                          mask=dim_mask_half[:, None] &
-                    ((start_n + offs_n[None, :]) < cur_batch_query_len),
-                    other=0.0)
-        sin_val = tl.load(cos_sin_cache + off_cos + embed_dim, 
-                          mask=dim_mask_half[:, None] &
-                    ((start_n + offs_n[None, :]) < cur_batch_query_len),
-                    other=0.0)
-        qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)     
-        qk = tl.dot(q_1, (k_1 * cos_val - k_2 * sin_val), acc=qk, input_precision=IN_PRECISION)
-        qk = tl.dot(q_2, (k_1 * sin_val + k_2 * cos_val), acc=qk, input_precision=IN_PRECISION)
+            # if k_load.dtype.is_fp8():
+            #     k = (k_load.to(tl.float32) * tl.load(k_scale)).to(q.dtype)
+            # else:
+            #     k = k_load
+                
+            if k_load_1.dtype.is_fp8():
+                k_1 = (k_load_1.to(tl.float32) * tl.load(k_scale)).to(q_1.dtype)
+                k_2 = (k_load_2.to(tl.float32) * tl.load(k_scale)).to(q_1.dtype)
+            else:
+                k_1 = k_load_1
+                k_2 = k_load_2
+                
+            # fuse rotary embedding
+            qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)  # [M,N]
+            # qk_1 = tl.dot(q_1, (k_1 * cos_val - k_2 * sin_val), input_precision=IN_PRECISION)
+            # qk_2 = tl.dot(q_2, (k_1 * sin_val + k_2 * cos_val), input_precision=IN_PRECISION)
+            qk_1 = tl.dot((q_1*cos_val + q_2*sin_val), k_1, input_precision=IN_PRECISION)
+            qk_2 = tl.dot((q_2*cos_val - q_1*sin_val), k_2, input_precision=IN_PRECISION)
+            qk = qk_1 + qk_2
+            qk = tl.where((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len, qk,
+                            float("-inf"))
 
-        # qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
-        # qk = tl.dot(q, k, acc=qk, input_precision=IN_PRECISION)
-        qk *= sm_scale
-        # apply causal mask
-        qk = tl.where(offs_m[:, None] >= (start_n + offs_n[None, :]), qk,
-                      float("-inf"))
-        if SLIDING_WINDOW > 0:
-            qk = tl.where(
-                offs_m[:, None] - (start_n + offs_n[None, :]) < SLIDING_WINDOW,
-                qk, -10000)
+            # qk = tl.zeros([BLOCK_M, BLOCK_SIZE], dtype=tl.float32)  # [M,N]
+            # qk = tl.dot(q, k, acc=qk, input_precision=IN_PRECISION)
+            # qk = tl.where((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len, qk,
+            #               float("-inf"))
+            qk *= sm_scale
+            if SLIDING_WINDOW > 0:
+                # (cur_batch_ctx_len + offs_m[:, None]) are the positions of
+                # Q entries in sequence
+                # (start_n + offs_bs_n[None, :]) are the positions of
+                # KV entries in sequence
+                # So the condition makes sure each entry in Q only attends
+                # to KV entries not more than SLIDING_WINDOW away.
+                #
+                # We can't use -inf here, because the
+                # sliding window may lead to the entire row being masked.
+                # This then makes m_ij contain -inf, which causes NaNs in
+                # exp().
+                qk = tl.where((cur_batch_ctx_len + offs_m[:, None]) -
+                            (start_n + offs_bs_n[None, :]) < SLIDING_WINDOW, qk,
+                            -10000)
 
-        # compute running maximum
-        m_ij = tl.maximum(m_i, tl.max(qk, axis=1))
-        p = tl.exp(qk - m_ij[:, None])
-        l_ij = tl.sum(p, axis=1)
-        alpha = tl.exp(m_i - m_ij)
-        acc = acc * alpha[:, None]
+            # compute running maximum
+            m_ij = tl.maximum(m_i, tl.max(qk, axis=1))
+            p = tl.exp(qk - m_ij[:, None])
+            l_ij = tl.sum(p, axis=1)
+            alpha = tl.exp(m_i - m_ij)
+            acc = acc * alpha[:, None]
 
-        # update acc
-        v = tl.load(v_ptrs +
-                    (cur_batch_in_all_start_index + start_n) * stride_vbs,
+            # update acc
+            if start_n + BLOCK_SIZE > cur_batch_ctx_len or \
+                BLOCK_DMODEL != BLOCK_DMODEL_PADDED:
+                v_load = tl.load(
+                    V_cache + off_v,
                     mask=dim_mask[None, :] &
-                    ((start_n + offs_n[:, None]) < cur_batch_query_len),
-                    other=0.0)
-        p = p.to(v.dtype)
+                    ((start_n + offs_bs_n[:, None]) < cur_batch_ctx_len),
+                    other=0.0)  # [N,D]
+            else:
+                v_load = tl.load(V_cache + off_v)
 
-        acc = tl.dot(p, v, acc=acc, input_precision=IN_PRECISION)
-        # update m_i and l_i
-        l_i = l_i * alpha + l_ij
-        m_i = m_ij
+            if v_load.dtype.is_fp8():
+                v = (v_load.to(tl.float32) * tl.load(v_scale)).to(q.dtype)
+            else:
+                v = v_load
+            p = p.to(v.dtype)
 
-    acc = acc / l_i[:, None]
+            acc = tl.dot(p, v, acc=acc, input_precision=IN_PRECISION)
+            # # update m_i and l_i
+            l_i = l_i * alpha + l_ij
+            m_i = m_ij
 
-    # initialize pointers to output
-    off_o = ((cur_batch_in_all_start_index + offs_m[:, None]) * stride_obs +
-             cur_head * stride_oh + offs_d[None, :] * stride_od)
-    out_ptrs = Out + off_o
-    tl.store(out_ptrs,
-             acc,
-             mask=dim_mask[None, :] & (offs_m[:, None] < cur_batch_query_len))
-    return
+        # -------------------------------------------------------------
+        # TODO(haocheng): for this we can further optimize, like q in a whole body
+        off_k_1 = (offs_n[None, :] * stride_kbs + cur_kv_head * stride_kh +
+                offs_d1[:, None] * stride_kd)
+        off_v = (offs_n[:, None] * stride_vbs + cur_kv_head * stride_vh +
+                offs_d[None, :] * stride_vd)
+        k_ptrs_1 = K + off_k_1
+        v_ptrs = V + off_v
+
+        # block_mask is 0 when we're already past the current query length
+        block_mask = tl.where(block_start_loc < cur_batch_query_len, 1, 0)
+
+        # compute query against itself (with causal mask)
+        for start_n in tl.range(0, \
+                            block_mask * (start_m + 1) * BLOCK_M, BLOCK_N, \
+                            loop_unroll_factor=num_unroll_request):
+            start_n = tl.multiple_of(start_n, BLOCK_N)
+            # -- compute qk ----
+            k_1 = tl.load(k_ptrs_1 +
+                        (cur_batch_in_all_start_index + start_n) * stride_kbs,
+                        mask=dim_mask_half[:, None] &
+                        ((start_n + offs_n[None, :]) < cur_batch_query_len),
+                        other=0.0)
+            k_2 = tl.load(k_ptrs_1 + embed_dim * stride_kd +
+                        (cur_batch_in_all_start_index + start_n) * stride_kbs,
+                        mask=dim_mask_half[:, None] &
+                        ((start_n + offs_n[None, :]) < cur_batch_query_len),
+                        other=0.0)
+
+            qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)     
+            qk = tl.dot(q_1, k_1, acc=qk, input_precision=IN_PRECISION)
+            qk = tl.dot(q_2, k_2, acc=qk, input_precision=IN_PRECISION)
+
+            # qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+            # qk = tl.dot(q, k, acc=qk, input_precision=IN_PRECISION)
+            qk *= sm_scale
+            # apply causal mask
+            qk = tl.where(offs_m[:, None] >= (start_n + offs_n[None, :]), qk,
+                        float("-inf"))
+            if SLIDING_WINDOW > 0:
+                qk = tl.where(
+                    offs_m[:, None] - (start_n + offs_n[None, :]) < SLIDING_WINDOW,
+                    qk, -10000)
+
+            # compute running maximum
+            m_ij = tl.maximum(m_i, tl.max(qk, axis=1))
+            p = tl.exp(qk - m_ij[:, None])
+            l_ij = tl.sum(p, axis=1)
+            alpha = tl.exp(m_i - m_ij)
+            acc = acc * alpha[:, None]
+
+            # update acc
+            v = tl.load(v_ptrs +
+                        (cur_batch_in_all_start_index + start_n) * stride_vbs,
+                        mask=dim_mask[None, :] &
+                        ((start_n + offs_n[:, None]) < cur_batch_query_len),
+                        other=0.0)
+            p = p.to(v.dtype)
+
+            acc = tl.dot(p, v, acc=acc, input_precision=IN_PRECISION)
+            # update m_i and l_i
+            l_i = l_i * alpha + l_ij
+            m_i = m_ij
+
+        acc = acc / l_i[:, None]
+
+        # initialize pointers to output
+        off_o = ((cur_batch_in_all_start_index + offs_m[:, None]) * stride_obs +
+                cur_head * stride_oh + offs_d[None, :] * stride_od)
+        out_ptrs = Out + off_o
+        tl.store(out_ptrs,
+                acc,
+                mask=dim_mask[None, :] & (offs_m[:, None] < cur_batch_query_len))
+        return
+# /////////////////////////////////////////////////////////////////////////////////
+    else:
+        cur_head = tl.program_id(1)
+        start_m = tl.program_id(2)
+
+        cur_kv_head = cur_head // num_queries_per_kv
+
+        cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)
+        cur_batch_in_all_start_index = tl.load(B_Start_Loc + cur_batch)
+        cur_batch_in_all_stop_index = tl.load(B_Start_Loc + cur_batch + 1)
+        cur_batch_query_len = (cur_batch_in_all_stop_index -
+                            cur_batch_in_all_start_index)
+        cur_batch_ctx_len = cur_batch_seq_len - cur_batch_query_len
+
+        if SKIP_DECODE and cur_batch_query_len == 1:
+            return
+
+        # start position inside of the query
+        # generally, N goes over kv, while M goes over query_len
+        block_start_loc = BLOCK_M * start_m
+
+        # initialize offsets
+        # [BLOCK_SIZE]; starts at 0
+        offs_bs_n = tl.arange(0, BLOCK_SIZE)
+        # [N]; starts at 0
+        offs_n = tl.arange(0, BLOCK_N)
+        # [D]; starts at 0
+        offs_d = tl.arange(0, BLOCK_DMODEL_PADDED)
+        # [M]; starts at current position in query
+        offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+        # [M,D]
+        off_q = ((cur_batch_in_all_start_index + offs_m[:, None]) * stride_qbs +
+                cur_head * stride_qh + offs_d[None, :] * stride_qd)
+
+        dim_mask = tl.where(
+            tl.arange(0, BLOCK_DMODEL_PADDED) < BLOCK_DMODEL, 1,
+            0).to(tl.int1)  # [D]
+
+        q = tl.load(Q + off_q,
+                    mask=dim_mask[None, :] &
+                    (offs_m[:, None] < cur_batch_query_len),
+                    other=0.0)  # [M,D]
+
+        # initialize pointer to m and l
+        m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
+        l_i = tl.full([BLOCK_M], 1.0, dtype=tl.float32)
+        acc = tl.zeros([BLOCK_M, BLOCK_DMODEL_PADDED], dtype=tl.float32)  # [M,D]
+
+        # compute query against context (no causal mask here)
+        for start_n in tl.range(0, cur_batch_ctx_len, BLOCK_SIZE, \
+                                loop_unroll_factor=num_unroll_cache):
+            start_n = tl.multiple_of(start_n, BLOCK_SIZE)
+            # -- compute qk ----
+            bn = tl.load(B_Loc + cur_batch * stride_b_loc_b +
+                        (start_n // BLOCK_SIZE) * stride_b_loc_s)
+            # [D,BLOCK_SIZE]
+            off_k = (
+                bn[None, :] * stride_k_cache_bs + cur_kv_head * stride_k_cache_h +
+                (offs_d[:, None] // x) * stride_k_cache_d +
+                ((start_n + offs_bs_n[None, :]) % BLOCK_SIZE) * stride_k_cache_bl +
+                (offs_d[:, None] % x) * stride_k_cache_x)
+
+            # [BLOCK_SIZE,D]
+            off_v = (bn[:, None] * stride_v_cache_bs +
+                    cur_kv_head * stride_v_cache_h +
+                    offs_d[None, :] * stride_v_cache_d +
+                    offs_bs_n[:, None] * stride_v_cache_bl)
+
+            if start_n + BLOCK_SIZE > cur_batch_ctx_len or \
+                BLOCK_DMODEL != BLOCK_DMODEL_PADDED:
+                k_load = tl.load(
+                    K_cache + off_k,
+                    mask=dim_mask[:, None] &
+                    ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
+                    other=0.0)  # [D,N]
+            else:
+                k_load = tl.load(K_cache + off_k)
+
+            if k_load.dtype.is_fp8():
+                k = (k_load.to(tl.float32) * tl.load(k_scale)).to(q.dtype)
+            else:
+                k = k_load
+
+            qk = tl.zeros([BLOCK_M, BLOCK_SIZE], dtype=tl.float32)  # [M,N]
+            qk = tl.dot(q, k, acc=qk, input_precision=IN_PRECISION)
+            qk = tl.where((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len, qk,
+                        float("-inf"))
+            qk *= sm_scale
+            if SLIDING_WINDOW > 0:
+                # (cur_batch_ctx_len + offs_m[:, None]) are the positions of
+                # Q entries in sequence
+                # (start_n + offs_bs_n[None, :]) are the positions of
+                # KV entries in sequence
+                # So the condition makes sure each entry in Q only attends
+                # to KV entries not more than SLIDING_WINDOW away.
+                #
+                # We can't use -inf here, because the
+                # sliding window may lead to the entire row being masked.
+                # This then makes m_ij contain -inf, which causes NaNs in
+                # exp().
+                qk = tl.where((cur_batch_ctx_len + offs_m[:, None]) -
+                            (start_n + offs_bs_n[None, :]) < SLIDING_WINDOW, qk,
+                            -10000)
+
+            # compute running maximum
+            m_ij = tl.maximum(m_i, tl.max(qk, axis=1))
+            p = tl.exp(qk - m_ij[:, None])
+            l_ij = tl.sum(p, axis=1)
+            alpha = tl.exp(m_i - m_ij)
+            acc = acc * alpha[:, None]
+
+            # update acc
+            if start_n + BLOCK_SIZE > cur_batch_ctx_len or \
+                BLOCK_DMODEL != BLOCK_DMODEL_PADDED:
+                v_load = tl.load(
+                    V_cache + off_v,
+                    mask=dim_mask[None, :] &
+                    ((start_n + offs_bs_n[:, None]) < cur_batch_ctx_len),
+                    other=0.0)  # [N,D]
+            else:
+                v_load = tl.load(V_cache + off_v)
+
+            if v_load.dtype.is_fp8():
+                v = (v_load.to(tl.float32) * tl.load(v_scale)).to(q.dtype)
+            else:
+                v = v_load
+            p = p.to(v.dtype)
+
+            acc = tl.dot(p, v, acc=acc, input_precision=IN_PRECISION)
+            # # update m_i and l_i
+            l_i = l_i * alpha + l_ij
+            m_i = m_ij
+
+        off_k = (offs_n[None, :] * stride_kbs + cur_kv_head * stride_kh +
+                offs_d[:, None] * stride_kd)
+        off_v = (offs_n[:, None] * stride_vbs + cur_kv_head * stride_vh +
+                offs_d[None, :] * stride_vd)
+        k_ptrs = K + off_k
+        v_ptrs = V + off_v
+
+        # block_mask is 0 when we're already past the current query length
+        block_mask = tl.where(block_start_loc < cur_batch_query_len, 1, 0)
+
+        # compute query against itself (with causal mask)
+        for start_n in tl.range(0, \
+                            block_mask * (start_m + 1) * BLOCK_M, BLOCK_N, \
+                            loop_unroll_factor=num_unroll_request):
+            start_n = tl.multiple_of(start_n, BLOCK_N)
+            # -- compute qk ----
+            k = tl.load(k_ptrs +
+                        (cur_batch_in_all_start_index + start_n) * stride_kbs,
+                        mask=dim_mask[:, None] &
+                        ((start_n + offs_n[None, :]) < cur_batch_query_len),
+                        other=0.0)
+
+            qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+            qk = tl.dot(q, k, acc=qk, input_precision=IN_PRECISION)
+            qk *= sm_scale
+            # apply causal mask
+            qk = tl.where(offs_m[:, None] >= (start_n + offs_n[None, :]), qk,
+                        float("-inf"))
+            if SLIDING_WINDOW > 0:
+                qk = tl.where(
+                    offs_m[:, None] - (start_n + offs_n[None, :]) < SLIDING_WINDOW,
+                    qk, -10000)
+
+            # compute running maximum
+            m_ij = tl.maximum(m_i, tl.max(qk, axis=1))
+            p = tl.exp(qk - m_ij[:, None])
+            l_ij = tl.sum(p, axis=1)
+            alpha = tl.exp(m_i - m_ij)
+            acc = acc * alpha[:, None]
+
+            # update acc
+            v = tl.load(v_ptrs +
+                        (cur_batch_in_all_start_index + start_n) * stride_vbs,
+                        mask=dim_mask[None, :] &
+                        ((start_n + offs_n[:, None]) < cur_batch_query_len),
+                        other=0.0)
+            p = p.to(v.dtype)
+
+            acc = tl.dot(p, v, acc=acc, input_precision=IN_PRECISION)
+            # update m_i and l_i
+            l_i = l_i * alpha + l_ij
+            m_i = m_ij
+
+        acc = acc / l_i[:, None]
+
+        # initialize pointers to output
+        off_o = ((cur_batch_in_all_start_index + offs_m[:, None]) * stride_obs +
+                cur_head * stride_oh + offs_d[None, :] * stride_od)
+        out_ptrs = Out + off_o
+        tl.store(out_ptrs,
+                acc,
+                mask=dim_mask[None, :] & (offs_m[:, None] < cur_batch_query_len))
+        return
+
+
+# ////////////////////////////////////////////////////////
+
     
 
 @torch.inference_mode()
@@ -390,7 +608,11 @@ def context_attention_fwd(q,
                           skip_decode=False,
                           cos_sin_cache=None,
                           rotary_dim=None,
-                          is_neox_style=True,):
+                          is_neox_style=True,
+                          # ///////
+                          is_lazy=None,
+                          q_offset=None,
+                          ):
 
     q_dtype_is_f32 = q.dtype is torch.float32
 
@@ -498,6 +720,8 @@ def context_attention_fwd(q,
         rotary_dim=rotary_dim,
         rotary_dim_pow2=triton.next_power_of_2(rotary_dim),
         is_neox_style=is_neox_style,
+        is_lazy_ptr=is_lazy,
+        q_offset_ptr=q_offset,
         # /////////////////
         BLOCK_M=128,
         BLOCK_N=64,

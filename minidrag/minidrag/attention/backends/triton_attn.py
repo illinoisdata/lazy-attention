@@ -5,9 +5,10 @@ from typing import Any, Optional
 import torch
 
 from vllm.attention.ops.paged_attn import PagedAttention
-from vllm.v1.attention.backends.flash_attn import (
-    FlashAttentionMetadata)
+# from vllm.v1.attention.backends.flash_attn import (
+#     FlashAttentionMetadata)
 
+from .flash_attn import FlashAttentionMetadata
 from ..ops.chunked_prefill_paged_decode import chunked_prefill_paged_decode
 
 # class TritonAttentionImpl(AttentionImpl):
@@ -77,6 +78,9 @@ def forward(
         max_seqlen_q = attn_metadata.max_query_len
         max_seqlen_k = attn_metadata.max_seq_len
         block_table = attn_metadata.block_table
+        is_lazy = attn_metadata.is_lazy
+        q_offset = attn_metadata.q_offset
+        # q_mask = attn_metadata.q_mask
     # Compute attention and update output up to `num_actual_tokens`.
     chunked_prefill_paged_decode(query=query[:num_actual_tokens],
                                  key=key[:num_actual_tokens],
@@ -99,6 +103,10 @@ def forward(
                                  cos_sin_cache=cos_sin_cache,
                                  rotary_dim=rotary_dim,
                                  is_neox_style=is_neox_style,
+                                 # in order to rotate the query
+                                 is_lazy=is_lazy,
+                                 q_offset=q_offset,
+                                #  q_mask=q_mask,
                                  )
     return output
 

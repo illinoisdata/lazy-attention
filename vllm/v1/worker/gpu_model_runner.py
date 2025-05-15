@@ -1017,8 +1017,13 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         scheduler_output: "SchedulerOutput",
         intermediate_tensors: Optional[IntermediateTensors] = None,
     ) -> Union[ModelRunnerOutput, torch.Tensor]:
-        torch.cuda.synchronize()
-        begin_time = time.perf_counter()
+        # ////////////////////////////////////////////////////////
+        import os
+        begin_time = None
+        if os.environ.get("LAZY_LOG") == "1":
+            torch.cuda.synchronize()
+            begin_time = time.perf_counter()
+        # ////////////////////////////////////////////////////////
         # Update KVConnector with the KVConnector metadata forward().
         if has_kv_transfer_group():
             get_kv_transfer_group().bind_connector_metadata(
@@ -1099,6 +1104,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 for k, v in self.intermediate_tensors.items()
             })
 
+        if os.environ.get("LAZY_LOG") == "1":
+            torch.cuda.synchronize()
+            end_time = time.perf_counter()
+            print(f"********* ModelRunner.prepare time: {end_time - begin_time:.3f}s")
+            begin_time = end_time
         # Run the decoder.
         # Use persistent buffers for CUDA graphs.
         with set_forward_context(attn_metadata,
@@ -1285,10 +1295,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # Clear KVConnector state after all KVs are generated.
         if has_kv_transfer_group():
             get_kv_transfer_group().clear_connector_metadata()
-        torch.cuda.synchronize()
-        end_time = time.perf_counter()
-        logger.info("********* Model execution took %.6f seconds",
-                     end_time - begin_time)
+        # //////////////////////////////////////////////////////////
+        if os.environ.get("LAZY_LOG") == "1":
+            torch.cuda.synchronize()
+            end_time = time.perf_counter()
+            logger.info("********* Model execution after prepare took %.6f seconds",
+                        end_time - begin_time)
         return ModelRunnerOutput(
             req_ids=self.input_batch.req_ids,
             req_id_to_index=self.input_batch.req_id_to_index,

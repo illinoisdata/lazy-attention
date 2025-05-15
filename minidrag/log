@@ -1,0 +1,6 @@
+Running scripts/bench_exp1_single.sh on [ llmrag drag ] x [ musique ]
+Using SUTS_MODEL=ldsjmdy/Tulu3-RAG
+Using SUT=llmrag, DATANAME=musique
+      sut_args="--rag_type=llmrag --tokenizer ldsjmdy/Tulu3-RAG --model ldsjmdy/Tulu3-RAG "
+      datakey=musique, dataargs="--dataset-name longbench --longbench_dataset_name musique --max-concurrency 1"
+Interrupted.
