@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from typing import Optional, Union
 from itertools import chain
 import copy
+import numpy as np
 
 from vllm.config import VllmConfig
 from vllm.distributed.kv_events import EventPublisherFactory, KVEventBatch
@@ -17,7 +18,7 @@ from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.v1.core.encoder_cache_manager import (EncoderCacheManager,
                                                 compute_encoder_budget)
 from vllm.v1.core.sched.interface import SchedulerInterface
-from vllm.v1.core.sched.output import (CachedRequestData, NewRequestData,
+from vllm.v1.core.sched.output import (CachedRequestData,
                                        SchedulerOutput)
 from vllm.v1.core.sched.utils import check_stop
 from vllm.v1.engine import (EngineCoreOutput,
@@ -37,6 +38,7 @@ from minidrag.core.kv_cache_manager import DragKVCacheManager as KVCacheManager
 from minidrag.request import _Request as Request
 from minidrag.request import RequestStatus
 from minidrag.engine import EngineCoreRequest, EngineCoreEventType
+from minidrag.core.sched.output import NewRequestData
 
 
 """ Different from the original V1Scheduler, this scheduler need to process the documents inner the 
@@ -185,6 +187,8 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
 
         # For logging.
         scheduled_timestamp = time.monotonic()
+        
+        req_to_q_offset: dict[str, list[int]] = {}
 
         # ///////////////////////////////////////////////////////////////////////
         # First, schedule the RUNNING requests.
@@ -382,6 +386,31 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                     # Update the prompt
                     request.merge_documents()
                     
+                    # ---------------------------------
+                    # When merging, we also prepare info for q rot
+                    # ---------------------------------
+                    # Generat the mask and offset information
+                    num_blocks = len(computed_blocks)
+                    # q_mask = [self.block_size for _ in range(num_blocks+1)]
+                    q_offset = np.zeros(num_blocks + 1, dtype=np.int32)
+                    
+                    num_docs = len(request.documents_token_ids)
+                    acc_len = 0
+                    acc_blk = 0
+                    for doc_idx in range(num_docs):
+                        # Note(haocheng): here we use a simpler one,
+                        # only record the start position of each blocks doc
+                        # [0, 0, 2, 2,]
+                        doc_len = request.len_documents[doc_idx]
+                        num_blks = doc_len // self.block_size
+                        doc_len = request.len_documents[doc_idx]
+                        q_offset[acc_blk: acc_blk+num_blks] = acc_len
+                        acc_len += doc_len
+                        acc_blk += num_blks
+                    req_to_q_offset[request.request_id] = list(q_offset)
+                    # print(f"q_offset: {q_offset}")
+                    # breakpoint()
+                    
                     pre = self.kv_cache_manager.req_to_block_hashes_docs[request.request_id]
                     self.kv_cache_manager.req_to_block_hashes[request.request_id] = \
                         list(chain.from_iterable(pre)) + \
@@ -519,7 +548,8 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         # Construct the scheduler output.
         new_reqs_data = [
             NewRequestData.from_request(req,
-                                        req_to_new_block_ids[req.request_id])
+                                        req_to_new_block_ids[req.request_id],
+                                        req_to_q_offset.get(req.request_id, None),)
             for req in scheduled_new_reqs
         ]
         resumed_reqs_data = [

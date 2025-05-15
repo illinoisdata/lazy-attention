@@ -357,7 +357,7 @@ def sample_longbench_requests(
                 output_len=output_len,
                 document_len=document_len,
                 documents=prompt_doc_ids,
-                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42),
+                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42, min_tokens=output_len),
             )
         )
         max_len = max(max_len, prompt_len + document_len)
@@ -1250,7 +1250,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--sample-requests",
         type=int,
-        default=200,
+        default=20,
         help="IF set, randomly sample this many requests with replacement to test.",
     )
     parser.add_argument(

@@ -363,6 +363,7 @@ class LLMRAG(RAG):
         sampling_params: SamplingParams,
         position_ids: Optional[List[int]] = None,
     ) -> AsyncGenerator[str, None]:
+        # print(sampling_params)
         request_id = self._next_request_id()
         preamble = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an intelligent AI assistant. Please answer questions based on the user's instructions. Below are some reference documents that may help you in answering the user's question.\n\n"
         query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
@@ -1024,6 +1025,7 @@ def prepare_lmcache(async_engine_args: AsyncEngineArgs)-> None:
 
 
 def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
+    # engine_args.compilation_config = None
     if args.rag_type == "parrot":
         return ParrotRAG()
     elif args.rag_type == "cachep":
@@ -1058,6 +1060,13 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
         # async_engine_args.gpu_memory_utilization = 0.7
         # prepare_lmcache(async_engine_args)
         logger.info(f"[drag] Using async engine args: {async_engine_args}")
+        return DynamicRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
+    elif args.rag_type == "basedrag":
+        async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
+        async_engine_args.max_model_len = 8192 * 8
+        # async_engine_args.gpu_memory_utilization = 0.7
+        # prepare_lmcache(async_engine_args)
+        logger.info(f"[basedrag] Using async engine args: {async_engine_args}")
         return BaselineDynamicRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
     logger.error(f"Invalid RAG type {args.rag_type}")
     sys.exit(1)
