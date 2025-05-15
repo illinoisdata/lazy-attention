@@ -47,7 +47,8 @@ DATA_KEYS=(
 )
 
 # GLOBAL_DATA_ARGS=""
-GLOBAL_DATA_ARGS="--request-sampling-method zipf --request-zipf-param 1.01 --sample-documents 10 --document-sampling-method zipf --document-zipf-param 1.01"
+GLOBAL_DATA_ARGS="--max-concurrency 1 --request-sampling-method zipf --request-zipf-param 1.01 --sample-documents 10 --document-sampling-method zipf --document-zipf-param 1.01"
+# GLOBAL_DATA_ARGS="--max-concurrency 1"
 
 function get_data_args() {
     local key=$1
@@ -274,8 +275,8 @@ function get_sut_args() {
         # SUTS_MODEL="meta-llama/Llama-3.1-8B-Instruct"
         # SUTS_MODEL="meta-llama/Llama-3.1-8B-Instruct"
         # SUTS_MODEL="meta-llama/Llama-3.1-70B-Instruct"
-        # SUTS_MODEL="ldsjmdy/Tulu3-Block-FT"
-        SUTS_MODEL="ldsjmdy/Tulu3-RAG"
+        SUTS_MODEL="ldsjmdy/Tulu3-Block-FT"
+        # SUTS_MODEL="ldsjmdy/Tulu3-RAG"
     fi
     echo "Using SUTS_MODEL=${SUTS_MODEL}"
 

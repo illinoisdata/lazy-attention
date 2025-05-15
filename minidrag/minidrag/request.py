@@ -41,6 +41,7 @@ class _Request:
         # Extra attributes for DynamicRAG
         documents_token_ids: Optional[list[list[int]]] = None,
         document_seq_hash: Optional[str] = None,
+        doc_pad_lens: Optional[list[int]] = None,
     ) -> None:
         self.request_id = request_id
         self.sampling_params = sampling_params
@@ -88,6 +89,7 @@ class _Request:
         # Get extra attributes for DynamicRAG
         self.documents_token_ids = documents_token_ids
         self.document_seq_hash = document_seq_hash
+        self.doc_pad_lens = doc_pad_lens
         # Obtain the length of each document
         self.len_documents = None
         self.num_computed_tokens_docs = None
@@ -128,6 +130,7 @@ class _Request:
             # Extra attributes for DynamicRAG
             documents_token_ids=request.documents_token_ids,
             document_seq_hash=request.document_seq_hash,
+            doc_pad_lens=request.doc_pad_lens,
         )
 
     def append_output_token_ids(

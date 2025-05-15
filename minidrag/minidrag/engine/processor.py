@@ -79,9 +79,11 @@ def process_inputs(
     documents_token_ids = None
     documents_hash = None
     document_seq_hash = None
+    doc_pad_lens = None
     if document_seq is not None:
         documents_token_ids = []
         documents_hash = []
+        doc_pad_lens = []
         for doc in document_seq:
             processed_document_seq: ProcessorInputs = self.input_preprocessor.preprocess(
                 doc,
@@ -96,6 +98,7 @@ def process_inputs(
             # pad the document sequence
             # left padding
             pad_length = nearest_multiple - len(doc_token_ids)
+            doc_pad_lens.append(pad_length)
             if pad_length > 0:
                 try:
                     pad_token = self.tokenizer.tokenizer.pad_token
@@ -194,6 +197,7 @@ def process_inputs(
         # For dynamic rag
         documents_token_ids=documents_token_ids,
         document_seq_hash=document_seq_hash,
+        doc_pad_lens=doc_pad_lens,
     )
 
 

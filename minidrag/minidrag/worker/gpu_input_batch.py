@@ -37,6 +37,7 @@ class CachedRequestState:
     # For q rotation
     has_docs: bool = False
     q_offset: Optional[list[int]] = None
+    q_mask: Optional[list[int]] = None
 
     mrope_positions: Optional[torch.Tensor] = None
     mrope_position_delta: Optional[int] = None

@@ -189,7 +189,7 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         scheduled_timestamp = time.monotonic()
         
         req_to_q_offset: dict[str, list[int]] = {}
-
+        req_to_q_mask: dict[str, list[int]] = {}
         # ///////////////////////////////////////////////////////////////////////
         # First, schedule the RUNNING requests.
         # If already in the RUNNING queue, the required documents are ready,
@@ -393,22 +393,27 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                     num_blocks = len(computed_blocks)
                     # q_mask = [self.block_size for _ in range(num_blocks+1)]
                     q_offset = np.zeros(num_blocks + 1, dtype=np.int32)
+                    q_mask = np.zeros(num_blocks + 1, dtype=np.int32)
                     
-                    num_docs = len(request.documents_token_ids)
-                    acc_len = 0
+                    pad_lens = request.doc_pad_lens
+                    doc_lens_padded = request.len_documents
                     acc_blk = 0
-                    for doc_idx in range(num_docs):
+                    for doc_idx, doc_len_padded in enumerate(doc_lens_padded):
                         # Note(haocheng): here we use a simpler one,
                         # only record the start position of each blocks doc
                         # [0, 0, 2, 2,]
-                        doc_len = request.len_documents[doc_idx]
-                        num_blks = doc_len // self.block_size
-                        doc_len = request.len_documents[doc_idx]
-                        q_offset[acc_blk: acc_blk+num_blks] = acc_len
-                        acc_len += doc_len
+                        num_blks = doc_len_padded // self.block_size
+                        q_offset[acc_blk: acc_blk+num_blks] = int(
+                            np.sum(pad_lens[doc_idx:]) + np.sum(doc_lens_padded[:doc_idx]))
                         acc_blk += num_blks
+                        q_mask[acc_blk-1] = pad_lens[doc_idx] # e.g., padding the first block two tokens [2]
+                        
                     req_to_q_offset[request.request_id] = list(q_offset)
+                    req_to_q_mask[request.request_id] = list(q_mask)
+                    # print(f"pad_lens: {pad_lens}")
+                    # print(f"doc_lens_padded: {doc_lens_padded}")
                     # print(f"q_offset: {q_offset}")
+                    # print(f"q_mask: {q_mask}")
                     # breakpoint()
                     
                     pre = self.kv_cache_manager.req_to_block_hashes_docs[request.request_id]
@@ -549,7 +554,8 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         new_reqs_data = [
             NewRequestData.from_request(req,
                                         req_to_new_block_ids[req.request_id],
-                                        req_to_q_offset.get(req.request_id, None),)
+                                        req_to_q_offset.get(req.request_id, None),
+                                        req_to_q_mask.get(req.request_id, None))
             for req in scheduled_new_reqs
         ]
         resumed_reqs_data = [

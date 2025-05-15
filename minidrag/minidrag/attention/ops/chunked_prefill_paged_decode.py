@@ -64,6 +64,7 @@ def kernel_paged_attention_2d(
         # To rotate the query
         is_lazy_ptr,
         q_offset_ptr,
+        q_mask_ptr,
 ):
     # TODO(haocheng): consider the case rot dim != head size
     seq_idx = tl.program_id(0)
@@ -100,7 +101,7 @@ def kernel_paged_attention_2d(
         dim_mask_half = tl.where(tl.arange(0, HEAD_SIZE_PADDED // 2) < HEAD_SIZE // 2, 1,
                             0).to(tl.int1)
         # rotary_dim = HEAD_SIZE
-        embed_dim: tl.constexpr = HEAD_SIZE // 2
+        # embed_dim: tl.constexpr = HEAD_SIZE // 2
         offs_d1 = tl.arange(0, HEAD_SIZE_PADDED // 2)
         offs_d2 = offs_d1 + HEAD_SIZE // 2
 
@@ -204,6 +205,13 @@ def kernel_paged_attention_2d(
             seq_offset = j * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
             boundary = tl.full([BLOCK_SIZE], seq_len, dtype=tl.int32)
             seq_mask = seq_offset[None, :] < boundary
+            
+            # --------------------------------------------
+            # skip padded tokens
+            # --------------------------------------------
+            q_mask_val = tl.load(q_mask_ptr + block_table_offset + j)
+            if q_mask_val != 0:
+                seq_mask = seq_mask & (tl.arange(0, BLOCK_SIZE) < (BLOCK_SIZE - q_mask_val))
             
             if prev_offset != rot_offset_val:
                 # -----------------------------------------------------
@@ -526,7 +534,7 @@ def chunked_prefill_paged_decode(
             # To rotate the query
             is_lazy=is_lazy,
             q_offset=q_offset,
-            # q_mask=None,
+            q_mask=q_mask,
         )
 
     block_size = value_cache.shape[3]
@@ -609,5 +617,5 @@ def chunked_prefill_paged_decode(
             # To rotate the query
             is_lazy_ptr=is_lazy,
             q_offset_ptr=q_offset,
-            # q_mask=None,
+            q_mask_ptr=q_mask,
         )

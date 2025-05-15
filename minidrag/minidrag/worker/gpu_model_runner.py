@@ -305,6 +305,17 @@ class LazyGPUModelRunner(BaseGPUModelRunner):
                                             device="cpu",
                                             pin_memory=self.pin_memory)
         self.lazy_offset_np = self.lazy_offset_cpu.numpy()
+        
+        self.lazy_mask = torch.zeros((self.max_num_reqs,
+                                        self.max_num_blocks_per_req),
+                                       dtype=torch.int32,
+                                       device=self.device)
+        self.lazy_mask_cpu = torch.zeros((self.max_num_reqs, 
+                                            self.max_num_blocks_per_req),
+                                            dtype=torch.int32,
+                                            device="cpu",
+                                            pin_memory=self.pin_memory)
+        self.lazy_mask_np = self.lazy_mask_cpu.numpy()
 
     def _update_states(self, scheduler_output: "SchedulerOutput") -> None:
         """Update the cached states and the persistent batch with the scheduler
@@ -383,6 +394,7 @@ class LazyGPUModelRunner(BaseGPUModelRunner):
                 # They are all immutable
                 has_docs=new_req_data.has_docs,
                 q_offset=new_req_data.q_offset,
+                q_mask=new_req_data.q_mask,
 # /////////////////////////////////////////////////////////////////////////////
             )
 
@@ -550,9 +562,14 @@ class LazyGPUModelRunner(BaseGPUModelRunner):
                     self.is_lazy_req_cpu[idx] = cur_has_docs
                     self.lazy_offset_np[idx, 
                         :len(self.requests[req_id].q_offset)] = self.requests[req_id].q_offset
+                    self.lazy_mask_np[idx,
+                        :len(self.requests[req_id].q_mask)] = self.requests[req_id].q_mask
+            # Copy the lazy_mask and lazy_offset to the GPU
             self.lazy_offset[:num_reqs].copy_(self.lazy_offset_cpu[:num_reqs],
                                           non_blocking=True)
-        # Copy the lazy_mask and lazy_offset to the GPU
+            self.lazy_mask[:num_reqs].copy_(self.lazy_mask_cpu[:num_reqs],
+                                          non_blocking=True)
+        
         self.is_lazy_req[:num_reqs].copy_(self.is_lazy_req_cpu[:num_reqs],
                                           non_blocking=True)
 # /////////////////////////////////////////////////////////////////////////////
@@ -654,7 +671,8 @@ class LazyGPUModelRunner(BaseGPUModelRunner):
 # ///////////////////////////////////////////////////////////////////////////
         # We insert the lazy_mask and lazy_offset into the attn_metadata
         attn_metadata.is_lazy = self.is_lazy_req[:num_reqs]
-        attn_metadata.q_offset = self.lazy_offset[:num_reqs]         
+        attn_metadata.q_offset = self.lazy_offset[:num_reqs]  
+        attn_metadata.q_mask = self.lazy_mask[:num_reqs]       
 # ////////////////////////////////////////////////////////////////////////////
 
         use_spec_decode = len(

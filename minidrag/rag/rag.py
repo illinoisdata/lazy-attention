@@ -1055,13 +1055,13 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
             cache_max_token=args.pc_cache_max_token,
         )
     elif args.rag_type == "drag":
-        async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
-        async_engine_args.max_model_len = 8192 * 8
-        # async_engine_args.gpu_memory_utilization = 0.7
-        # prepare_lmcache(async_engine_args)
-        logger.info(f"[drag] Using async engine args: {async_engine_args}")
-        return DynamicRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
-    elif args.rag_type == "basedrag":
+    #     async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
+    #     async_engine_args.max_model_len = 8192 * 8
+    #     # async_engine_args.gpu_memory_utilization = 0.7
+    #     # prepare_lmcache(async_engine_args)
+    #     logger.info(f"[drag] Using async engine args: {async_engine_args}")
+    #     return DynamicRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
+    # elif args.rag_type == "basedrag":
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
         async_engine_args.max_model_len = 8192 * 8
         # async_engine_args.gpu_memory_utilization = 0.7

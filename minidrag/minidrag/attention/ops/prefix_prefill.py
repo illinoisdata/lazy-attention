@@ -87,6 +87,7 @@ def _fwd_kernel(Q,
                 # ///////////////
                 is_lazy_ptr,
                 q_offset_ptr,
+                q_mask_ptr,
                 # /////////////////
                 MAX_Q_LEN: tl.constexpr = 0,
                 MAX_CTX_LEN: tl.constexpr = 0
@@ -258,7 +259,14 @@ def _fwd_kernel(Q,
             qk_1 = tl.dot((q_1*cos_val + q_2*sin_val), k_1, input_precision=IN_PRECISION)
             qk_2 = tl.dot((q_2*cos_val - q_1*sin_val), k_2, input_precision=IN_PRECISION)
             qk = qk_1 + qk_2
-            qk = tl.where((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len, qk,
+            
+            # --------------------------------------------
+            # skip padded tokens
+            # --------------------------------------------
+            q_mask_val = tl.load(q_mask_ptr + cur_batch * stride_b_loc_b +
+                (start_n // BLOCK_SIZE) * stride_b_loc_s)
+            seq_bound = min(cur_batch_ctx_len, start_n + BLOCK_SIZE - q_mask_val)            
+            qk = tl.where((start_n + offs_bs_n[None, :]) < seq_bound, qk,
                             float("-inf"))
 
             # qk = tl.zeros([BLOCK_M, BLOCK_SIZE], dtype=tl.float32)  # [M,N]
@@ -612,6 +620,7 @@ def context_attention_fwd(q,
                           # ///////
                           is_lazy=None,
                           q_offset=None,
+                          q_mask=None,
                           ):
 
     q_dtype_is_f32 = q.dtype is torch.float32
@@ -722,6 +731,7 @@ def context_attention_fwd(q,
         is_neox_style=is_neox_style,
         is_lazy_ptr=is_lazy,
         q_offset_ptr=q_offset,
+        q_mask_ptr=q_mask,
         # /////////////////
         BLOCK_M=128,
         BLOCK_N=64,

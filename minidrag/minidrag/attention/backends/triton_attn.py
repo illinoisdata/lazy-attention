@@ -78,9 +78,10 @@ def forward(
         max_seqlen_q = attn_metadata.max_query_len
         max_seqlen_k = attn_metadata.max_seq_len
         block_table = attn_metadata.block_table
+        # ////////
         is_lazy = attn_metadata.is_lazy
         q_offset = attn_metadata.q_offset
-        # q_mask = attn_metadata.q_mask
+        q_mask = attn_metadata.q_mask
     # Compute attention and update output up to `num_actual_tokens`.
     chunked_prefill_paged_decode(query=query[:num_actual_tokens],
                                  key=key[:num_actual_tokens],
@@ -106,7 +107,7 @@ def forward(
                                  # in order to rotate the query
                                  is_lazy=is_lazy,
                                  q_offset=q_offset,
-                                #  q_mask=q_mask,
+                                 q_mask=q_mask,
                                  )
     return output
 

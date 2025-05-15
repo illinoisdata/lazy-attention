@@ -32,6 +32,7 @@ class NewRequestData:
     # For q rotation
     has_docs: bool = False
     q_offset: Optional[list[int]] = None
+    q_mask: Optional[list[int]] = None
 
     @classmethod
     def from_request(
@@ -40,6 +41,7 @@ class NewRequestData:
         block_ids: list[int],
         # ///////////
         q_offset: Optional[list[int]] = None,
+        q_mask: Optional[list[int]] = None,
     ) -> NewRequestData:
         return cls(
             req_id=request.request_id,
@@ -53,4 +55,5 @@ class NewRequestData:
             lora_request=request.lora_request,
             has_docs=request.has_documents,
             q_offset=q_offset,
+            q_mask=q_mask,
         )
