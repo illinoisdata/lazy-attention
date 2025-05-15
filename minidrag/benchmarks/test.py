@@ -26,14 +26,40 @@ from longbench import load_dataset, split_context
 print("Loading dataset...")
 dataset = load_dataset('2wikimqa')
 print(len(dataset.rows))
-for i in range(5):
-    print("-" * 20)
+passage_titles = []
+for i in range(len(dataset.rows)):
+    passage_title = []
+    # print('-' * 20)
     context_example = dataset.rows[i].context
+    for passage in context_example:
+        title = passage.split("\n")[1]
+        passage_title.append(title)
+    passage_titles.append(passage_title)
     question_example = dataset.rows[i].input
-    for con in context_example:
-        print("Example context:", con)
-    print("-" * 20)
-    print("Example question:", question_example)
+
+nums = []
+max_overlap = 0
+for i in range(len(passage_titles)):
+    for j in range(i+1, len(passage_titles)):
+        t_i = passage_titles[i]
+        t_j = passage_titles[j]
+        len_overlap = len(set(t_i) & set(t_j))
+        max_overlap = max(max_overlap, len_overlap)
+        print(f"Passage {i} and Passage {j} have {len_overlap} overlapping titles.")
+        nums.append(len_overlap)
+print("Average overlap:", sum(nums) / len(nums))
+# counting the frequency of each overlap
+from collections import Counter
+overlap_counter = Counter(nums)
+print("Overlap frequency:", overlap_counter)
+
+print("Max overlap:", max_overlap)
+for i in [15, 50]: # [198, 199]:
+    print(len(passage_titles[i]), passage_titles[i])
+    print(dataset.rows[i].input)
+# print(len(passage_titles[87]), passage_titles[87])
+# print(dataset.rows[87].input)
+
 # musique
 # samsum
 # multi_news
