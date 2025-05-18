@@ -32,6 +32,7 @@ from vllm.v1.structured_output import StructuredOutputManager
 
 logger = init_logger(__name__)
 
+import os
 
 class Scheduler(SchedulerInterface):
 
@@ -44,6 +45,16 @@ class Scheduler(SchedulerInterface):
         include_finished_set: bool = False,
         log_stats: bool = False,
     ) -> None:
+        # ---------------------------------------
+        if os.environ.get("LAZY_CACHE_LOG") == "1":
+            log_stats = True  # force log
+            self.time_str = time.strftime("%H:%M:%S", time.localtime())
+            self.hit_sum = 0
+            self.query_sum = 0
+            self.avg_mem_usage = 0
+            self.schedule_step = 0
+        # ---------------------------------------
+            
         self.vllm_config = vllm_config
         self.scheduler_config = vllm_config.scheduler_config
         self.cache_config = vllm_config.cache_config
@@ -524,6 +535,19 @@ class Scheduler(SchedulerInterface):
         self.finished_req_ids = set()
         # print(f"================================================")
         # print(f"scheduler_output: {scheduler_output}")
+        if os.environ.get("LAZY_CACHE_LOG") == "1":
+            self.avg_mem_usage *= self.schedule_step
+            self.avg_mem_usage += self.kv_cache_manager.usage
+            self.schedule_step += 1
+            self.avg_mem_usage /= self.schedule_step 
+            with open(f"prefix_cache_stats_{self.time_str}.txt", "a+") as f:
+                f.write("vllm: " + str(self.avg_mem_usage)+'\n')
+            # hit ratio
+            # update
+            self.hit_sum += self.kv_cache_manager.prefix_cache_stats.hits
+            self.query_sum += self.kv_cache_manager.prefix_cache_stats.queries
+            with open(f"hit_ratio_{self.time_str}.txt", "a+") as f:
+                f.write("vllm: " + str(self.hit_sum / (self.query_sum + 1e-12)) +'\n')
         return scheduler_output
 
     def _make_cached_request_data(
@@ -783,6 +807,12 @@ class Scheduler(SchedulerInterface):
 
     def add_request(self, request: Request) -> None:
         self.waiting.append(request)
+        # from vllm.v1.utils import ConstantList
+        # request.prompt_token_ids = request.prompt_token_ids[:40000]
+        # request.num_prompt_tokens = min(request.num_prompt_tokens, 40000)
+        # request._all_token_ids = request.prompt_token_ids.copy()
+        # request.all_token_ids = ConstantList(request._all_token_ids)
+        # print(f"adding {len(request.all_token_ids)}")
         self.requests[request.request_id] = request
         if self.log_stats:
             request.record_event(EngineCoreEventType.QUEUED)

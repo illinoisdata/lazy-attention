@@ -20,7 +20,6 @@ from minidrag.metrics.stats import PrefixCacheStats
 from minidrag.core.kv_cache_utils import hash_request_tokens_with_doc_hash, hash_request_tokens_docs
 from minidrag.core.block_pool import cache_full_blocks, cache_full_blocks_docs
 
-
 class DragKVCacheManager(KVCacheManager):
 
     def __init__(
@@ -33,6 +32,15 @@ class DragKVCacheManager(KVCacheManager):
         log_stats: bool = False,
         enable_kv_cache_events: bool = False,
     ) -> None:
+        
+        # ----------------------------------
+        import os
+        self.log_cache = False
+        if os.environ.get("LAZY_CACHE_LOG") == "1":
+            self.log_cache = True
+            log_stats = True
+        # ----------------------------------
+
         assert len(kv_cache_config.kv_cache_groups) == 1, (
             "KVCacheManager does not support hybrid models with more than 1 "
             "kv cache group")
@@ -191,8 +199,8 @@ class DragKVCacheManager(KVCacheManager):
                                                          self.block_size, request)
             self.req_to_block_hashes_docs[request.request_id] = block_hashes_docs
 
-        if self.log_stats:
-            self.prefix_cache_stats.doc_requests += 1
+        # if self.log_stats:
+        #     self.prefix_cache_stats.doc_requests += 1
         # Then find the computed blocks.
         computed_blocks_docs = [[] for _ in range(num_docs)]
         num_computed_tokens_docs = [0 for _ in range(num_docs)]
@@ -204,8 +212,8 @@ class DragKVCacheManager(KVCacheManager):
                 len(computed_blocks_docs[doc_idx]) * self.block_size)
             
         # Update stats information TODO(haocheng): utilize the stats
-        if self.log_stats:
-            self.prefix_cache_stats.doc_hits += num_docs
+        # if self.log_stats:
+        #     self.prefix_cache_stats.doc_hits += num_docs
         return computed_blocks_docs, num_computed_tokens_docs
 
     def allocate_slots(
@@ -538,3 +546,12 @@ class DragKVCacheManager(KVCacheManager):
         self.req_to_block_hashes.pop(request.request_id, None)
         # TODO(haocheng): should we remove immediately?
         self.req_to_block_hashes_docs.pop(request.request_id, None)
+        
+        
+    def print_stats(self):
+        if self.log_stats:
+            with open("prefix_cache_stats.txt", "w") as f:
+                f.write(str(self.prefix_cache_stats.memory_footprint))
+        else:
+            with open("prefix_cache_stats.txt", "w") as f:
+                f.write("Prefix cache stats are not logged.")

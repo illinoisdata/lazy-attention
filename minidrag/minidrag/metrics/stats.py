@@ -14,10 +14,12 @@ class PrefixCacheStats:
     queries: int = 0
     # The number of hits in these requests.
     hits: int = 0
-    # For dynamic prefix cache, the number of blocks that were added to the
-    doc_requests: int = 0
-    doc_queries: int = 0
-    doc_hits: int = 0
+    
+    # # TODO(haocheng): if needed we can have a fine-grained one
+    # # We dicrectly use the hits to calculate the hit rate.
+    # fetch_blocks: int = 0.0
+    # hit_blocks: int = 0.0
+    
     
 
 @dataclass

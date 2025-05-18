@@ -59,6 +59,18 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         include_finished_set: bool = False,
         log_stats: bool = False,
     ) -> None:
+        # ------------------------------------
+        import os
+        self.schedule_step = 0
+        self.avg_mem_usage = 0
+        self.log_cache = False
+        if os.environ.get("LAZY_CACHE_LOG") == "1":
+            self.log_cache = True
+            self.time_str = time.strftime("%H:%M:%S", time.localtime())
+            self.hit_sum = 0
+            self.query_sum = 0
+        # ------------------------------------
+        
         self.vllm_config = vllm_config
         self.scheduler_config = vllm_config.scheduler_config
         self.cache_config = vllm_config.cache_config
@@ -319,6 +331,7 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         # Here we need to check and assemble query requests and document.
         if not preempted_reqs:
             while self.waiting and token_budget > 0:
+                print("entering waiting")
                 if len(self.running) == self.max_num_running_reqs:
                     break
                 
@@ -353,6 +366,28 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                     else:
                         self.waiting.popleft()
                         skipped_waiting_requests.appendleft(request)
+
+                        # Spwan sub requests and add them to the waiting queue
+                        num_docs = len(request.documents_token_ids)
+                        sampling_params = copy.deepcopy(request.sampling_params)
+                        sampling_params.max_tokens = 1  # TODO(haocheng): how to avoid
+                        # for doc_idx in range(num_docs):
+                        #     req_id = f"{request.request_id}_d{doc_idx}"
+                        #     if self.requests.get(req_id) is not None:
+                        #         # This document has already been scheduled
+                        #         continue
+                        #     doc_req = Request(
+                        #         request_id = f"{request.request_id}_d{doc_idx}",
+                        #         prompt_token_ids = request.documents_token_ids[doc_idx],
+                        #         multi_modal_inputs = request.mm_inputs,
+                        #         multi_modal_hashes = request.mm_hashes,
+                        #         multi_modal_placeholders = request.mm_positions,
+                        #         sampling_params = sampling_params,
+                        #         eos_token_id=request.eos_token_id,
+                        #         arrival_time=request.arrival_time,
+                        #     )
+                        #     skipped_waiting_requests.appendleft(doc_req)
+                        #     self.requests[doc_req.request_id] = doc_req
                         continue
                 
                 # Get already-cached tokens.
@@ -614,8 +649,25 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
             self.requests[req_id].num_computed_tokens += num_scheduled_token
 
         self.finished_req_ids = set()
-        # print(f"================================================")
-        # print(f"scheduler_output: {scheduler_output}")
+        print(f"================================================")
+        if len(scheduler_output.finished_req_ids) > 0:
+            pass # print(f"scheduler_output: {scheduler_output}")
+        else:
+            print(f"{len(self.running)} running requests, {len(self.waiting)} waiting requests")
+            # if len(self.running) == 0 and len(self.waiting) == 1:
+            #     print(f"waiting requests: {self.waiting}")
+        if self.log_cache:
+            self.avg_mem_usage *= self.schedule_step
+            self.avg_mem_usage += self.kv_cache_manager.usage
+            self.schedule_step += 1
+            self.avg_mem_usage /= self.schedule_step 
+            with open(f"prefix_cache_stats_{self.time_str}.txt", "a+") as f:
+                f.write("lazy: " + str(self.avg_mem_usage)+'\n')
+            # hit ratio
+            self.hit_sum += self.kv_cache_manager.prefix_cache_stats.hits
+            self.query_sum += self.kv_cache_manager.prefix_cache_stats.queries
+            with open(f"hit_ratio_{self.time_str}.txt", "a+") as f:
+                f.write("lazy: " + str(self.hit_sum / (self.query_sum + 1e-12)) +'\n')
         return scheduler_output
 
     def add_request(self, request: Request) -> None:

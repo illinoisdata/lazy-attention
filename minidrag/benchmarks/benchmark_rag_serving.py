@@ -62,7 +62,7 @@ def sample_elems(
             elem_ids.extend(valid)
         elem_ids = elem_ids[:num_sample_elems]
     elif elem_sampling_method == "uniform":
-        elem_ids = list(rng.integers(0, high=len(input_elems), size=num_sample_elems))
+        elem_ids = list(rng.integers(0, high=num_elems, size=num_sample_elems))
     else:
         raise ValueError(f"Unknown sampling method: {elem_sampling_method}")
     elem_ids = list(map(int, elem_ids))
@@ -1250,7 +1250,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--sample-requests",
         type=int,
-        default=20,
+        default=200,
         help="IF set, randomly sample this many requests with replacement to test.",
     )
     parser.add_argument(
