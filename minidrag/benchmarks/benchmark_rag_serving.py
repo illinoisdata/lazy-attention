@@ -119,6 +119,7 @@ class RAGRequest:
         if document_sampling_method is None:
             return self
 
+        logger.info(f"num of documents to sample: {document_samples}")
         local_doc_ids = sample_elems(
             rng=rng,
             num_elems=len(self.documents),
@@ -128,8 +129,7 @@ class RAGRequest:
         )
         sampled_documents = []
         for local_doc_id in local_doc_ids:
-            if self.documents[local_doc_id] not in sampled_documents:
-                sampled_documents.append(self.documents[local_doc_id])
+            sampled_documents.append(self.documents[local_doc_id])
         logger.trace(f"{sampled_documents=}")
         return RAGRequest(
             prompt=self.prompt,
@@ -717,12 +717,15 @@ async def rag_request_func(
 ) -> RAGRequestFuncOutput:
     output = RAGRequestFuncOutput()
     output.prompt_len = request_func_input.request.prompt_len
-
+    # before generating, check if the documents are cached
+    # logger.info(f"num docs: {len(request_func_input.request.documents)}")
+    await request_func_input.rag.add_doc_async(request_func_input.rag._last_request_id, 
+                                                request_func_input.request.documents)
     generated_texts: List[str] = []
     ttft = 0.0
     st = time.perf_counter()
     most_recent_timestamp = st
-    try:
+    try:        
         async for response in request_func_input.rag.iter_generate(
             doc_ids=request_func_input.request.documents,
             query=request_func_input.request.prompt,
@@ -1250,7 +1253,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--sample-requests",
         type=int,
-        default=200,
+        default=1,
         help="IF set, randomly sample this many requests with replacement to test.",
     )
     parser.add_argument(

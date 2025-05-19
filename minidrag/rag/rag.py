@@ -21,6 +21,12 @@ import torch
 import transformers
 from transformers.cache_utils import DynamicCache
 
+from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding, LlamaConfig, LlamaForCausalLM
+from transformers import AsyncTextIteratorStreamer
+from threading import Thread
+
+
 from vllm.engine.arg_utils import AsyncEngineArgs, EngineArgs
 from vllm import LLM, SamplingParams
 from vllm.transformers_utils.tokenizer import get_tokenizer as vllm_get_tokenizer
@@ -355,6 +361,18 @@ class LLMRAG(RAG):
             self._docs[doc_id] = doc
             doc_ids.append(doc_id)
         return doc_ids
+    
+    async def add_doc_async(self, request_id: str, docs_ids: List[int]) -> None:
+        for idx, doc_id in enumerate(docs_ids):
+            doc = self._docs[doc_id]
+            # 使用 async for 来迭代异步生成器
+            async for _ in self._llm.generate(
+                prompt=doc,
+                sampling_params=SamplingParams(temperature=0.0, max_tokens=1),
+                request_id=f"cache_{request_id}_{idx}",
+            ):
+                # 我们只需要等待生成完成，不需要使用生成的内容
+                pass
 
     async def iter_generate(
         self,
@@ -396,6 +414,138 @@ class LLMRAG(RAG):
         self._last_request_id += 1
         return request_id
 
+class RecomLLMRAG(RAG):
+
+    def __init__(self, llm: "AsyncLLM") -> None:
+        RAG.__init__(self)
+        self._llm = llm
+        self._docs: Dict[DocumentId, str] = {}
+        self._last_request_id: int = 0
+
+    def add_cache(self, docs: List[str]) -> List[int]:
+        doc_ids = []
+        for doc in docs:
+            doc_id = len(self._docs)
+            self._docs[doc_id] = doc
+            doc_ids.append(doc_id)
+        return doc_ids
+    
+    async def add_doc_async(self, request_id: str, docs_ids: List[int]) -> None:
+        pass
+
+    async def iter_generate(
+        self,
+        doc_ids: List[DocumentId],
+        query: str,
+        sampling_params: SamplingParams,
+        position_ids: Optional[List[int]] = None,
+    ) -> AsyncGenerator[str, None]:
+        # print(sampling_params)
+        request_id = self._next_request_id()
+        preamble = f"{request_id}<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an intelligent AI assistant. Please answer questions based on the user's instructions. Below are some reference documents that may help you in answering the user's question.\n\n"
+        query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
+        document = [self._docs[doc_id] for doc_id in doc_ids]
+        document = [preamble] + document
+        if isinstance(document, str):
+            context = document
+        else:
+            context = "\n".join(document)
+        prompt = context + "\n\n" + query
+        
+        latest_idx = 0
+        async for generate_output in self._llm.generate(
+            prompt=prompt,
+            sampling_params=sampling_params,
+            request_id=request_id,
+        ):
+            if len(generate_output.outputs) > 1:
+                logger.warning(f"Found {len(generate_output.outputs)} outputs, yielding first one.")
+            prev_latest_idx = latest_idx
+            latest_idx = len(generate_output.outputs[0].text)
+            if prev_latest_idx < latest_idx:
+                yield generate_output.outputs[0].text[prev_latest_idx:]
+
+    def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
+        pass
+
+    def _next_request_id(self) -> str:
+        request_id = str(self._last_request_id)
+        self._last_request_id += 1
+        return request_id
+
+
+class ReuseLLMRAG(RAG):
+
+    def __init__(self, llm: "AsyncLLM") -> None:
+        RAG.__init__(self)
+        self._llm = llm
+        self._docs: Dict[DocumentId, str] = {}
+        self._last_request_id: int = 0
+
+    def add_cache(self, docs: List[str]) -> List[int]:
+        doc_ids = []
+        for doc in docs:
+            doc_id = len(self._docs)
+            self._docs[doc_id] = doc
+            doc_ids.append(doc_id)
+        return doc_ids
+    
+    async def add_doc_async(self, request_id: str, docs_ids: List[int]) -> None:
+        latest_idx = 0
+        preamble = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an intelligent AI assistant. Please answer questions based on the user's instructions. Below are some reference documents that may help you in answering the user's question.\n\n"
+        document = [self._docs[doc_id] for doc_id in docs_ids]
+        document = [preamble] + document
+        if isinstance(document, str):
+            context = document
+        else:
+            context = "\n".join(document)
+
+        # 使用 async for 来迭代异步生成器
+        async for _ in self._llm.generate(
+            prompt=context,
+            sampling_params=SamplingParams(temperature=0.0, max_tokens=1),
+            request_id=f"cache_{request_id}",):
+            pass
+
+    async def iter_generate(
+        self,
+        doc_ids: List[DocumentId],
+        query: str,
+        sampling_params: SamplingParams,
+        position_ids: Optional[List[int]] = None,
+    ) -> AsyncGenerator[str, None]:
+        # print(sampling_params)
+        request_id = self._next_request_id()
+        preamble = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an intelligent AI assistant. Please answer questions based on the user's instructions. Below are some reference documents that may help you in answering the user's question.\n\n"
+        query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
+        document = [self._docs[doc_id] for doc_id in doc_ids]
+        document = [preamble] + document
+        if isinstance(document, str):
+            context = document
+        else:
+            context = "\n".join(document)
+        prompt = context + "\n\n" + query
+        
+        latest_idx = 0
+        async for generate_output in self._llm.generate(
+            prompt=prompt,
+            sampling_params=sampling_params,
+            request_id=request_id,
+        ):
+            if len(generate_output.outputs) > 1:
+                logger.warning(f"Found {len(generate_output.outputs)} outputs, yielding first one.")
+            prev_latest_idx = latest_idx
+            latest_idx = len(generate_output.outputs[0].text)
+            if prev_latest_idx < latest_idx:
+                yield generate_output.outputs[0].text[prev_latest_idx:]
+
+    def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
+        pass
+
+    def _next_request_id(self) -> str:
+        request_id = str(self._last_request_id)
+        self._last_request_id += 1
+        return request_id
 
 """
 WARNING: Only works with CacheBlend's vllm
@@ -428,6 +578,9 @@ class CacheBlendRAG(RAG):
             self._docs[doc_id] = doc
             doc_ids.append(doc_id)
         return doc_ids
+    
+    async def add_doc_async(self, request_id: str, docs_ids: List[int]) -> None:
+        pass
 
     async def iter_generate(
         self,
@@ -461,6 +614,144 @@ class CacheBlendRAG(RAG):
         request_id = str(self._last_request_id)
         self._last_request_id += 1
         return request_id
+
+from .utils import *
+class BlockAttentionRAG(RAG):
+    def __init__(self, lm_name: str) -> None:
+        RAG.__init__(self)
+        self._docs: Dict[DocumentId, str] = {}
+        self._last_request_id: int = 0
+
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._tokenizer = transformers.AutoTokenizer.from_pretrained(lm_name)
+        self._token_eos = self._tokenizer.eos_token_id
+        self._max_tokens = 200
+        self._document_max_len = 512
+        model = transformers.AutoModelForCausalLM.from_pretrained(
+            pretrained_model_name_or_path=lm_name,
+            torch_dtype=torch.bfloat16,
+            device_map="cuda:0",
+            attn_implementation="flash_attention_2"
+        )
+        model.eval()
+        config = transformers.AutoConfig.from_pretrained(pretrained_model_name_or_path=lm_name)
+        emb: LlamaRotaryEmbedding = LlamaRotaryEmbedding(config=config).to(device=model.device, dtype=torch.float32)
+        emb.eval()
+        self._model = model
+        self._emb = emb
+        self.prepared_doc_cache = []
+        self.doc_length_cache = []
+        self.input_ids = None
+
+    def add_cache(self, docs: List[str]) -> List[int]:
+        doc_ids = []
+        for doc in docs:
+            doc_id = len(self._docs)
+            self._docs[doc_id] = doc
+            doc_ids.append(doc_id)
+        return doc_ids
+    
+    async def add_doc_async(self, request_id: str, docs_ids: List[int]) -> None:
+        """For BlockAttention, we need to add documents asynchronously."""
+        # process doc
+        self.prepared_doc_cache = []
+        self.doc_length_cache = []
+        attention_mask: Optional[torch.Tensor] = None
+        input_ids = None
+        token_list = []
+        self._device = self._model.device
+        for b_idx, doc_id in enumerate(docs_ids):
+            doc = self._docs[doc_id]
+            kv_cache = DynamicCache()
+            with torch.no_grad():
+                tokens = self._tokenizer(doc, add_special_tokens=False,return_tensors="pt", ).input_ids.to(self._model.device)
+                for i in range(0, tokens.shape[1], self._document_max_len):
+                    chunk = tokens[:, i : i + self._document_max_len]
+                    outputs = self._model(
+                        chunk.to(self._device),
+                        past_key_values=kv_cache,
+                        use_cache=True,
+                        attention_mask=attention_mask.to(self._device) if attention_mask is not None else None,
+                    )
+                    logits = outputs.logits
+                    kv_cache = outputs.past_key_values # update kv_cache
+                    # next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)[0]
+            self.prepared_doc_cache.append(kv_cache)
+            self.doc_length_cache.append(tokens.shape[1])
+            token_list.append(tokens)
+        self.input_ids = torch.cat(token_list, dim=-1)
+        print('input_ids', self.input_ids.shape)
+        print('sum of tokens', sum(self.doc_length_cache), self.doc_length_cache)
+        async def async_iter(data):
+            for item in data:
+                yield item
+                await asyncio.sleep(0) 
+        async for _ in async_iter([1, 2, 3]):
+            pass
+    
+    async def iter_generate(
+        self,
+        doc_ids: List[DocumentId],
+        query: str,
+        sampling_params: SamplingParams,
+        position_ids: Optional[List[int]] = None,
+    ) -> AsyncGenerator[str, None]:
+        # rotate the cache
+        time_start = time.perf_counter()
+        for i in range(len(self.prepared_doc_cache)):
+            self.prepared_doc_cache[i] = apply_pkv_rotary_position_embeddings(self.prepared_doc_cache[i], self._emb)
+        kv_cache = merge_and_rotary_past_key_values(self.prepared_doc_cache, self._emb)
+        
+        query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
+        response_input_ids = torch.tensor(
+            data=[self._tokenizer.encode(query, add_special_tokens=False)],
+            dtype=torch.int64,
+            device=self._model.device
+        )
+        input_ids = torch.cat(tensors=[self.input_ids, response_input_ids], dim=-1)
+        print('input_ids', input_ids.shape)
+        print('kv_cache', kv_cache.key_cache[0].shape)
+        logger.info(f'rotate time: {time.perf_counter() - time_start}')
+    #     outputs = self._model.generate(
+    #         input_ids=input_ids, generation_config=transformers.GenerationConfig(
+    #     do_sample=False,
+    #     temperature=1.0,
+    #     repetition_penalty=1.0,
+    #     num_beams=1,
+    #     eos_token_id=self._tokenizer.eos_token_id,
+    #     max_new_tokens=32,
+    #     stop_strings=['<|im_end|>', "<|eot_id|>", "<|end_of_text|>", "<|endoftext|>", "</s>", "Question:"]
+    # ), past_key_values=kv_cache,
+    #         use_cache=True, eos_token_id=[self._token_eos], tokenizer=self._tokenizer
+    #     )
+    #     for output in outputs:
+    #         yield self._tokenizer.decode(output)
+
+        streamer = AsyncTextIteratorStreamer(self._tokenizer)
+        generation_kwargs = {
+            "input_ids": input_ids,
+            "streamer": streamer,
+            "max_new_tokens": 20,
+            "past_key_values": kv_cache,
+            "generation_config": transformers.GenerationConfig(
+                do_sample=False,
+                temperature=1.0,
+                repetition_penalty=1.0,
+                num_beams=1,
+                eos_token_id=self._tokenizer.eos_token_id,
+                stop_strings= ['<|block_end|>'],
+            ),
+            "use_cache": True,
+            "eos_token_id": [self._token_eos],
+            "tokenizer": self._tokenizer,
+        }
+        thread = Thread(target=self._model.generate, kwargs=generation_kwargs)
+        thread.start()
+        async for new_text in streamer:
+            yield new_text
+
+    def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
+        pass
 
 
 class TransformerRAG(RAG):
@@ -714,7 +1005,8 @@ class PromptCacheRAG(RAG):
 
     def __init__(self, lm_name: str, max_ctx_length: int, enable_cpu_inference: bool, cache_max_token: int) -> None:
         RAG.__init__(self)
-
+        # overwrite the lm_name to "meta-llama/Llama-3.1-8B-Instruct"
+        # lm_name = "meta-llama/Llama-3.1-8B-Instruct"
         self._lm = PromptCacheRAG._load_lm(lm_name)
         self._cache_engine = promptcache.CacheEngine(
             max_ctx_length=max_ctx_length,
@@ -735,16 +1027,17 @@ class PromptCacheRAG(RAG):
         self._docs: Dict[DocumentId, str] = {}
         self._cached_schemas: Dict[frozenset[DocumentId], str] = {}
         self._sync_lock = asyncio.Lock()
+        self._last_request_id: int = 0
 
     @staticmethod
     def _load_lm(lm_name: str) -> promptcache.model.LanguageModel:
-        return promptcache.model.AutoModel(lm_name)
-        # if lm_name == "meta-llama/Llama-3.1-8B-Instruct":
-        #     return promptcache.model.AutoModel(lm_name)
-        # elif "llama" in lm_name.lower():
-        #     return promptcache.model.CodeLlama(lm_name, load_in_8bit=True, device_map="auto")
-        # else:
-        #     raise ValueError(f"Invalid language model name {lm_name}")
+        # return promptcache.model.AutoModel(lm_name)
+        if lm_name == "meta-llama/Llama-3.1-8B-Instruct" or "tulu" in lm_name.lower():
+            return promptcache.model.AutoModel(lm_name)
+        elif "llama" in lm_name.lower():
+            return promptcache.model.CodeLlama(lm_name, load_in_8bit=True, device_map="auto")
+        else:
+            raise ValueError(f"Invalid language model name {lm_name}")
 
     # From promptcache::benchmark/longbench.py
     @staticmethod
@@ -765,6 +1058,15 @@ class PromptCacheRAG(RAG):
             self._docs[doc_id] = PromptCacheRAG._escape_tags(doc)
             doc_ids.append(doc_id)
         return doc_ids
+    
+    async def add_doc_async(self, request_id: str, docs_ids: List[int]) -> None:
+        schema_start_time = time.time()
+        schema_name, schema = await self._load_schema_if_not_cached(frozenset(docs_ids))
+        schema_end_time = time.time()
+        schema_time = float((schema_end_time - schema_start_time)*1000)
+        logger.info(f"Schema generation time: {schema_time:.2f} ms")
+        self._schema_name = schema_name
+        self._schema = schema
 
     async def _load_schema_if_not_cached(self, doc_set: FrozenSet[DocumentId]) -> str:
         # Synchronously check cache and allocate new schema if needed.
@@ -800,16 +1102,10 @@ class PromptCacheRAG(RAG):
         sampling_params: SamplingParams,
         position_ids: Optional[List[int]] = None,
     ) -> AsyncGenerator[str, None]:
-        schema_start_time = time.time()
-        schema_name, schema = await self._load_schema_if_not_cached(frozenset(doc_ids))
-        schema_end_time = time.time()
-        schema_time = float((schema_end_time - schema_start_time)*1000)
-        logger.info(f"Schema generation time: {schema_time:.2f} ms")
-
         # Compile XML prompt.
         document_tags = [PROMPT_CACHE_DOCUMENT_TAG_TEMPLATE.format(document_name=f"doc_{doc_id}") for doc_id in doc_ids]
         prompt_text = PROMPT_CACHE_PROMPT_TEMPLATE.format(
-            schema_name=schema_name, document_tags="\n".join(document_tags), prompt_text=query
+            schema_name=self._schema_name, document_tags="\n".join(document_tags), prompt_text=query
         )
         prompt = promptcache.Prompt(spec=prompt_text, preproc=[self._lm.get_formatter()])  # type: ignore
 
@@ -843,7 +1139,7 @@ class PromptCacheRAG(RAG):
                 yield tt + " "
                 pre = now
         tt = " ".join(output_text[pre:])
-        yield tt, prompt, schema, schema_time, prompt_inference_time
+        yield tt
 
     def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
         for _, schema_name in self._cached_schemas:
@@ -857,6 +1153,7 @@ class DynamicRAG(RAG):
         self._llm = llm
         self._docs: Dict[DocumentId, str] = {}
         self._last_request_id: int = 0
+        self.doc_ids = set()
 
     def add_cache(self, docs: List[str]) -> List[int]:
         doc_ids = []
@@ -865,6 +1162,20 @@ class DynamicRAG(RAG):
             self._docs[doc_id] = doc
             doc_ids.append(doc_id)
         return doc_ids
+    
+    async def add_doc_async(self, request_id: str, docs_ids: List[int]) -> None:
+        for idx, doc_id in enumerate(docs_ids):
+            doc = self._docs[doc_id]
+            # 使用 async for 来迭代异步生成器
+            async for _ in self._llm.generate(
+                prompt="blank",
+                sampling_params=SamplingParams(temperature=0.0, max_tokens=1),
+                request_id=f"cache_{request_id}_{idx}",
+                document_seq=[doc],
+            ):
+                # 我们只需要等待生成完成，不需要使用生成的内容
+                pass
+
 
     async def iter_generate(
         self,
@@ -873,6 +1184,8 @@ class DynamicRAG(RAG):
         sampling_params: SamplingParams,
         position_ids: Optional[List[int]] = None,
     ) -> AsyncGenerator[str, None]:
+        self.doc_ids.update(doc_ids)
+        # logger.info(f"doc_ids: {self.doc_ids}")
         request_id = self._next_request_id()
         latest_idx = 0
         preamble = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an intelligent AI assistant. Please answer questions based on the user's instructions. Below are some reference documents that may help you in answering the user's question.\n\n"
@@ -892,6 +1205,7 @@ class DynamicRAG(RAG):
         #     context = "\n".join(document)
         
         # document_seq = [context]
+        # await self.add_doc_async(request_id, document_seq)
         
         query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
         async for generate_output in self._llm.generate(
@@ -978,13 +1292,13 @@ class RAGArgs:
 
     cachep_type: str = "lru"  # [CacheParrotRAG] Cache policy (e.g., no, seq, ptree, lru)
     cachep_capacity: int = 615_000  # [CacheParrotRAG] Cache capacity in tokens
-    cachep_tokenizer: str = "meta-llama/Llama-3.1-8B-Instruct"  # [CacheParrotRAG] Tokenizer name
+    cachep_tokenizer: str = "ldsjmdy/Tulu3-Block-FT"  # [CacheParrotRAG] Tokenizer name
 
     trrag_method: str = "r1"  # [TransformerRAG] Prompting method [r1, r2, m1, m2, m3].
-    trrag_lm_name: str = "meta-llama/Llama-3.1-8B-Instruct"  # [TransformerRAG] Language model name.
+    trrag_lm_name: str = "ldsjmdy/Tulu3-Block-FT"  # [TransformerRAG] Language model name.
 
     pc_lm_name: str = "codellama/CodeLlama-7b-Instruct-hf"  # [PromptCacheRAG] Language model name.
-    pc_max_ctx_length: int = 5000  # [PromptCacheRAG] Max context length.
+    pc_max_ctx_length: int = 90000  # [PromptCacheRAG] Max context length.
     pc_enable_cpu_inference: bool = False  # [PromptCacheRAG] Inference on CPU.
     pc_cache_max_token: int = 800  # [PromptCacheRAG] Max tokens for document cache.
 
@@ -1025,6 +1339,7 @@ def prepare_lmcache(async_engine_args: AsyncEngineArgs)-> None:
 
 
 def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
+    engine_args.max_model_len = 8192 * 8 * 2
     # engine_args.compilation_config = None
     if args.rag_type == "parrot":
         return ParrotRAG()
@@ -1035,14 +1350,26 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
         from minidrag.ctxmgr import MiniDynamicRAG
         MiniDynamicRAG.apply_triton_backend()
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
-        async_engine_args.max_model_len = 8192 * 8
-        # prepare_lmcache(async_engine_args)
-        # async_engine_args.gpu_memory_utilization = 0.8
         logger.info(f"[llmrag] Using async engine args: {async_engine_args}")
         return LLMRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
+    elif args.rag_type == "recllmrag": # full recomputation
+        from minidrag.ctxmgr import MiniDynamicRAG
+        MiniDynamicRAG.apply_triton_backend()
+        async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
+        async_engine_args.enable_prefix_caching=False
+        logger.info(f"[recllmrag] Using async engine args: {async_engine_args}")
+        return RecomLLMRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
+    elif args.rag_type == "reullmrag": # full reuse
+        from minidrag.ctxmgr import MiniDynamicRAG
+        MiniDynamicRAG.apply_triton_backend()
+        async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
+        logger.info(f"[reullmrag] Using async engine args: {async_engine_args}")
+        return ReuseLLMRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
+    elif args.rag_type == "blockattnrag":
+        return BlockAttentionRAG(lm_name=args.trrag_lm_name)
     elif args.rag_type == "cacheblend":
+        engine_args.max_model_len = int(engine_args.max_model_len/10)
         engine_args = EngineArgs(**dataclasses.asdict(engine_args))
-        engine_args.max_model_len = 8192 * 8
         logger.info(f"[cacheblend] Using engine args: {engine_args}")
         return CacheBlendRAG(llm=LLM(**dataclasses.asdict(engine_args)))
     elif args.rag_type == "trrag":
@@ -1056,15 +1383,10 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
         )
     elif args.rag_type == "drag":
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
-        async_engine_args.max_model_len = 8192 * 8
-        # async_engine_args.gpu_memory_utilization = 0.7
-        # prepare_lmcache(async_engine_args)
         logger.info(f"[drag] Using async engine args: {async_engine_args}")
         return DynamicRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
     elif args.rag_type == "basedrag":
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
-        async_engine_args.max_model_len = 8192 * 8
-        # async_engine_args.gpu_memory_utilization = 0.7
         # prepare_lmcache(async_engine_args)
         logger.info(f"[basedrag] Using async engine args: {async_engine_args}")
         return BaselineDynamicRAG(llm=AsyncLLM.from_engine_args(async_engine_args))

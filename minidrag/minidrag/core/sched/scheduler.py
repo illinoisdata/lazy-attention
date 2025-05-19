@@ -331,7 +331,7 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         # Here we need to check and assemble query requests and document.
         if not preempted_reqs:
             while self.waiting and token_budget > 0:
-                print("entering waiting")
+                # print("entering waiting")
                 if len(self.running) == self.max_num_running_reqs:
                     break
                 
@@ -649,25 +649,26 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
             self.requests[req_id].num_computed_tokens += num_scheduled_token
 
         self.finished_req_ids = set()
-        print(f"================================================")
-        if len(scheduler_output.finished_req_ids) > 0:
-            pass # print(f"scheduler_output: {scheduler_output}")
-        else:
-            print(f"{len(self.running)} running requests, {len(self.waiting)} waiting requests")
-            # if len(self.running) == 0 and len(self.waiting) == 1:
-            #     print(f"waiting requests: {self.waiting}")
-        if self.log_cache:
-            self.avg_mem_usage *= self.schedule_step
-            self.avg_mem_usage += self.kv_cache_manager.usage
-            self.schedule_step += 1
-            self.avg_mem_usage /= self.schedule_step 
-            with open(f"prefix_cache_stats_{self.time_str}.txt", "a+") as f:
-                f.write("lazy: " + str(self.avg_mem_usage)+'\n')
-            # hit ratio
-            self.hit_sum += self.kv_cache_manager.prefix_cache_stats.hits
-            self.query_sum += self.kv_cache_manager.prefix_cache_stats.queries
-            with open(f"hit_ratio_{self.time_str}.txt", "a+") as f:
-                f.write("lazy: " + str(self.hit_sum / (self.query_sum + 1e-12)) +'\n')
+        # print(f"================================================")
+        # print(f"scheduler_output: {scheduler_output}")
+        # if len(scheduler_output.finished_req_ids) > 0:
+        #     pass # print(f"scheduler_output: {scheduler_output}")
+        # else:
+        #     print(f"{len(self.running)} running requests, {len(self.waiting)} waiting requests")
+        #     # if len(self.running) == 0 and len(self.waiting) == 1:
+        #     #     print(f"waiting requests: {self.waiting}")
+        # if self.log_cache:
+        #     self.avg_mem_usage *= self.schedule_step
+        #     self.avg_mem_usage += self.kv_cache_manager.usage
+        #     self.schedule_step += 1
+        #     self.avg_mem_usage /= self.schedule_step 
+        #     with open(f"prefix_cache_stats_{self.time_str}.txt", "a+") as f:
+        #         f.write("lazy: " + str(self.avg_mem_usage)+'\n')
+        #     # hit ratio
+        #     self.hit_sum += self.kv_cache_manager.prefix_cache_stats.hits
+        #     self.query_sum += self.kv_cache_manager.prefix_cache_stats.queries
+        #     with open(f"hit_ratio_{self.time_str}.txt", "a+") as f:
+        #         f.write("lazy: " + str(self.hit_sum / (self.query_sum + 1e-12)) +'\n')
         return scheduler_output
 
     def add_request(self, request: Request) -> None:

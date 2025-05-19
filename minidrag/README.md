@@ -30,8 +30,8 @@ For C/CUDA code, we use `#include` macro to inject the customized code into the 
 - [x] triton attention backend
   - [x] prefix prefill
   - [x] paged decoding
-- [ ] scheduler
-- [ ] kv cache manager
+- [x] scheduler
+- [x] kv cache manager
 
 ## Organization
 

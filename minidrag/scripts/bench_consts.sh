@@ -47,7 +47,12 @@ DATA_KEYS=(
 )
 
 # GLOBAL_DATA_ARGS=""
-GLOBAL_DATA_ARGS="--request-sampling-method uniform --sample-documents 10 --document-sampling-method zipf --document-zipf-param 1.5"
+# --max-concurrency 16 
+GLOBAL_DATA_ARGS="--request-sampling-method zipf --request-zipf-param 1.01 --sample-documents 10 --document-sampling-method zipf --document-zipf-param 2"
+
+# For e1 2wikimqa
+GLOBAL_DATA_ARGS+=" --sample-requests 200 --max-concurrency 1"
+
 
 function get_data_args() {
     local key=$1
@@ -262,6 +267,9 @@ SUTS=(
     "pcrag"
     "cacheblend"
     "drag"
+    "recllmrag"
+    "reullmrag"
+    "blockattnrag"
 )
 
 function get_sut_args() {
@@ -274,9 +282,9 @@ function get_sut_args() {
         # SUTS_MODEL="meta-llama/Llama-3.1-8B-Instruct"
         # SUTS_MODEL="meta-llama/Llama-3.1-8B-Instruct"
         # SUTS_MODEL="meta-llama/Llama-3.1-70B-Instruct"
-        # SUTS_MODEL="ldsjmdy/Tulu3-Block-FT"
+        SUTS_MODEL="ldsjmdy/Tulu3-Block-FT"
         # SUTS_MODEL="ldsjmdy/Tulu3-RAG"
-        SUTS_MODEL="meta-llama/Meta-Llama-3-8B-Instruct"
+        # SUTS_MODEL="meta-llama/Meta-Llama-3-8B-Instruct"
     fi
     echo "Using SUTS_MODEL=${SUTS_MODEL}"
 
@@ -325,6 +333,15 @@ function get_sut_args() {
     elif [[ $_SUT == "drag" ]]
     then
         sut_args="--rag_type=drag --tokenizer ${SUTS_MODEL} --model ${SUTS_MODEL} --gpu-memory-utilization 0.9 --enforce-eager --enable-prefix-caching"
+    elif [[ $_SUT == "recllmrag" ]]
+    then
+        sut_args="--rag_type=recllmrag --tokenizer ${SUTS_MODEL} --model ${SUTS_MODEL}"
+    elif [[ $_SUT == "reullmrag" ]]
+    then
+        sut_args="--rag_type=reullmrag --tokenizer ${SUTS_MODEL} --model ${SUTS_MODEL}"
+    elif [[ $_SUT == "blockattnrag" ]]
+    then
+        sut_args="--rag_type=blockattnrag --tokenizer ${SUTS_MODEL} --model ${SUTS_MODEL}"
     else
         echo "ERROR (get_sut_args): Invalid SUT $_SUT, standard SUTS: [ ${SUTS[*]} ]"
         exit 1

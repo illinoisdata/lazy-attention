@@ -1,3 +1,37 @@
+# LazyAttention
+
+Methods:
+
+- [ ] Cacheblend
+- [ ] BlockAttention
+- [ ] PromptCache
+- [ ] Full reuse
+- [ ] Full recompute
+- [ ] LazyAttention
+
+
+## vLLM 
+
+> Version: 0.8.5.dev477+gda5313bce
+
+Extract from [vllm](https://github.com/vllm-project/vllm)
+
+Commit id: [999328be0d180c40417131252d7a0838c3f1f40](https://github.com/vllm-project/vllm/commit/999328be0d180c40417131252d7a0838c3f1f403)
+
+### What we changed
+
+In `setup.py`, clear ext modules to speed up building.
+
+```
+if os.getenv("NO_C"):
+    # overwrite ext_modules for LazyAttention
+    ext_modules = []
+```
+
+-------------------------------
+
+# Upstream
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/source/assets/logos/vllm-logo-text-dark.png">

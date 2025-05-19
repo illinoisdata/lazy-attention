@@ -373,6 +373,12 @@ class OutputProcessor:
                 # Track per-request stats
                 self._update_stats_from_finished(req_state, finish_reason,
                                                  iteration_stats)
+            
+            # ------------------------
+            # dump stats
+            if req_state is not None:
+                print(f"Request {req_id} stats: {req_state.stats}")
+            # ------------------------
 
         self.lora_states.update_iteration_stats(iteration_stats)
 

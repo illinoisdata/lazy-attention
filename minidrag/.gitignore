@@ -137,3 +137,5 @@ dmypy.json
 ChatRAG-Bench/
 slurm/*.err
 slurm/*.out
+
+*.txt

@@ -66,11 +66,13 @@ class TestE2E:
                             gpu_memory_utilization=0.9,
                             enforce_eager=eager,
                             enable_prefix_caching=True,
-                            seed=42,)
+                            seed=42,
+                            disable_log_stats=False)
                 outputs = llm.generate(mock_prompts, mock_sampling_params)
                 for output, pgt_tuple in zip(outputs, ref_outputs):
                     prompt = output.prompt
                     generated_text = output.outputs[0].text
+                    # print(f"TTFT: {output.metrics.first_token_time - output.metrics.first_scheduled_time}")
                     print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
                     print(f"Reference generated text: {pgt_tuple[1]!r}")
                     assert prompt == pgt_tuple[0]

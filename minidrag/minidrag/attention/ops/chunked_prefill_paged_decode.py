@@ -205,6 +205,9 @@ def kernel_paged_attention_2d(
             boundary = tl.full([BLOCK_SIZE], seq_len, dtype=tl.int32)
             seq_mask = seq_offset[None, :] < boundary
             
+            # -------------------------------------------------------------
+            # Inplace rotation
+            # -------------------------------------------------------------
             if prev_offset != rot_offset_val:
                 # -----------------------------------------------------
                 # Here we rotate the query instead of rotate the key
@@ -256,6 +259,29 @@ def kernel_paged_attention_2d(
             # qk2 = tl.dot(Q_2, rotated_k2, input_precision=IN_PRECISION)
             # qk = qk1 + qk2
             # S += scale * tl.dot(Q, K)
+            # --------------------------------------------------------------
+
+            # # -------------------------------------------------------------
+            # # not inplace rotation
+            # # -------------------------------------------------------------
+            # positions = tl.full([num_queries_per_kv_padded], rot_offset_val, dtype=tl.int32)
+            # # load cos and sin
+            # cos_val = tl.load(cos_sin_cache_ptr + (positions[:, None] * rotary_dim +
+            #                     offs_d1[None,:]),
+            #                     mask=dim_mask_half[None,:],
+            #                     other=0.0)
+            # sin_val = tl.load(cos_sin_cache_ptr + (positions[:, None] * rotary_dim +
+            #                     offs_d2[None,:]),
+            #                     mask=dim_mask_half[None,:],
+            #                     other=0.0)
+
+            # S = tl.where(head_mask[:, None] & seq_mask, 0.0,
+            #                 float("-inf")).to(tl.float32)
+            # qk = tl.zeros([num_queries_per_kv_padded, BLOCK_SIZE],
+            #                 dtype=tl.float32)
+            # qk = tl.dot(Q_1 * cos_val + Q_2 * sin_val, K_1, acc=qk, input_precision=IN_PRECISION)
+            # qk = tl.dot(Q_1 * -sin_val + Q_2 * cos_val, K_2, acc=qk, input_precision=IN_PRECISION)
+            # # --------------------------------------------------------------
             S += scale * qk
 
             context_len = seq_len - 1

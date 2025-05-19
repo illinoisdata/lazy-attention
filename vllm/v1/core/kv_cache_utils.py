@@ -641,6 +641,7 @@ def _get_kv_cache_config_uniform_type(vllm_config: VllmConfig,
     max_concurrency = num_tokens / vllm_config.model_config.max_model_len
     logger.info("Maximum concurrency for %s tokens per request: %.2fx",
                 max_model_len_str, max_concurrency)
+    logger.info("KV cache in bytes: %s", num_blocks * page_size * len(kv_cache_spec))
 
     per_layer_size = page_size * num_blocks
     # All layers have the same KV cache spec, so we create one kv cache group

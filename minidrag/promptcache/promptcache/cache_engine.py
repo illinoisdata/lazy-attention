@@ -143,10 +143,12 @@ class PromptCache:
                 k_cache_tgt, v_cache_tgt = self.device_cache[i]
                 k_cache_src, v_cache_src = m.cache[i]
 
-                # print('k_src', k_cache_src.shape)
-                # print('v_src', v_cache_src.shape)
-                # print('k_tgt', k_cache_tgt.shape)
-                # print('v_tgt', v_cache_tgt.shape)
+                print('st', st)
+                print('ed', ed)
+                print('k_src', k_cache_src.shape)
+                print('v_src', v_cache_src.shape)
+                print('k_tgt', k_cache_tgt.shape)
+                print('v_tgt', v_cache_tgt.shape)
 
                 k_cache_tgt[:, st:ed, :].copy_(k_cache_src, non_blocking=True)
                 v_cache_tgt[:, st:ed, :].copy_(v_cache_src, non_blocking=True)

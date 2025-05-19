@@ -3,7 +3,7 @@ import torch
 import json
 from transformers import AutoTokenizer
 
-llm = LLM(model="mistralai/Mistral-7B-Instruct-v0.2", gpu_memory_utilization=0.5,
+llm = LLM(model="mistralai/Mistral-7B-Instruct-v0.2", gpu_memory_utilization=0.8,
           #tokenizer=tokenizer,
           )
 tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-Instruct-v0.2")
@@ -16,10 +16,20 @@ for sample_idx in range(1,11):
     f = open(f"inputs/{sample_idx}.json")
     ex = json.load(f)
     chunk_num = ex['chunk_num']
-    doc_prompts = [ex[f'{i}'] for i in range(chunk_num)]
+    chunk_ids = list(range(chunk_num)) + [0] * (15 - chunk_num)
+    doc_prompts = [ex[f'{i}'] for i in chunk_ids]
     q_prompt = ex['query']
     doc_chunk_ids = [tokenizer.encode(doc)[1:] for doc in doc_prompts]
     q_ids = tokenizer.encode(q_prompt)[1:]
+    
+    # -------
+    sum_len = 0
+    for doc in doc_chunk_ids:
+        sum_len += len(doc)
+    sum_len += len(q_ids)
+    print(f"Chunk num: {chunk_num}")
+    print(f"Sum length: {sum_len}")
+    # -------
 
 
     # Create a sampling params object.
@@ -86,7 +96,10 @@ for sample_idx in range(1,11):
         else:
             temp_ids = doc_chunk_ids[i][s_start_1_len-1:]
         input_ids += temp_ids
-        
+    
+    # --------------------------
+    print("input_ids.shape: ", len(input_ids))
+    # --------------------------
     input_prompt = tokenizer.decode(input_ids)
  
 
