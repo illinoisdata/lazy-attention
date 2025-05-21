@@ -1,11 +1,10 @@
-# Minimal Dynamic RAG
+# Lazy-Attention
 
-This repo is a minimal implementation of Dynamic RAG.
+This repo is a minimal implementation of LazyAttention over vLLM.
 
 We use monkeypatch to replace the original function/class in vLLM with our customized version.
 
 For C/CUDA code, we use `#include` macro to inject the customized code into the original code.
-
 
 ## Top-down
 

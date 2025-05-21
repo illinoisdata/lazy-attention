@@ -12,3 +12,6 @@ Include:
 Details in each folder.
 
 All experiments in [benchmarks](./benchmarks/).
+
+
+**Note**: LazyAttn depends new version of vLLM while CacheBlend uses older version. Two independent envs are needed.
