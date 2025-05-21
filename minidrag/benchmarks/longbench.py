@@ -38,7 +38,7 @@ DATASET_NAMES = [
 @dataclasses.dataclass
 class LongBenchArgs:
     longbench_dataset_name: str = "narrativeqa"  # LongBench dataset name.
-    longbench_out_seq_len: int = 64
+    longbench_out_seq_len: int = 128
 
 
 @dataclasses.dataclass

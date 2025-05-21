@@ -48,8 +48,8 @@ DATA_KEYS=(
 
 # GLOBAL_DATA_ARGS=""
 # --max-concurrency 16 
-GLOBAL_DATA_ARGS="--request-sampling-method zipf --request-zipf-param 1.01 --sample-documents 10 --document-sampling-method zipf --document-zipf-param 2"
-
+# GLOBAL_DATA_ARGS="--request-sampling-method zipf --request-zipf-param 1.01 --sample-documents 10 --document-sampling-method zipf --document-zipf-param 2"
+GLOBAL_DATA_ARGS="--request-sampling-method uniform --sample-documents 10 --document-sampling-method uniform"
 # For e1 2wikimqa
 GLOBAL_DATA_ARGS+=" --sample-requests 200 --max-concurrency 1"
 

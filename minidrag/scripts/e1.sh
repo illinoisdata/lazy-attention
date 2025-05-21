@@ -5,4 +5,5 @@ module load cuda/12.4.0
 
 # PYTHONPATH=.:./promptcache bash scripts/bench_exp1.sh blockattnrag 2wikimqa 
 # PYTHONPATH=.:./promptcache bash scripts/bench_exp1.sh pcrag 2wikimqa
-PYTHONPATH=.:./promptcache bash scripts/bench_exp1.sh cacheblend 2wikimqa 
+# PYTHONPATH=.:./promptcache bash scripts/bench_exp1.sh blockattnrag 2wikimqa 
+PYTHONPATH=.:./promptcache bash scripts/bench_exp1.sh blockattnrag 2wikimqa 

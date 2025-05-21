@@ -119,7 +119,7 @@ class RAGRequest:
         if document_sampling_method is None:
             return self
 
-        logger.info(f"num of documents to sample: {document_samples}")
+        # logger.info(f"num of documents to sample: {document_samples}")
         local_doc_ids = sample_elems(
             rng=rng,
             num_elems=len(self.documents),
@@ -230,6 +230,7 @@ def sample_random_requests(
                 document_len=document_len,
                 documents=prompt_doc_ids,
                 sampling_params=SamplingParams(max_tokens=output_len, seed=42, temperature=0.0, repetition_penalty=1.0, stop_token_ids=[]),
+                ground_truth=None,
             )
         )
 
@@ -358,6 +359,7 @@ def sample_longbench_requests(
                 document_len=document_len,
                 documents=prompt_doc_ids,
                 sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42, min_tokens=output_len),
+                ground_truth=row.answers,
             )
         )
         max_len = max(max_len, prompt_len + document_len)
