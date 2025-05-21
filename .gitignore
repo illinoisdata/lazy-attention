@@ -1,0 +1,4 @@
+# Ignore the vllm directory
+vllm_proj/vllm/
+
+*.json
