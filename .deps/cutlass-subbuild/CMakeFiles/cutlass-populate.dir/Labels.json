@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/projects/bdjx/hxia3/vllm/.deps/cutlass-subbuild/CMakeFiles/cutlass-populate"
+		},
+		{
+			"file" : "/projects/bdjx/hxia3/vllm/.deps/cutlass-subbuild/CMakeFiles/cutlass-populate.rule"
+		},
+		{
+			"file" : "/projects/bdjx/hxia3/vllm/.deps/cutlass-subbuild/CMakeFiles/cutlass-populate-complete.rule"
+		},
+		{
+			"file" : "/projects/bdjx/hxia3/vllm/.deps/cutlass-subbuild/cutlass-populate-prefix/src/cutlass-populate-stamp/cutlass-populate-build.rule"
+		},
+		{
+			"file" : "/projects/bdjx/hxia3/vllm/.deps/cutlass-subbuild/cutlass-populate-prefix/src/cutlass-populate-stamp/cutlass-populate-configure.rule"
+		},
+		{
+			"file" : "/projects/bdjx/hxia3/vllm/.deps/cutlass-subbuild/cutlass-populate-prefix/src/cutlass-populate-stamp/cutlass-populate-download.rule"
+		},
+		{
+			"file" : "/projects/bdjx/hxia3/vllm/.deps/cutlass-subbuild/cutlass-populate-prefix/src/cutlass-populate-stamp/cutlass-populate-install.rule"
+		},
+		{
+			"file" : "/projects/bdjx/hxia3/vllm/.deps/cutlass-subbuild/cutlass-populate-prefix/src/cutlass-populate-stamp/cutlass-populate-mkdir.rule"
+		},
+		{
+			"file" : "/projects/bdjx/hxia3/vllm/.deps/cutlass-subbuild/cutlass-populate-prefix/src/cutlass-populate-stamp/cutlass-populate-patch.rule"
+		},
+		{
+			"file" : "/projects/bdjx/hxia3/vllm/.deps/cutlass-subbuild/cutlass-populate-prefix/src/cutlass-populate-stamp/cutlass-populate-test.rule"
+		},
+		{
+			"file" : "/projects/bdjx/hxia3/vllm/.deps/cutlass-subbuild/cutlass-populate-prefix/src/cutlass-populate-stamp/cutlass-populate-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"cutlass-populate"
+		],
+		"name" : "cutlass-populate"
+	}
+}

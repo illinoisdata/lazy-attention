@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/projects/bdjx/hxia3/vllm/.deps/vllm-flash-attn-subbuild/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
