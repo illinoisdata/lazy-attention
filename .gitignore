@@ -1,4 +1,5 @@
 # Ignore the vllm directory
 vllm_proj/vllm/
+vllm_proj/triton/
 
 *.json

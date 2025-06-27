@@ -1,6 +1,6 @@
 # Lazy-Attention
 
-It is the full codebase for lazy-attention project.
+It is the full codebase for lazy-attention project. This version is for GH200.
 
 Include:
 

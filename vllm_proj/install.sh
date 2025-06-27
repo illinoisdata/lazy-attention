@@ -11,6 +11,8 @@ cp ../setup.py .  # to override the setup.py in vllm
 # ----------------------------------------------------------------
 # For delta platform
 # ----------------------------------------------------------------
+conda activate vllm
+module load gcc/11.4.0
 module load cuda/12.4.0
 # Make sure the exact matched version is installed
 pip install -r requirements/build.txt
@@ -35,7 +37,8 @@ cmake .. \
     -DFETCHCONTENT_BASE_DIR=$(pwd)/../.deps \
     -DNVCC_THREADS=16 \
     -DCMAKE_JOB_POOL_COMPILE:STRING=compile \
-    -DCMAKE_JOB_POOLS:STRING=16
+    -DCMAKE_JOB_POOLS:STRING=16 \
+    -DCUDA_TOOLKIT_ROOT_DIR=/sw/user/cudatoolkits/installs/cuda-12.4.0
 
 # Build
 cmake --build . --target _C _vllm_fa2_C  # fa3 easy to OOM
