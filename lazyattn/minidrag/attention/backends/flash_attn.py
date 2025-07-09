@@ -31,6 +31,42 @@ if current_platform.is_cuda():
 logger = init_logger(__name__)
 
 
+class FlashAttentionBackend(AttentionBackend):
+
+    accept_output_buffer: bool = True
+
+    @staticmethod
+    def get_supported_head_sizes() -> list[int]:
+        return [32, 64, 96, 128, 160, 192, 224, 256]
+
+    @staticmethod
+    def get_name() -> str:
+        return "FLASH_ATTN_VLLM_V1"
+
+    @staticmethod
+    def get_impl_cls() -> type["FlashAttentionImpl"]:
+        return FlashAttentionImpl
+
+    @staticmethod
+    def get_metadata_cls() -> type["AttentionMetadata"]:
+        return FlashAttentionMetadata
+
+    @staticmethod
+    def get_builder_cls() -> type["FlashAttentionMetadataBuilder"]:
+        return FlashAttentionMetadataBuilder
+
+    @staticmethod
+    def get_kv_cache_shape(
+        num_blocks: int,
+        block_size: int,
+        num_kv_heads: int,
+        head_size: int,
+    ) -> tuple[int, ...]:
+        if block_size % 16 != 0:
+            raise ValueError("Block size must be a multiple of 16.")
+        return (2, num_blocks, block_size, num_kv_heads, head_size)
+
+
 @dataclass
 class FlashAttentionMetadata:
     # NOTE(sang): Definition of context_len, query_len, and seq_len.
@@ -59,7 +95,10 @@ class FlashAttentionMetadata:
     # Optional aot scheduling
     scheduler_metadata: Optional[torch.Tensor] = None
     prefix_scheduler_metadata: Optional[torch.Tensor] = None
-    
+
+    # For logging.
+    num_input_tokens: int = 0  # Number of tokens including padding.
+
     # Optional lazy attention
     is_lazy: Optional[torch.Tensor] = None # [num_seqs]
     q_offset: Optional[torch.Tensor] = None # [num_seqs, num_blocks]

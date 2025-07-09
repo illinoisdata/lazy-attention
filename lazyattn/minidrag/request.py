@@ -90,6 +90,7 @@ class _Request:
         self.document_seq_hash = document_seq_hash
         # Obtain the length of each document
         self.len_documents = None
+        self.len_documents_without_padding = None
         self.num_computed_tokens_docs = None
         if documents_token_ids is not None:
             self.len_documents = [len(document_token_ids) for document_token_ids 

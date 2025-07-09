@@ -12,8 +12,8 @@ if TYPE_CHECKING:
     from vllm.lora.request import LoRARequest
     from vllm.multimodal.inputs import MultiModalKwargs, PlaceholderRange
     from vllm.sampling_params import SamplingParams
-    # from vllm.v1.request import Request
-    from minidrag.request import _Request as Request
+
+    from minidrag.request import Request as Request # Replace the original V1 Request
 
 @dataclass
 class NewRequestData:
@@ -28,18 +28,18 @@ class NewRequestData:
     num_computed_tokens: int
     lora_request: Optional[LoRARequest]
     
-    # /////////
-    # For q rotation
-    has_docs: bool = False
-    q_offset: Optional[list[int]] = None
+    # Lazy attention, if one req has documents, it is lazy
+    is_lazy: bool = False  # [num_seqs]
+    q_offset: Optional[list[int]] = None # [num_seqs, num_blocks]
+    q_mask: Optional[list[int]] = None # [num_seqs, num_blocks]
 
     @classmethod
     def from_request(
         cls,
         request: Request,
         block_ids: list[int],
-        # ///////////
         q_offset: Optional[list[int]] = None,
+        q_mask: Optional[list[int]] = None,
     ) -> NewRequestData:
         return cls(
             req_id=request.request_id,
@@ -51,6 +51,7 @@ class NewRequestData:
             block_ids=block_ids,
             num_computed_tokens=request.num_computed_tokens,
             lora_request=request.lora_request,
-            has_docs=request.has_documents,
+            is_lazy=request.has_documents,
             q_offset=q_offset,
+            q_mask=q_mask,
         )

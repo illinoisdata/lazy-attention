@@ -1,15 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+Core of LazyAttention
+"""
+
 from __future__ import annotations
 
 import time
 from collections import defaultdict, deque
 from collections.abc import Iterable
 from typing import Optional, Union
-from itertools import chain
-import copy
-import numpy as np
 
 from vllm.config import VllmConfig
-from vllm.distributed.kv_events import EventPublisherFactory, KVEventBatch
 from vllm.distributed.kv_transfer.kv_connector.factory import (
     KVConnectorFactory)
 from vllm.distributed.kv_transfer.kv_connector.v1 import KVConnectorRole
@@ -17,39 +19,45 @@ from vllm.logger import init_logger
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.v1.core.encoder_cache_manager import (EncoderCacheManager,
                                                 compute_encoder_budget)
+from vllm.v1.core.kv_cache_manager import KVCacheManager
 from vllm.v1.core.sched.interface import SchedulerInterface
-from vllm.v1.core.sched.output import (CachedRequestData,
+from vllm.v1.core.sched.output import (CachedRequestData, NewRequestData,
                                        SchedulerOutput)
 from vllm.v1.core.sched.utils import check_stop
-from vllm.v1.engine import (EngineCoreOutput,
+from vllm.v1.engine import (EngineCoreEventType, EngineCoreOutput,
                             EngineCoreOutputs)
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.metrics.stats import SchedulerStats
 from vllm.v1.outputs import ModelRunnerOutput
+from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.structured_output import StructuredOutputManager
 
-from vllm.v1.core.sched.scheduler import Scheduler as OriginalV1Scheduler
+logger = init_logger(__name__)
 
-# from minidrag.core.sched.output import NewRequestData, CachedRequestData, SchedulerOutput
-from vllm.v1.core.sched.output import SchedulerOutput, NewRequestData, CachedRequestData
+# Additional import for lazy attention
+from itertools import chain
+import copy
+import numpy as np
 
-from minidrag.core.kv_cache_manager import DragKVCacheManager as KVCacheManager
-from minidrag.request import _Request as Request
-from minidrag.request import RequestStatus
+# Overwrite classes
+from minidrag.core.kv_cache_manager import KVCacheManager
+from minidrag.request import Request, RequestStatus
 from minidrag.engine import EngineCoreRequest, EngineCoreEventType
 from minidrag.core.sched.output import NewRequestData
 
+# For patch
+from vllm.v1.core.sched.scheduler import Scheduler as OriginalV1Scheduler
 
-""" Different from the original V1Scheduler, this scheduler need to process the documents inner the 
-request"""
-
+# NOTE(Haocheng)
+# Different from the original V1Scheduler, this scheduler need to process the 
+# documents inner the request
 # Here we abort the constraint of num running request, since our 
 # request can have multiple subrequests, and we need to process all of them
 # in the same time.
 
 
-class MiniDynamicRAGScheduler(OriginalV1Scheduler):
+class LazyScheduler(OriginalV1Scheduler):
     def __init__(
         self,
         vllm_config: VllmConfig,
@@ -59,24 +67,11 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         include_finished_set: bool = False,
         log_stats: bool = False,
     ) -> None:
-        # ------------------------------------
-        import os
-        self.schedule_step = 0
-        self.avg_mem_usage = 0
-        self.log_cache = False
-        if os.environ.get("LAZY_CACHE_LOG") == "1":
-            self.log_cache = True
-            self.time_str = time.strftime("%H:%M:%S", time.localtime())
-            self.hit_sum = 0
-            self.query_sum = 0
-        # ------------------------------------
-        
         self.vllm_config = vllm_config
         self.scheduler_config = vllm_config.scheduler_config
         self.cache_config = vllm_config.cache_config
         self.lora_config = vllm_config.lora_config
         self.kv_cache_config = kv_cache_config
-        self.kv_events_config = vllm_config.kv_events_config
         self.log_stats = log_stats
         self.structured_output_manager = structured_output_manager
 
@@ -91,9 +86,6 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         self.max_num_scheduled_tokens = \
             self.scheduler_config.max_num_batched_tokens
         self.max_model_len = self.scheduler_config.max_model_len
-        self.enable_kv_cache_events = (
-            self.kv_events_config is not None
-            and self.kv_events_config.enable_kv_cache_events)
 
         # Create KVConnector for the Scheduler. Note that each Worker
         # will have a corresponding KVConnector with Role=WORKER.
@@ -102,9 +94,6 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         if self.vllm_config.kv_transfer_config is not None:
             self.connector = KVConnectorFactory.create_connector_v1(
                 config=self.vllm_config, role=KVConnectorRole.SCHEDULER)
-
-        self.kv_event_publisher = EventPublisherFactory.create(
-            self.kv_events_config)
 
         num_gpu_blocks = self.cache_config.num_gpu_blocks
         assert num_gpu_blocks is not None and num_gpu_blocks > 0
@@ -167,30 +156,43 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
             enable_caching=self.cache_config.enable_prefix_caching,
             caching_hash_algo=self.cache_config.prefix_caching_hash_algo,
             use_eagle=self.use_eagle,
-            log_stats=self.log_stats,
-            enable_kv_cache_events=self.enable_kv_cache_events,
-        )
+            log_stats=self.log_stats)
         
-        # # Hyperparameters for scheduling. can affect the throughput.
-        # # Maximum number of tokens to be processed in a single iteration.
-        # max_num_batched_tokens: int = field(default=None)  # type: ignore
-
-        # # Maximum number of sequences to be processed in a single iteration.
-        # max_num_seqs: int = 128
+        # NOTE(Haocheng) 
+        # Hyperparameters for scheduling. can affect the throughput.
+        # - Maximum number of tokens to be processed in a single iteration.
+        # - max_num_batched_tokens: int = field(default=None)  # type: ignore
+        # - Maximum number of sequences to be processed in a single iteration.
+        # e.g., max_num_seqs: int = 128
 
     def schedule(self) -> SchedulerOutput:
-        # print(f"usage: {self.kv_cache_manager.usage}")
+        # NOTE(woosuk) on the scheduling algorithm:
+        # There's no "decoding phase" nor "prefill phase" in the scheduler.
+        # Each request just has the num_computed_tokens and
+        # num_tokens_with_spec. num_tokens_with_spec =
+        # len(prompt_token_ids) + len(output_token_ids) + len(spec_token_ids).
+        # At each step, the scheduler tries to assign tokens to the requests
+        # so that each request's num_computed_tokens can catch up its
+        # num_tokens_with_spec. This is general enough to cover
+        # chunked prefills, prefix caching, speculative decoding,
+        # and the "jump decoding" optimization in the future.
+
         scheduled_new_reqs: list[Request] = []
         scheduled_resumed_reqs: list[Request] = []
         scheduled_running_reqs: list[Request] = []
         preempted_reqs: list[Request] = []
-        
+
+        # NOTE: structured_output_request_ids maps
+        # a request's (request that uses structured output)
+        # request_id to the running request index.
+        # This will helps us determine to slice the grammar bitmask
+        # and only applies valid mask for requests that
+        # uses structured decoding.
         structured_output_request_ids: dict[str, int] = {}
 
         req_to_new_block_ids: dict[str, list[int]] = {}
         num_scheduled_tokens: dict[str, int] = {}
         token_budget = self.max_num_scheduled_tokens
-        
         # Encoder-related.
         scheduled_encoder_inputs: dict[str, list[int]] = {}
         encoder_budget = self.max_num_encoder_input_tokens
@@ -199,13 +201,20 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
 
         # For logging.
         scheduled_timestamp = time.monotonic()
+
         
+        # For lazy attention.
         req_to_q_offset: dict[str, list[int]] = {}
+        req_to_q_mask: dict[str, list[int]] = {}
 
         # ///////////////////////////////////////////////////////////////////////
         # First, schedule the RUNNING requests.
+        # NOTE(Haocheng):
         # If already in the RUNNING queue, the required documents are ready,
         # so we do not need to check the documents again.
+        # TODO: clarify the ref cnt, is it possible that dep doc disappears
+        # when inference, since we divide lazy req into multiple distinct reqs
+
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
@@ -217,7 +226,7 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                 num_new_tokens = (
                     self.scheduler_config.long_prefill_token_threshold)
             num_new_tokens = min(num_new_tokens, token_budget)
-            
+
             # Make sure the input position does not exceed the max model len.
             # This is necessary when using spec decoding.
             num_new_tokens = min(
@@ -232,7 +241,7 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                  new_encoder_budget) = self._try_schedule_encoder_inputs(
                      request, request.num_computed_tokens, num_new_tokens,
                      encoder_budget)
-                 
+
             if num_new_tokens == 0:
                 # The request cannot be scheduled because one of the following
                 # reasons:
@@ -246,12 +255,10 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                 # allow the lower-priority requests to be scheduled.
                 req_index += 1
                 continue
-            
+
             while True:
-                # print(f"is scheduling: {request.request_id}, num_new_tokens: {num_new_tokens}")
-                # print(f'request: {request}')
                 new_blocks = self.kv_cache_manager.allocate_slots(
-                    request, 
+                    request,
                     num_new_tokens,
                     num_lookahead_tokens=self.num_lookahead_tokens)
                 if new_blocks is None:
@@ -328,15 +335,15 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
 
         # ///////////////////////////////////////////////////////////////////////
         # Next, schedule the WAITING requests.
-        # Here we need to check and assemble query requests and document.
+        # NOTE(Haocheng): Here we need to check and assemble query requests and 
+        # documents.
         if not preempted_reqs:
             while self.waiting and token_budget > 0:
-                # print("entering waiting")
                 if len(self.running) == self.max_num_running_reqs:
                     break
-                
+
                 request = self.waiting[0]
-                
+
                 # Skip request if the structured output request is still waiting
                 # for FSM compilation.
                 if request.status == RequestStatus.WAITING_FOR_FSM:
@@ -359,93 +366,126 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                     skipped_waiting_requests.appendleft(request)
                     continue
 
-                # Skip the request if it is not ready to be scheduled.
+                # Skip the request if it has documents and its documents are not 
+                # ready to be scheduled.
                 if request.status == RequestStatus.WAITING_FOR_DOC:
-                    if self.is_doc_ready(request):
+                    # NOTE(Haocheng): optimize it
+                    is_doc_ready_flags = self.is_doc_ready(request) # [bool], len = num_docs
+                    if all(is_doc_ready_flags):
+                        # When all docs are ready, we mark a request with 
+                        # documents as `WAITING`.
+                        # !IMPORTANT: this status only keep alive for one step, 
+                        # if the request is not scheduled this time, it will 
+                        # fallback to `WAITING_FOR_DOC` -> for consistency
                         request.status = RequestStatus.WAITING
                     else:
-                        self.waiting.popleft()
-                        skipped_waiting_requests.appendleft(request)
-
-                        # Spwan sub requests and add them to the waiting queue
+                        # If docs are not ready, there are two cases:
+                        # 1. we just need to wait -> not ready part is running
+                        # 2. doc requests disappeared
                         num_docs = len(request.documents_token_ids)
-                        sampling_params = copy.deepcopy(request.sampling_params)
-                        sampling_params.max_tokens = 1  # TODO(haocheng): how to avoid
-                        # for doc_idx in range(num_docs):
-                        #     req_id = f"{request.request_id}_d{doc_idx}"
-                        #     if self.requests.get(req_id) is not None:
-                        #         # This document has already been scheduled
-                        #         continue
-                        #     doc_req = Request(
-                        #         request_id = f"{request.request_id}_d{doc_idx}",
-                        #         prompt_token_ids = request.documents_token_ids[doc_idx],
-                        #         multi_modal_inputs = request.mm_inputs,
-                        #         multi_modal_hashes = request.mm_hashes,
-                        #         multi_modal_placeholders = request.mm_positions,
-                        #         sampling_params = sampling_params,
-                        #         eos_token_id=request.eos_token_id,
-                        #         arrival_time=request.arrival_time,
-                        #     )
-                        #     skipped_waiting_requests.appendleft(doc_req)
-                        #     self.requests[doc_req.request_id] = doc_req
+                        # is_doc_ready_flags: [bool], len = num_docs, only false
+                        docs_req_ids = [f"{request.request_id}_d{i}" if not is_doc_ready_flags[i] else None for i in range(num_docs)]
+                        running_req_ids = set([req.request_id for req in self.running])
+                        # waiting_req_ids = set([req.request_id for req in self.waiting])
+                        docs_req_ids -= running_req_ids | set([None]) # | waiting_req_ids
+                        if len(docs_req_ids) != 0:
+                            # Case 2: add missing doc and re-add req
+                            self.waiting.appendleft(request)
+                            # There are docs not in running or waiting queue
+                            # -> need to generate sub-requests
+                            for req_id in docs_req_ids:
+                                assert req_id is not None
+                                # Spawn sub-requests
+                                sampling_params = copy.deepcopy(request.sampling_params)
+                                sampling_params.max_tokens = 1 # TODO(haocheng): how to avoid
+                                doc_req = Request(
+                                    request_id = req_id,
+                                    prompt_token_ids = request.documents_token_ids[int(req_id.split('_d')[-1])],
+                                    multi_modal_inputs = request.mm_inputs,
+                                    multi_modal_hashes = request.mm_hashes,
+                                    multi_modal_placeholders = request.mm_positions,
+                                    sampling_params = sampling_params,
+                                    eos_token_id=request.eos_token_id,
+                                    arrival_time=request.arrival_time,
+                                )
+                                self.waiting.appendleft(doc_req)
+                                self.requests[doc_req.request_id] = doc_req
+                            # TODO(haocheng): add logging here
+                            logger.info(f"spawned sub-request: {doc_req.request_id}, "
+                                        f"num_docs: {num_docs}, "
+                                        f"num_docs_ready: {sum(is_doc_ready_flags)}, "
+                                        f"num_docs_not_ready: {num_docs - sum(is_doc_ready_flags)}")
+                        else:
+                            # Case 1: skip the req until next step
+                            # all docs are in running or waiting queue but need to wait for them
+                            self.waiting.popleft()
+                            skipped_waiting_requests.appendleft(request)
                         continue
-                
+
                 # Get already-cached tokens.
-                # If the request has documents, automatically use doc as the prefix
                 computed_blocks, num_computed_tokens = \
-                    self.kv_cache_manager.get_computed_blocks(request)
-                
-                # # Get externally-cached tokens if using a KVConnector.
-                # num_external_tokens = (
-                #     0 if self.connector is None else
-                #     self.connector.get_num_new_matched_tokens(
-                #         request, num_computed_tokens))
-                
-                # # Total computed tokens (local + external).
-                # num_computed_tokens += num_external_tokens
-                
-                # This document is completed before
-                if 'd' in request.request_id and num_computed_tokens == request.num_tokens:
+                    self.kv_cache_manager.get_computed_blocks(
+                        request)
+
+                # NOTE(Haocheng):                 
+                # This step should happen for doc or query after the 
+                # documents are assembled.
+
+                # Get externally-cached tokens if using a KVConnector.
+                num_external_tokens = (
+                    0 if self.connector is None else
+                    self.connector.get_num_new_matched_tokens(
+                        request, num_computed_tokens))
+
+                # Total computed tokens (local + external).
+                num_computed_tokens += num_external_tokens
+
+                # NOTE(Haocheng): if one request reach here, there are three cases,
+                # 1. it does not have documents
+                #   1.1. it is a document request
+                #   1.2. it is a normal request without documents
+                # 2. its documents are all ready at *this* minor step
+
+                # Case 1.1
+                if 'd' in request.request_id and \
+                    num_computed_tokens == request.num_tokens:
                     self.waiting.popleft()
                     continue
-                # Since when a request with docs can reach here, all the
-                # documents are already ready, we can just assemble the 
-                # resources
+
+                # NOTE(Haocheng): Case 1.2 and Case 2
                 if request.has_documents:
+                    # Case 2 -> Case 1.2
                     computed_blocks_docs, num_computed_tokens_docs = \
                         self.kv_cache_manager.get_computed_blocks_docs(request)
                     computed_blocks = list(chain.from_iterable(
                         computed_blocks_docs)) + computed_blocks
-                    num_computed_tokens = sum(
-                        num_computed_tokens_docs) + num_computed_tokens
-                    # Update the prompt
-                    request.merge_documents()
-                    
-                    # ---------------------------------
-                    # When merging, we also prepare info for q rot
-                    # ---------------------------------
-                    # Generat the mask and offset information
+                    assert sum(num_computed_tokens_docs) == \
+                        sum([len(token_ids) for token_ids in requst.documents_token_ids])
+                    num_computed_tokens += sum(num_computed_tokens_docs)
+                    # update req info
+                    request = merge_documents(request)
+
+                    # Get metadata for lazy attention
                     num_blocks = len(computed_blocks)
-                    # q_mask = [self.block_size for _ in range(num_blocks+1)]
-                    q_offset = np.zeros(num_blocks + 1, dtype=np.int32)
-                    
                     num_docs = len(request.documents_token_ids)
-                    acc_len = 0
+                    q_mask = np.full(num_blocks + 1, self.block_size, dtype=np.int32)
+                    q_offset = np.zeros(num_blocks + 1, dtype=np.int32)
+
+                    acc_len = 0 # without padding tokens
                     acc_blk = 0
                     for doc_idx in range(num_docs):
-                        # Note(haocheng): here we use a simpler one,
-                        # only record the start position of each blocks doc
-                        # [0, 0, 2, 2,]
                         doc_len = request.len_documents[doc_idx]
+                        doc_len_without_padding = request.len_documents_without_padding[doc_idx]
                         num_blks = doc_len // self.block_size
-                        doc_len = request.len_documents[doc_idx]
                         q_offset[acc_blk: acc_blk+num_blks] = acc_len
                         acc_len += doc_len
                         acc_blk += num_blks
+                        q_mask[acc_blk-1] = doc_len_without_padding % self.block_size # last block
                     req_to_q_offset[request.request_id] = list(q_offset)
-                    # print(f"q_offset: {q_offset}")
-                    # breakpoint()
+                    req_to_q_mask[request.request_id] = list(q_mask)
                     
+                    # Update corresponding data in kv_cache_manager
+                    # TODO(haocheng): optimize it
                     pre = self.kv_cache_manager.req_to_block_hashes_docs[request.request_id]
                     self.kv_cache_manager.req_to_block_hashes[request.request_id] = \
                         list(chain.from_iterable(pre)) + \
@@ -460,17 +500,7 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                     self.kv_cache_manager.req_to_block_hashes[request.request_id] = (
                         pre_block_hashes + 
                         self.kv_cache_manager.req_to_block_hashes[request.request_id])
-                
-                # Get externally-cached tokens if using a KVConnector.
-                # This step should happen for doc or query after the documents are assembled.
-                num_external_tokens = (
-                    0 if self.connector is None else
-                    self.connector.get_num_new_matched_tokens(
-                        request, num_computed_tokens))
-                
-                # Total computed tokens (local + external).
-                num_computed_tokens += num_external_tokens
-                
+
                 # Number of tokens to be scheduled.
                 # We use `request.num_tokens` instead of
                 # `request.num_prompt_tokens` to consider the resumed requests,
@@ -497,14 +527,19 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                     new_encoder_budget = encoder_budget
 
                 new_blocks = self.kv_cache_manager.allocate_slots(
-                    request, 
-                    num_new_tokens + num_external_tokens, 
+                    request,
+                    num_new_tokens + num_external_tokens,
                     computed_blocks,
-                    num_lookahead_tokens=self.num_lookahead_tokens,)
+                    num_lookahead_tokens=self.num_lookahead_tokens,
+                )
                 if new_blocks is None:
                     # The request cannot be scheduled.
+                    # NOTE(Haocheng): if one request has documents but cannot
+                    # be scheduled, fallback as we cannot promise the doc alive
+                    # in the cache
+                    request.status = RequestStatus.WAITING_FOR_DOC
                     break
-                
+
                 # KVConnector: update internal state after allocation.
                 # This information is used to determine if a load is
                 # needed for this request.
@@ -513,7 +548,7 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
                         request,
                         num_external_tokens,
                     )
-                    
+
                 self.waiting.popleft()
                 if request.use_structured_output:
                     structured_output_request_ids[
@@ -578,13 +613,14 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
         grammar_bitmask = self.structured_output_manager.grammar_bitmask(
             self.requests,
             structured_output_request_ids,
-            scheduled_spec_decode_tokens,
+            len(self.running),
         )
         # Construct the scheduler output.
         new_reqs_data = [
             NewRequestData.from_request(req,
                                         req_to_new_block_ids[req.request_id],
-                                        req_to_q_offset.get(req.request_id, None),)
+                                        req_to_q_offset.get(req.request_id, None),
+                                        req_to_q_mask.get(req.request_id, None))
             for req in scheduled_new_reqs
         ]
         resumed_reqs_data = [
@@ -631,11 +667,6 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
             meta = self.connector.build_connector_meta(scheduler_output)
             scheduler_output.kv_connector_metadata = meta
 
-        events = self.kv_cache_manager.take_events()
-        if events:
-            batch = KVEventBatch(ts=time.time(), events=events)
-            self.kv_event_publisher.publish(batch)
-
         # Advance the number of computed tokens for the request AFTER
         # the request is scheduled.
         # 1. The scheduler_output of the current step has to include the
@@ -649,95 +680,24 @@ class MiniDynamicRAGScheduler(OriginalV1Scheduler):
             self.requests[req_id].num_computed_tokens += num_scheduled_token
 
         self.finished_req_ids = set()
-        # print(f"================================================")
-        # print(f"scheduler_output: {scheduler_output}")
-        # if len(scheduler_output.finished_req_ids) > 0:
-        #     pass # print(f"scheduler_output: {scheduler_output}")
-        # else:
-        #     print(f"{len(self.running)} running requests, {len(self.waiting)} waiting requests")
-        #     # if len(self.running) == 0 and len(self.waiting) == 1:
-        #     #     print(f"waiting requests: {self.waiting}")
-        # if self.log_cache:
-        #     self.avg_mem_usage *= self.schedule_step
-        #     self.avg_mem_usage += self.kv_cache_manager.usage
-        #     self.schedule_step += 1
-        #     self.avg_mem_usage /= self.schedule_step 
-        #     with open(f"prefix_cache_stats_{self.time_str}.txt", "a+") as f:
-        #         f.write("lazy: " + str(self.avg_mem_usage)+'\n')
-        #     # hit ratio
-        #     self.hit_sum += self.kv_cache_manager.prefix_cache_stats.hits
-        #     self.query_sum += self.kv_cache_manager.prefix_cache_stats.queries
-        #     with open(f"hit_ratio_{self.time_str}.txt", "a+") as f:
-        #         f.write("lazy: " + str(self.hit_sum / (self.query_sum + 1e-12)) +'\n')
         return scheduler_output
 
     def add_request(self, request: Request) -> None:
-        """ In order to reduce the complexity of the logic, we spawn sub requests for
-        LazyAttention style Requests.
-        
-        Take a example:
-        Request(
-            request_id="1",
-        )
-        -> 
-        Request(
-            request_id="1_d0",
-        )
-        
-        ...
-        Request(
-            request_id="1_dn",
-        )
-        
-        Request(
-            request_id="1_q",
-        )
-        """
+        # NOTE(Haocheng): this function is used to add a request to the waiting
+        # queue. For lazy attention, we add the request with `WAITING_FOR_DOC`
         if request.has_documents:
-            # Spwan sub requests and add them to the waiting queue
-            num_docs = len(request.documents_token_ids)
-            sampling_params = copy.deepcopy(request.sampling_params)
-            sampling_params.max_tokens = 1  # TODO(haocheng): how to avoid
-            for doc_idx in range(num_docs):
-                doc_req = Request(
-                    request_id = f"{request.request_id}_d{doc_idx}",
-                    prompt_token_ids = request.documents_token_ids[doc_idx],
-                    multi_modal_inputs = request.mm_inputs,
-                    multi_modal_hashes = request.mm_hashes,
-                    multi_modal_placeholders = request.mm_positions,
-                    sampling_params = sampling_params,
-                    eos_token_id=request.eos_token_id,
-                    arrival_time=request.arrival_time,
-                )
-                self.waiting.append(doc_req)
-                self.requests[doc_req.request_id] = doc_req
-                if self.log_stats:
-                    doc_req.record_event(EngineCoreEventType.QUEUED)
-            # Modify request as the query request
-            # request.request_id = f"{request.request_id}_q"
-            # mark that query request is added after the document requests
-            request.arrival_time = request.arrival_time + 1e-2
-            query_req = request
-            self.waiting.append(query_req)
-            self.requests[query_req.request_id] = query_req
-            query_req.status = RequestStatus.WAITING_FOR_DOC
-            if self.log_stats:
-                query_req.record_event(EngineCoreEventType.QUEUED)
-        else:    
-            self.waiting.append(request)
-            self.requests[request.request_id] = request
-            if self.log_stats:
-                request.record_event(EngineCoreEventType.QUEUED)   
-        # print(dump_dequeue(self.waiting))
-        
+            request.status = RequestStatus.WAITING_FOR_DOC
+        self.waiting.append(request)
+        self.requests[request.request_id] = request
+        if self.log_stats:
+            request.record_event(EngineCoreEventType.QUEUED)
+
     def is_doc_ready(self, request: Request) -> bool:
         """Check if the documents are ready for the request."""
         assert request.has_documents
         _, num_computed_tokens_docs = \
             self.kv_cache_manager.get_computed_blocks_docs(request)
-        num_new_tokens_docs = sum(request.len_documents) - \
-                              sum(num_computed_tokens_docs)
-        return num_new_tokens_docs == 0
+        return [request.len_documents[i] == num_computed_tokens_docs[i] for i in range(len(request.len_documents))]
         
 original_scheduler = None
 

@@ -142,3 +142,17 @@ request 2
 
 | block 1' | block 2 (reused) not wanted |
              'doc 2'
+
+
+## Appendix
+
+Details
+
+- [ ] attention
+  - [ ] backends
+    - [x] flash_attn.py: add extra request metadata for lazy attention
+    - [x] triton_attn.py: pass rotary basis and extra request metadata for lazy attention
+  - [x] layer.py: customized attention function with rotary basis
+- [ ] core
+  - [ ] sched
+    - [x] output.py: the output from scheduler, only new req data is changed

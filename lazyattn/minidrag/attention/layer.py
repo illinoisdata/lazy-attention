@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Attention layer."""
+
 """
 Attention forward function.
 
@@ -5,11 +8,14 @@ Accepts cos_sin_cache, rotary_dim, and is_neox_style as arguments for custom
 rotary embedding operations.
 """
 
+from typing import Any, Dict, List, Optional
+
 import torch
-from typing import Optional
-from vllm.forward_context import get_forward_context, ForwardContext
-from vllm.utils import direct_register_custom_op
+from vllm.forward_context import ForwardContext, get_forward_context
 from vllm.platforms import _Backend, current_platform
+from vllm.utils import direct_register_custom_op
+
+# Avoid duplication of code from vllm/attention/layer.py
 from vllm.attention.layer import maybe_save_kv_layer_to_connector, wait_for_kv_layer_from_connector
 
 # class Attention(nn.Module):
@@ -18,9 +24,9 @@ def forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    cos_sin_cache: torch.Tensor = None,
-    rotary_dim: int = None,
-    is_neox_style: bool = False,
+    cos_sin_cache: Optional[torch.Tensor] = None,
+    rotary_dim: Optional[int] = None,
+    is_neox_style: bool = True,
     # For some alternate attention backends like MLA the attention output
     # shape does not match the query shape, so we optionally let the model
     # definition specify the output tensor shape.
@@ -82,29 +88,20 @@ def forward(
             return output.view(-1, hidden_size)
         else:
             raise ValueError(
-                "Attention layer must be configured to use output tensor. ")
-            if self.use_direct_call:
-                forward_context = get_forward_context()
-                attn_metadata = forward_context.attn_metadata
-                self_kv_cache = self.kv_cache[forward_context.virtual_engine]
-                return self.impl.forward(self, query, key, value,
-                                         self_kv_cache, attn_metadata)
-            else:
-                return torch.ops.vllm.unified_attention(
-                    query, key, value, self.layer_name)
-            
+                "Attention layer must be configured to use output tensor for lazy attention. ")
+
+
 def dynamic_unified_attention_with_output(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
     output: torch.Tensor,
     layer_name: str,
-    cos_sin_cache: torch.Tensor,
-    rotary_dim: int,
-    is_neox_style: bool,
+    cos_sin_cache: Optional[torch.Tensor]=None,
+    rotary_dim: Optional[int]=None,
+    is_neox_style: bool=True,
 ) -> None:
     wait_for_kv_layer_from_connector(layer_name)
-
     forward_context: ForwardContext = get_forward_context()
     attn_metadata = forward_context.attn_metadata
     self = forward_context.no_compile_layers[layer_name]
@@ -119,7 +116,7 @@ def dynamic_unified_attention_with_output(
                       rotary_dim,
                       is_neox_style,
                       output=output)
-    
+
     maybe_save_kv_layer_to_connector(layer_name, kv_cache)
 
 
@@ -129,9 +126,9 @@ def dynamic_unified_attention_with_output_fake(
     value: torch.Tensor,
     output: torch.Tensor,
     layer_name: str,
-    cos_sin_cache: torch.Tensor,
-    rotary_dim: int,
-    is_neox_style: bool,
+    cos_sin_cache: Optional[torch.Tensor]=None,
+    rotary_dim: Optional[int]=None,
+    is_neox_style: bool=True,
 ) -> None:
     return
 
