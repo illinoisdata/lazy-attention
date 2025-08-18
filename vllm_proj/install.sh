@@ -4,6 +4,14 @@ pushd vllm
 git checkout 3015d5634e74d59704e2b39bab0dbe2e6f86a38a
 
 # ----------------------------------------------------------------
+# Check ccache, install it if not found
+# ----------------------------------------------------------------
+if ! command -v ccache &> /dev/null; then
+    echo "ccache could not be found, installing it via conda..."
+    conda install -c conda-forge ccache
+fi
+
+# ----------------------------------------------------------------
 # Apply changes
 # ----------------------------------------------------------------
 cp ../setup.py .  # to override the setup.py in vllm
@@ -14,6 +22,8 @@ cp ../setup.py .  # to override the setup.py in vllm
 conda activate vllm
 module load gcc/11.4.0
 module load cuda/12.4.0
+module load gcc/11.4.0
+
 # Make sure the exact matched version is installed
 pip install -r requirements/build.txt
 # ----------------------------------------------------------------
@@ -41,7 +51,7 @@ cmake .. \
     -DCUDA_TOOLKIT_ROOT_DIR=/sw/user/cudatoolkits/installs/cuda-12.4.0
 
 # Build
-cmake --build . --target _C _vllm_fa2_C  # fa3 easy to OOM
+cmake --build . --target _C _vllm_fa2_C -- -j 4 # fa3 easy to OOM
 
 # Install
 cmake --install . --component _C

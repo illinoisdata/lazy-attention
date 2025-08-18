@@ -1,6 +1,6 @@
 # Lazy-Attention
 
-This repo is a minimal implementation of LazyAttention over vLLM.
+This repo is an implementation of LazyAttention over vLLM.
 
 We use monkeypatch to replace the original function/class in vLLM with our customized version.
 
