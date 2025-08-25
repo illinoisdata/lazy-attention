@@ -1,3 +1,26 @@
+#!/bin/bash
+set -eo pipefail
+
+# Check if vllm env exists, if not create one
+ENV_NAME="vllm"
+if conda env list | grep " ${ENV_NAME} " >/dev/null 2>&1; then
+    echo "Conda environment '${ENV_NAME}' already exists."
+else
+    echo "Conda environment '${ENV_NAME}' not found. Creating it now..."
+    conda create -n ${ENV_NAME} python=3.10 -y
+
+    if [ $? -eq 0 ]; then
+        echo " Conda environment '${ENV_NAME}' created successfully."
+    else
+        echo "Error: Failed to create Conda environment '${ENV_NAME}'. Exiting."
+        exit 1
+    fi
+fi
+conda activate vllm
+
+# ----------------------------------------------------------------
+# Checkout to 0.8.5.post1
+# ----------------------------------------------------------------
 rm -rf vllm
 git clone https://github.com/vllm-project/vllm.git
 pushd vllm
@@ -8,7 +31,7 @@ git checkout 3015d5634e74d59704e2b39bab0dbe2e6f86a38a
 # ----------------------------------------------------------------
 if ! command -v ccache &> /dev/null; then
     echo "ccache could not be found, installing it via conda..."
-    conda install -c conda-forge ccache
+    conda install -c conda-forge ccache -y
 fi
 
 # ----------------------------------------------------------------
@@ -19,7 +42,6 @@ cp ../setup.py .  # to override the setup.py in vllm
 # ----------------------------------------------------------------
 # For delta platform
 # ----------------------------------------------------------------
-conda activate vllm
 module load gcc/11.4.0
 module load cuda/12.4.0
 module load gcc/11.4.0
@@ -45,9 +67,8 @@ cmake .. \
     -DVLLM_PYTHON_EXECUTABLE=$(which python) \
     -DVLLM_PYTHON_PATH=$(python -c "import sys; print(':'.join(sys.path))") \
     -DFETCHCONTENT_BASE_DIR=$(pwd)/../.deps \
-    -DNVCC_THREADS=16 \
     -DCMAKE_JOB_POOL_COMPILE:STRING=compile \
-    -DCMAKE_JOB_POOLS:STRING=16 \
+    -DCMAKE_JOB_POOLS:STRING=compile=16 \
     -DCUDA_TOOLKIT_ROOT_DIR=/sw/user/cudatoolkits/installs/cuda-12.4.0
 
 # Build
