@@ -466,23 +466,9 @@ class LazyScheduler(OriginalV1Scheduler):
                     request = merge_documents(request)
 
                     # Get metadata for lazy attention
-                    num_blocks = len(computed_blocks)
-                    num_docs = len(request.documents_token_ids)
-                    q_mask = np.full(num_blocks + 1, self.block_size, dtype=np.int32)
-                    q_offset = np.zeros(num_blocks + 1, dtype=np.int32)
-
-                    acc_len = 0 # without padding tokens
-                    acc_blk = 0
-                    for doc_idx in range(num_docs):
-                        doc_len = request.len_documents[doc_idx]
-                        doc_len_without_padding = request.len_documents_without_padding[doc_idx]
-                        num_blks = doc_len // self.block_size
-                        q_offset[acc_blk: acc_blk+num_blks] = acc_len
-                        acc_len += doc_len
-                        acc_blk += num_blks
-                        q_mask[acc_blk-1] = doc_len_without_padding % self.block_size # last block
-                    req_to_q_offset[request.request_id] = list(q_offset)
-                    req_to_q_mask[request.request_id] = list(q_mask)
+                    (req_to_q_offset[request.request_id], 
+                     req_to_q_mask[request.request_id]) = \
+                        metadata_for_lazy_attention(request, self.block_size)
                     
                     # Update corresponding data in kv_cache_manager
                     # TODO(haocheng): optimize it
@@ -698,7 +684,25 @@ class LazyScheduler(OriginalV1Scheduler):
         _, num_computed_tokens_docs = \
             self.kv_cache_manager.get_computed_blocks_docs(request)
         return [request.len_documents[i] == num_computed_tokens_docs[i] for i in range(len(request.len_documents))]
-        
+
+def metadata_for_lazy_attention(request: Request, block_size: int) -> tuple[list[int], list[int]]:
+    """Generate the metadata for lazy attention."""
+    num_docs = len(request.num_padding_tokens)
+    num_blocks = len(request.all_token_ids) // block_size
+    q_mask = np.zeros(num_blocks + 1, dtype=np.int32)
+    q_offset = np.zeros(num_blocks + 1, dtype=np.int32)
+    acc_len = 0 # without padding tokens
+    acc_blk = 0
+    for doc_idx in range(num_docs):
+        doc_len = request.len_documents[doc_idx]
+        num_blks = doc_len // block_size
+        q_offset[acc_blk: acc_blk+num_blks] = acc_len
+        acc_len += doc_len
+        acc_blk += num_blks
+        q_mask[acc_blk-1] = request.num_padding_tokens[doc_idx]
+    return list(q_offset), list(q_mask)
+
+
 original_scheduler = None
 
 def apply_patch():

@@ -44,9 +44,10 @@ class EngineCoreRequest(
     arrival_time: float
     lora_request: Optional[LoRARequest]
     cache_salt: Optional[str]
-    # Extra arguments for dynamic rag
+    # Extra arguments for lazy attention
     documents_token_ids: Optional[list[list[int]]]
     document_seq_hash: Optional[str]
+    num_padding_tokens: Optional[list[int]]
 
     # Used in DP case to indicate which wave of requests this is expected to
     # belong to, to cover a race condition where the request is sent before

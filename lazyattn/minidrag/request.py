@@ -23,7 +23,7 @@ from minidrag.engine.__init__ import EngineCoreRequest, EngineCoreEventType
 
 
 
-class _Request:
+class Request:
 
     def __init__(
         self,
@@ -41,6 +41,7 @@ class _Request:
         # Extra attributes for DynamicRAG
         documents_token_ids: Optional[list[list[int]]] = None,
         document_seq_hash: Optional[str] = None,
+        num_padding_tokens: Optional[list[int]] = None,
     ) -> None:
         self.request_id = request_id
         self.sampling_params = sampling_params
@@ -88,9 +89,9 @@ class _Request:
         # Get extra attributes for DynamicRAG
         self.documents_token_ids = documents_token_ids
         self.document_seq_hash = document_seq_hash
+        self.num_padding_tokens = num_padding_tokens
         # Obtain the length of each document
         self.len_documents = None
-        self.len_documents_without_padding = None
         self.num_computed_tokens_docs = None
         if documents_token_ids is not None:
             self.len_documents = [len(document_token_ids) for document_token_ids 
@@ -129,6 +130,7 @@ class _Request:
             # Extra attributes for DynamicRAG
             documents_token_ids=request.documents_token_ids,
             document_seq_hash=request.document_seq_hash,
+            num_padding_tokens=request.num_padding_tokens,
         )
 
     def append_output_token_ids(
