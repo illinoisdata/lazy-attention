@@ -1,7 +1,7 @@
 # Test the schedling logic
 
 
-from minidrag.core.sched.scheduler import metadata_for_lazy_attention
+from lazy.core.sched.scheduler import metadata_for_lazy_attention
 
 from itertools import chain
 import pytest

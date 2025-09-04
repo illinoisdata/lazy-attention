@@ -5,7 +5,7 @@ import os
 os.environ["VLLM_ATTENTION_BACKEND"] = "TRITON_ATTN_VLLM_V1" 
 
 if os.environ.get("VLLM_USE_LAZY_ATTENTION", "0") == "1":
-    import minidrag.__vllm__
+    import lazy.__vllm__
     
 import asyncio
 import dataclasses
@@ -1356,20 +1356,20 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
         cache_manager = make_cache_manager(args)
         return CacheParrotRAG(tokenizer_id=args.cachep_tokenizer, cache_manager=cache_manager)
     elif args.rag_type == "llmrag":
-        from minidrag.ctxmgr import MiniDynamicRAG
+        from lazy.ctxmgr import MiniDynamicRAG
         MiniDynamicRAG.apply_triton_backend()
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
         logger.info(f"[llmrag] Using async engine args: {async_engine_args}")
         return LLMRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
     elif args.rag_type == "recllmrag": # full recomputation
-        from minidrag.ctxmgr import MiniDynamicRAG
+        from lazy.ctxmgr import MiniDynamicRAG
         MiniDynamicRAG.apply_triton_backend()
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
         async_engine_args.enable_prefix_caching=False
         logger.info(f"[recllmrag] Using async engine args: {async_engine_args}")
         return RecomLLMRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
     elif args.rag_type == "reullmrag": # full reuse
-        from minidrag.ctxmgr import MiniDynamicRAG
+        from lazy.ctxmgr import MiniDynamicRAG
         MiniDynamicRAG.apply_triton_backend()
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
         logger.info(f"[reullmrag] Using async engine args: {async_engine_args}")

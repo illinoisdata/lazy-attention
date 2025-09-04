@@ -2,7 +2,7 @@ from __future__ import annotations  # isort:skip
 
 import os
 
-# backend
+# backend (model -> attention layer -> attention impl)
 from lazy.attention.backends.triton_attn import forward as triton_attn_forward
 from lazy.attention.layer import (
     forward as attn_layer_forward,
@@ -11,7 +11,7 @@ from lazy.attention.layer import (
 from lazy.model_executor.models.llama import forward as llama_attn_forward
 
 # frontend
-from lazy.request import _Request
+from lazy.request import LazyRequest
 from lazy.entrypoints.llm import (
     generate as llm_generate,
     _validate_and_add_requests as llm_validate_and_add_requests, 
@@ -38,15 +38,18 @@ os.environ["VLLM_ATTENTION_BACKEND"] = "TRITON_ATTN_VLLM_V1"
 
 
 def proc_patch():
-    import vllm as _vllm
+    import vllm
     # TODO: fix the routering problem, when reuse and when not reuse
-    # Step 1.4: Patch triton attention forward function
+    
+    # Step 1.1: Patch triton attention forward function
     import vllm.v1.attention.backends.triton_attn
     vllm.v1.attention.backends.triton_attn.TritonAttentionImpl.forward = triton_attn_forward
-    # Step 1.5: Patch attention layer
-    _vllm.attention.layer.Attention.forward = attn_layer_forward
-    _vllm.config.CompilationConfig.set_splitting_ops_for_v1 = set_splitting_ops_for_v1
-    # Step 1.6: Patch llama attention forward function
+    
+    # Step 1.2: Patch attention layer
+    vllm.attention.layer.Attention.forward = attn_layer_forward
+    vllm.config.CompilationConfig.set_splitting_ops_for_v1 = set_splitting_ops_for_v1
+    
+    # Step 1.3: Patch llama attention forward function
     import vllm.model_executor.models.llama
     vllm.model_executor.models.llama.LlamaAttention.forward = llama_attn_forward
 
@@ -56,13 +59,13 @@ def proc_patch():
     global EngineCoreRequest
     vllm.v1.engine.EngineCoreRequest = EngineCoreRequest
     vllm.v1.engine.EngineCoreEventType = EngineCoreEventType
+    vllm.v1.engine.core.Request = LazyRequest
     vllm.v1.engine.core.EngineCoreRequest = EngineCoreRequest
-    vllm.v1.engine.core.Request = _Request
     vllm.v1.engine.core_client.EngineCoreRequest = EngineCoreRequest
     
     import vllm.v1.request
-    vllm.v1.request.Request = _Request
-    
+    vllm.v1.request.Request = LazyRequest
+
     import vllm.entrypoints.llm
     vllm.entrypoints.llm.LLM.generate = llm_generate
     vllm.entrypoints.llm.LLM._validate_and_add_requests = llm_validate_and_add_requests

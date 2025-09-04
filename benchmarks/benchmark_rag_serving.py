@@ -372,7 +372,7 @@ def sample_2wikimqa_block_requests(
     tokenizer: PreTrainedTokenizerBase,
 ) -> List:
     
-    jsonl_path = '/u/mpamnani/vllm/minidrag/scripts/block-attn-bench-datahub/processed_data/2wiki_eval/dataset'
+    jsonl_path = '/u/mpamnani/vllm/lazy/scripts/block-attn-bench-datahub/processed_data/2wiki_eval/dataset'
     data = []
     with open(jsonl_path, 'r', encoding='utf-8') as f:
         for line in f:
@@ -434,7 +434,7 @@ def sample_hotpotqa_block_requests(
     tokenizer: PreTrainedTokenizerBase,
 ) -> List:
     
-    jsonl_path = '/u/mpamnani/vllm/minidrag/scripts/block-attn-bench-datahub/processed_data/hqa_eval/dataset'
+    jsonl_path = '/u/mpamnani/vllm/lazy/scripts/block-attn-bench-datahub/processed_data/hqa_eval/dataset'
     data = []
     with open(jsonl_path, 'r', encoding='utf-8') as f:
         for line in f:

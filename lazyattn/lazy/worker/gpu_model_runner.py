@@ -59,8 +59,8 @@ else:
 logger = init_logger(__name__)
 
 # ////////////////////////////////////
-from minidrag.worker.gpu_input_batch import CachedRequestState
-from minidrag.attention.backends.flash_attn import FlashAttentionMetadata
+from lazy.worker.gpu_input_batch import CachedRequestState
+from lazy.attention.backends.flash_attn import FlashAttentionMetadata
 
 
 class LazyGPUModelRunner(BaseGPUModelRunner):

@@ -41,10 +41,10 @@ import copy
 import numpy as np
 
 # Overwrite classes
-from minidrag.core.kv_cache_manager import KVCacheManager
-from minidrag.request import Request, RequestStatus
-from minidrag.engine import EngineCoreRequest, EngineCoreEventType
-from minidrag.core.sched.output import NewRequestData
+from lazy.core.kv_cache_manager import KVCacheManager
+from lazy.request import Request, RequestStatus
+from lazy.engine import EngineCoreRequest, EngineCoreEventType
+from lazy.core.sched.output import NewRequestData
 
 # For patch
 from vllm.v1.core.sched.scheduler import Scheduler as OriginalV1Scheduler

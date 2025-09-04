@@ -98,7 +98,7 @@ def test_rotary_embedding_with_vllm(
             max_position = rope_scaling.get("max_position_embeddings", max_position)
         rope = get_rope(head_size, rotary_dim, max_position, base, is_neox_style, rope_scaling)
         rope = rope.to(dtype=dtype, device=torch.get_default_device())
-        # minidrag rotate only query
+        # lazy rotate only query
         drag_rotated_query, drag_unrotated_key = rope.forward_native(positions, unrotated_query, unrotated_key)
 
         # compare results

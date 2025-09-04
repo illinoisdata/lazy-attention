@@ -41,7 +41,7 @@ from vllm.v1.structured_output import StructuredOutputManager
 from vllm.version import __version__ as VLLM_VERSION
 from vllm.v1.engine.core import EngineCoreProc, DPEngineCoreProc
 
-from minidrag.engine import EngineCoreRequest, EngineCoreEventType
+from lazy.engine import EngineCoreRequest, EngineCoreEventType
 
 logger = init_logger(__name__)
 

@@ -2,7 +2,7 @@ import os
 
 import torch
 
-from minidrag.ctxmgr import MiniDynamicRAG
+from lazy.ctxmgr import LazyAttentionContextManager
 
 
 def setup_deterministic_env():
@@ -21,9 +21,9 @@ class MiniDynamicRAGContext:
         self.patched = False
         
     def __enter__(self):
-        MiniDynamicRAG.apply_patches()
+        LazyAttentionContextManager.apply_patches()
         torch.cuda.synchronize()
-        MiniDynamicRAG.apply_patches_subprocess()
+        LazyAttentionContextManager.apply_patches_subprocess()
         torch.cuda.synchronize()
         self.patched = True
         return self
@@ -31,10 +31,9 @@ class MiniDynamicRAGContext:
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.patched:
             try:
-                # MiniDynamicRAG.revert_patches_subprocess()
-                MiniDynamicRAG.revert_patches()
+                LazyAttentionContextManager.revert_patches()
                 torch.cuda.synchronize()
-                MiniDynamicRAG.revert_patches_subprocess
+                LazyAttentionContextManager.revert_patches_subprocess
                 torch.cuda.synchronize()
             except Exception as e:
                 print(f"Warning: Failed to revert patch: {e}")
@@ -47,14 +46,14 @@ class TritonAttnBackendContext:
         self.patched = False
         
     def __enter__(self):
-        MiniDynamicRAG.apply_triton_backend()
+        LazyAttentionContextManager.apply_triton_backend()
         self.patched = True
         return self
         
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.patched:
             try:
-                MiniDynamicRAG.revert_triton_backend()
+                LazyAttentionContextManager.revert_triton_backend()
             except Exception as e:
                 print(f"Warning: Failed to revert patch: {e}")
                 

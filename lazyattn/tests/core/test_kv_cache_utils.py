@@ -20,7 +20,7 @@ class TestBlockHash:
         )
 
         block_size = 3
-        from minidrag.core.kv_cache_utils import apply_patch, revert_patch
+        from lazy.core.kv_cache_utils import apply_patch, revert_patch
         apply_patch()
         from vllm.v1.core.kv_cache_utils import hash_request_tokens
         block_hashes_1 = hash_request_tokens(hash_fn, block_size, request1)

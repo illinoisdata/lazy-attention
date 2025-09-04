@@ -14,11 +14,11 @@ from xformers.ops.fmha.attn_bias import BlockDiagonalCausalFromBottomRightMask
 from vllm.attention.ops.chunked_prefill_paged_decode import (
     chunked_prefill_paged_decode)
 from vllm.attention.ops.prefix_prefill import context_attention_fwd
-# minidrag custom functions
-from minidrag.attention.ops.chunked_prefill_paged_decode import (
-    chunked_prefill_paged_decode as minidrag_chunked_prefill_paged_decode)
-from minidrag.attention.ops.prefix_prefill import (
-    context_attention_fwd as minidrag_context_attention_fwd)
+# lazy custom functions
+from lazy.attention.ops.chunked_prefill_paged_decode import (
+    chunked_prefill_paged_decode as lazy_chunked_prefill_paged_decode)
+from lazy.attention.ops.prefix_prefill import (
+    context_attention_fwd as lazy_context_attention_fwd)
 from vllm.platforms import current_platform
 from vllm.utils import STR_DTYPE_TO_TORCH_DTYPE
 from tests.kernels.test_prefix_prefill import (HEAD_SIZES, NUM_HEADS,
@@ -27,8 +27,8 @@ from tests.kernels.test_prefix_prefill import (HEAD_SIZES, NUM_HEADS,
 from utils import RoPEPatchContext, DynamicTritonAttnContext
 KV_CACHE_DTYPES = ["auto"] #, "fp8", "fp8_e5m2"] # TODO(haocheng): support more data types
 
-OPS = [(chunked_prefill_paged_decode, minidrag_chunked_prefill_paged_decode), 
-       (context_attention_fwd, minidrag_context_attention_fwd)]
+OPS = [(chunked_prefill_paged_decode, lazy_chunked_prefill_paged_decode), 
+       (context_attention_fwd, lazy_context_attention_fwd)]
 
 @pytest.mark.gpu
 @pytest.mark.unit

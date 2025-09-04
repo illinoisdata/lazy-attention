@@ -3,7 +3,7 @@ import torch
 
 from vllm.distributed import cleanup_dist_env_and_memory
 
-from minidrag.ctxmgr import MiniDynamicRAG
+from lazy.ctxmgr import MiniDynamicRAG
 from utils import setup_deterministic_env
 
 
@@ -56,7 +56,7 @@ class TestE2E:
                         vllm_ref_outputs_simple,):
         ref_outputs = vllm_ref_outputs_simple
         torch.cuda.empty_cache()
-        import minidrag.__vllm__
+        import lazy.__vllm__
         llm = None
         try:
             if True:

@@ -2,10 +2,10 @@
 tuner = ["py.typed"]
 
 [tool.setuptools]
-packages = ["minidrag"]
+packages = ["lazy"]
 
 [project]
-name = "minidrag"
+name = "lazy"
 # authors = []
 description = "Dynamic RAG"
 readme = "README.md"

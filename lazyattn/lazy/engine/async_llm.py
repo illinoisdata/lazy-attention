@@ -33,7 +33,7 @@ from vllm.v1.engine.processor import Processor
 from vllm.v1.engine.async_llm import logger
 from vllm.v1.engine.exceptions import EngineDeadError, EngineGenerateError
 
-from minidrag.engine import EngineCoreRequest
+from lazy.engine import EngineCoreRequest
 
 # logger = init_logger(__name__)
 

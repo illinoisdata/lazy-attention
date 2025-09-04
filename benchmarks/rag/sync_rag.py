@@ -25,7 +25,7 @@ import os
 os.environ["VLLM_ATTENTION_BACKEND"] = "TRITON_ATTN_VLLM_V1" 
 
 if os.environ.get("VLLM_USE_LAZY_ATTENTION", "0") == "1":
-    import minidrag.__vllm__
+    import lazy.__vllm__
 # ------------------------------------------------------------
 
 from typing import Dict, Any

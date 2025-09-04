@@ -1,5 +1,5 @@
 """
-Request class for minidrag.
+Request class for LazyAttention.
 
 This class is a wrapper around the original Request class from vllm. 
 """
@@ -19,11 +19,11 @@ if TYPE_CHECKING:
     from vllm.lora.request import LoRARequest
 
 
-from minidrag.engine.__init__ import EngineCoreRequest, EngineCoreEventType
+from lazy.engine.__init__ import EngineCoreRequest, EngineCoreEventType
 
 
 
-class Request:
+class LazyRequest:
 
     def __init__(
         self,
@@ -86,7 +86,7 @@ class Request:
 
         # /////////////////////////////////////////
         self.arrival_time = arrival_time
-        # Get extra attributes for DynamicRAG
+        # Get extra attributes for LazyAttention
         self.documents_token_ids = documents_token_ids
         self.document_seq_hash = document_seq_hash
         self.num_padding_tokens = num_padding_tokens
@@ -107,7 +107,7 @@ class Request:
         self.all_token_ids = ConstantList(self._all_token_ids)
 
     @classmethod
-    def from_engine_core_request(cls, request: EngineCoreRequest) -> "_Request":
+    def from_engine_core_request(cls, request: EngineCoreRequest) -> "LazyRequest":
         if request.mm_inputs is not None:
             assert isinstance(request.mm_inputs, list)
             assert is_list_of(request.mm_inputs, MultiModalKwargs), (
@@ -237,4 +237,4 @@ def apply_patch():
     """Apply the patch to the Request class.
     """
     import vllm.v1.request
-    vllm.v1.request.Request = _Request
+    vllm.v1.request.Request = LazyRequest

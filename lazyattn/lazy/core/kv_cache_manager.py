@@ -14,11 +14,11 @@ from vllm.v1.request import RequestStatus
 from vllm.v1.core.kv_cache_manager import KVCacheManager
 from vllm.v1.core.block_pool import BlockPool
 
-from minidrag.request import Request
-from minidrag.metrics.stats import PrefixCacheStats
+from lazy.request import Request
+from lazy.metrics.stats import PrefixCacheStats
 
-from minidrag.core.kv_cache_utils import hash_request_tokens_with_doc_hash, hash_request_tokens_docs
-from minidrag.core.block_pool import cache_full_blocks, cache_full_blocks_docs
+from lazy.core.kv_cache_utils import hash_request_tokens_with_doc_hash, hash_request_tokens_docs
+from lazy.core.block_pool import cache_full_blocks, cache_full_blocks_docs
 
 class DragKVCacheManager(KVCacheManager):
 

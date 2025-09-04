@@ -3,7 +3,7 @@ import asyncio
 import time
 from vllm import AsyncEngineArgs, SamplingParams
 from vllm.v1.engine.async_llm import AsyncLLM
-import minidrag.__vllm__
+import lazy.__vllm__
 import argparse
 
 

@@ -28,7 +28,7 @@ from vllm.sampling_params import SamplingParams
 
 from vllm.utils import cdiv, sha256
 
-from minidrag.engine import EngineCoreRequest
+from lazy.engine import EngineCoreRequest
 
 # class Processor:
 

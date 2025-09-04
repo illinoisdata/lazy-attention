@@ -99,16 +99,16 @@ Current State - Running: 5, Waiting: 2
 
 ```bash
 # 基本用法
-python lazyattn/minidrag/utils/monitoring.py lazy_scheduler_20240115_103000.log
+python lazyattn/lazy/utils/monitoring.py lazy_scheduler_20240115_103000.log
 
 # 只显示摘要
-python lazyattn/minidrag/utils/monitoring.py lazy_scheduler_20240115_103000.log --summary-only
+python lazyattn/lazy/utils/monitoring.py lazy_scheduler_20240115_103000.log --summary-only
 
 # 不生成图表
-python lazyattn/minidrag/utils/monitoring.py lazy_scheduler_20240115_103000.log --no-plots
+python lazyattn/lazy/utils/monitoring.py lazy_scheduler_20240115_103000.log --no-plots
 
 # 指定图表输出目录
-python lazyattn/minidrag/utils/monitoring.py lazy_scheduler_20240115_103000.log --output-dir my_plots
+python lazyattn/lazy/utils/monitoring.py lazy_scheduler_20240115_103000.log --output-dir my_plots
 ```
 
 ## 性能分析

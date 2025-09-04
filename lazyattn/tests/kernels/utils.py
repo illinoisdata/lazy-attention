@@ -6,7 +6,7 @@ class RoPEPatchContext:
         
     def __enter__(self):
         # torch.cuda.empty_cache()
-        from minidrag.model_executor.layers.rotary_embedding import apply_patch as apply_rope_patch
+        from lazy.model_executor.layers.rotary_embedding import apply_patch as apply_rope_patch
         apply_rope_patch()
         self.patched = True
         return self
@@ -14,7 +14,7 @@ class RoPEPatchContext:
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.patched:
             try:
-                from minidrag.model_executor.layers.rotary_embedding import revert_patch as revert_rope_patch
+                from lazy.model_executor.layers.rotary_embedding import revert_patch as revert_rope_patch
                 revert_rope_patch()
             except Exception as e:
                 print(f"Warning: Failed to revert patch: {e}")
@@ -30,7 +30,7 @@ class DynamicTritonAttnContext:
         
     def __enter__(self):
         # torch.cuda.empty_cache()
-        from minidrag.attention.backends.triton_attn import apply_patch as apply_triton_attn_patch
+        from lazy.attention.backends.triton_attn import apply_patch as apply_triton_attn_patch
         apply_triton_attn_patch()
         self.patched = True
         return self
@@ -38,7 +38,7 @@ class DynamicTritonAttnContext:
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.patched:
             try:
-                from minidrag.attention.backends.triton_attn import revert_patch as revert_triton_attn_patch
+                from lazy.attention.backends.triton_attn import revert_patch as revert_triton_attn_patch
                 revert_triton_attn_patch()
             except Exception as e:
                 print(f"Warning: Failed to revert patch: {e}")

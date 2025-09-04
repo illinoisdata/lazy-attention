@@ -1,24 +1,17 @@
 import torch
 
 # monkey patch functions
-from minidrag.attention.layer import apply_patch as apply_attn_layer_patch
-from minidrag.attention.backends.triton_attn import apply_patch as apply_triton_attn_patch
-# from minidrag.core.kv_cache_utils import apply_patch as apply_kv_cache_utils_patch
-from minidrag.model_executor.layers.rotary_embedding import apply_patch as apply_rotary_embedding_patch
-from minidrag.model_executor.models.llama import apply_patch as apply_llama_patch
-from minidrag._custom_ops import apply_patch as apply_custom_ops_patch
+from lazy.attention.layer import apply_patch as apply_attn_layer_patch
+from lazy.attention.backends.triton_attn import apply_patch as apply_triton_attn_patch
+from lazy.model_executor.models.llama import apply_patch as apply_llama_patch
 
-from minidrag.attention.layer import revert_patch as revert_attn_layer_patch
-from minidrag.attention.backends.triton_attn import revert_patch as revert_triton_attn_patch
-# from minidrag.core.kv_cache_utils import revert_patch as revert_kv_cache_utils_patch
-from minidrag.model_executor.layers.rotary_embedding import revert_patch as revert_rotary_embedding_patch
-from minidrag.model_executor.models.llama import revert_patch as revert_llama_patch
-from minidrag._custom_ops import revert_patch as revert_custom_ops_patch
-
+from lazy.attention.layer import revert_patch as revert_attn_layer_patch
+from lazy.attention.backends.triton_attn import revert_patch as revert_triton_attn_patch
+from lazy.model_executor.models.llama import revert_patch as revert_llama_patch
 
 def patched_run_engine_core(*args, dp_rank=0, local_dp_rank=0, ready_pipe, **kwargs):
     # patch all subprocesses
-    MiniDynamicRAG.apply_patches_curproc()
+    LazyAttentionContextManager.apply_patches_curproc()
     torch.cuda.synchronize()
     import vllm.v1.engine.core
     return vllm.v1.engine.core.EngineCoreProc.run_engine_core(
@@ -29,7 +22,7 @@ def patched_run_engine_core(*args, dp_rank=0, local_dp_rank=0, ready_pipe, **kwa
                 **kwargs)
 
 
-class MiniDynamicRAG:
+class LazyAttentionContextManager:
     @classmethod
     def apply_patches_subproc(cls):
         import vllm.v1.engine.core
@@ -42,12 +35,9 @@ class MiniDynamicRAG:
     
     @classmethod
     def apply_patches_curproc(cls):
-        """Patch current process with MiniDynamicRAG patches.
+        """Patch current process with LazyAttention patches.
         """
-        MiniDynamicRAG.apply_triton_backend()
-        # apply_kv_cache_utils_patch()
-        apply_custom_ops_patch()
-        apply_rotary_embedding_patch()
+        LazyAttentionContextManager.apply_triton_backend()
         apply_triton_attn_patch()
         apply_attn_layer_patch()
         apply_llama_patch()
@@ -58,10 +48,7 @@ class MiniDynamicRAG:
         revert_llama_patch()
         revert_attn_layer_patch()
         revert_triton_attn_patch()
-        revert_rotary_embedding_patch()
-        revert_custom_ops_patch()
-        # revert_kv_cache_utils_patch()
-        MiniDynamicRAG.revert_triton_backend()        
+        LazyAttentionContextManager.revert_triton_backend()        
         torch.cuda.synchronize()
         
 
@@ -79,10 +66,10 @@ class MiniDynamicRAG:
         pass
         
     def __enter__(self):
-        MiniDynamicRAG.apply_patches_curproc()
-        MiniDynamicRAG.apply_patches_subproc()
-        
+        LazyAttentionContextManager.apply_patches_curproc()
+        LazyAttentionContextManager.apply_patches_subproc()
+
     def __exit__(self, exc_type, exc_val, exc_tb):
-        MiniDynamicRAG.revert_patches_subproc()
-        MiniDynamicRAG.revert_patches_curproc()
+        LazyAttentionContextManager.revert_patches_subproc()
+        LazyAttentionContextManager.revert_patches_curproc()
         

@@ -12,7 +12,7 @@ from vllm.v1.core.kv_cache_utils import (BlockHashType, FreeKVCacheBlockQueue,
                                          KVCacheBlock,
                                          generate_block_hash_extra_keys,
                                          hash_block_tokens)
-from minidrag.request import Request
+from lazy.request import Request
 
 logger = init_logger(__name__)
 

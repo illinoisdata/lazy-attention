@@ -2,9 +2,9 @@ import pytest
 import torch 
 
 from vllm.distributed import cleanup_dist_env_and_memory
-import minidrag.__vllm__
+import lazy.__vllm__
 
-class TestMiniDRAG:
+class Testlazy:
     # @pytest.mark.gpu
     # @pytest.mark.integration
     # def test_e2e_simple_sync(self, 
