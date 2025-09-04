@@ -14,7 +14,7 @@ def setup_deterministic_env():
     torch.cuda.manual_seed_all(42)
     
 
-class MiniDynamicRAGContext:
+class LazyAttentionContext:
     """Context manager for safely applying and reverting RoPE patches."""
     
     def __init__(self):

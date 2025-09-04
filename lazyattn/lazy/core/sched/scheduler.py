@@ -710,7 +710,7 @@ def apply_patch():
     import vllm.v1.core.sched.scheduler
     global original_scheduler
     original_scheduler = vllm.v1.core.sched.scheduler.Scheduler
-    vllm.v1.core.sched.scheduler.Scheduler = MiniDynamicRAGScheduler
+    vllm.v1.core.sched.scheduler.Scheduler = LazyScheduler
 
 def revert_patch():
     import vllm.v1.core.sched.scheduler

@@ -23,7 +23,7 @@ from lazy.engine import EngineCoreRequest, EngineCoreEventType
 from lazy.engine.core import LazyEngineCoreProc
 
 # scheduler
-from lazy.core.sched.scheduler import MiniDynamicRAGScheduler
+from lazy.core.sched.scheduler import LazyScheduler
 
 # async
 from lazy.engine.async_llm import add_request, generate, _add_request
@@ -86,7 +86,7 @@ def proc_patch():
     
     # Step 3: finally, we patch the backend for scehduling
     import vllm.v1.core.sched.scheduler
-    vllm.v1.core.sched.scheduler.Scheduler = MiniDynamicRAGScheduler
+    vllm.v1.core.sched.scheduler.Scheduler = LazyScheduler
     
     # Step 4: patch for async mode
     import vllm.v1.engine.async_llm

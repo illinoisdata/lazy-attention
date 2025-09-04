@@ -3,7 +3,7 @@ import torch
 
 from vllm.distributed import cleanup_dist_env_and_memory
 
-from lazy.ctxmgr import MiniDynamicRAG
+from lazy.ctxmgr import LazyAttentionContextManager
 from utils import setup_deterministic_env
 
 
@@ -18,7 +18,7 @@ def vllm_ref_outputs_simple(mock_prompts,
     torch.cuda.empty_cache()
     llm = None
     try:
-        MiniDynamicRAG.apply_triton_backend()
+        LazyAttentionContextManager.apply_triton_backend()
         value = []
         setup_deterministic_env()
         import vllm
@@ -38,7 +38,7 @@ def vllm_ref_outputs_simple(mock_prompts,
     finally:
         if llm is not None:
             del llm
-        MiniDynamicRAG.revert_triton_backend()
+        LazyAttentionContextManager.revert_triton_backend()
         cleanup_dist_env_and_memory()
         torch.cuda.synchronize()
         
