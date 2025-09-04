@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from vllm.multimodal.inputs import MultiModalKwargs, PlaceholderRange
     from vllm.sampling_params import SamplingParams
 
-    from lazy.request import Request as Request # Replace the original V1 Request
+    from lazy.request import LazyRequest as Request # Replace the original V1 Request
 
 @dataclass
 class NewRequestData:

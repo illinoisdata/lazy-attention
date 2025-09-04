@@ -14,7 +14,7 @@ from vllm.v1.request import RequestStatus
 from vllm.v1.core.kv_cache_manager import KVCacheManager
 from vllm.v1.core.block_pool import BlockPool
 
-from lazy.request import Request
+from lazy.request import LazyRequest as Request
 from lazy.metrics.stats import PrefixCacheStats
 
 from lazy.core.kv_cache_utils import hash_request_tokens_with_doc_hash, hash_request_tokens_docs

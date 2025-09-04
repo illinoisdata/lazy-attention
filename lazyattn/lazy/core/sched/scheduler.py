@@ -42,7 +42,8 @@ import numpy as np
 
 # Overwrite classes
 from lazy.core.kv_cache_manager import KVCacheManager
-from lazy.request import Request, RequestStatus
+from lazy.request import RequestStatus
+from lazy.request import LazyRequest as Request
 from lazy.engine import EngineCoreRequest, EngineCoreEventType
 from lazy.core.sched.output import NewRequestData
 

@@ -3,7 +3,7 @@ from typing import Any
 from vllm.v1.core.kv_cache_utils import need_extra_keys, generate_block_hash_extra_keys, hash_block_tokens
 from vllm.v1.core.kv_cache_utils import BlockHashType
 
-from lazy.request import _Request as Request
+from lazy.request import LazyRequest as Request
 
 
 
