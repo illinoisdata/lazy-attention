@@ -1,24 +1,31 @@
-# minidrag/tests/conftest.py
+# lazyattn/tests/conftest.py
 import os
 import sys
 import pytest
 
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+CHECK_MODULES = True
+
+# ================================================
 # os.environ['PYTORCH_CUDA_GRAPH_DEBUG'] = '1'
+# ================================================
 
-# add root directory to python path
-vllm_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-sys.path.insert(0, vllm_root)
-minidrag_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../minidrag"))
-sys.path.insert(0, minidrag_root)
+# Add lazyattn directory to python path
+lazyattn_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../lazyattn"))
+sys.path.insert(0, lazyattn_root)
+logger.info(f"Added lazyattn to Python path: {lazyattn_root}")
 
-
-# inject custom ops for all tests (not affect any functionality)
-# specifically, we inject two functions:
-# 1. vllm._custom_ops.rotary_embedding_q = rotary_embedding_q
-# 2. vllm._custom_ops.batched_rotary_embedding_q = batched_rotary_embedding_q
-from minidrag._custom_ops import apply_patch
-apply_patch()
-
+# Check the availability of vllm and lazy modules
+if CHECK_MODULES:
+    try:
+        import vllm
+        import lazy
+    except ImportError as e:
+        logger.warning(f"Failed to import module: {e}")
 
 @pytest.fixture(scope="session")
 def mock_prompts():

@@ -2,42 +2,35 @@ from __future__ import annotations  # isort:skip
 
 import os
 
-from minidrag._custom_ops import (
-    rotary_embedding_q, 
-    batched_rotary_embedding_q,
-)
-from minidrag.model_executor.layers.rotary_embedding import (
-    forward_cuda as rotary_embedding_forward_cuda,
-    forward_native as rotary_embedding_forward_native,
-)
-from minidrag.attention.backends.triton_attn import forward as triton_attn_forward
-from minidrag.attention.layer import (
+# backend
+from lazy.attention.backends.triton_attn import forward as triton_attn_forward
+from lazy.attention.layer import (
     forward as attn_layer_forward,
     set_splitting_ops_for_v1
 )
-from minidrag.model_executor.models.llama import forward as llama_attn_forward
+from lazy.model_executor.models.llama import forward as llama_attn_forward
 
 # frontend
-from minidrag.request import _Request
-from minidrag.entrypoints.llm import (
-    generate as llm_generate, 
+from lazy.request import _Request
+from lazy.entrypoints.llm import (
+    generate as llm_generate,
     _validate_and_add_requests as llm_validate_and_add_requests, 
     _add_request as llm_add_request,
 )
-from minidrag.engine.llm_engine import add_request as llm_engine_add_request
-from minidrag.engine.processor import process_inputs as llm_engine_process_inputs
-from minidrag.engine import EngineCoreRequest, EngineCoreEventType
-from minidrag.engine.core import LazyEngineCoreProc
+from lazy.engine.llm_engine import add_request as llm_engine_add_request
+from lazy.engine.processor import process_inputs as llm_engine_process_inputs
+from lazy.engine import EngineCoreRequest, EngineCoreEventType
+from lazy.engine.core import LazyEngineCoreProc
 
 # scheduler
-from minidrag.core.sched.scheduler import MiniDynamicRAGScheduler
+from lazy.core.sched.scheduler import MiniDynamicRAGScheduler
 
 # async
-from minidrag.engine.async_llm import add_request, generate, _add_request
+from lazy.engine.async_llm import add_request, generate, _add_request
 
 # ///////////////////////////////
-from minidrag.worker.gpu_input_batch import CachedRequestState
-from minidrag.worker.gpu_model_runner import LazyGPUModelRunner
+from lazy.worker.gpu_input_batch import CachedRequestState
+from lazy.worker.gpu_model_runner import LazyGPUModelRunner
 # //////////////////////////////
 
 # Step 0: Set environment variable for Triton backend
@@ -47,13 +40,6 @@ os.environ["VLLM_ATTENTION_BACKEND"] = "TRITON_ATTN_VLLM_V1"
 def proc_patch():
     import vllm as _vllm
     # TODO: fix the routering problem, when reuse and when not reuse
-    # # Step 1.1: Patch hash function for block content (Removed)
-    # Step 1.2: Patch custom ops
-    # _vllm._custom_ops.rotary_embedding_q = rotary_embedding_q
-    # _vllm._custom_ops.batched_rotary_embedding_q = batched_rotary_embedding_q
-    # # Step 1.3: Patch RotaryEmbedding forward functions
-    # _vllm.model_executor.layers.rotary_embedding.RotaryEmbedding.forward_cuda = rotary_embedding_forward_cuda
-    # _vllm.model_executor.layers.rotary_embedding.RotaryEmbedding.forward_native = rotary_embedding_forward_native
     # Step 1.4: Patch triton attention forward function
     import vllm.v1.attention.backends.triton_attn
     vllm.v1.attention.backends.triton_attn.TritonAttentionImpl.forward = triton_attn_forward

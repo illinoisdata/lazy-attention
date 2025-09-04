@@ -3,3 +3,11 @@ vllm_proj/vllm/
 vllm_proj/triton/
 
 *.json
+
+*.sqlite
+*.nsys-rep
+*.ncu-rep
+
+slurm/
+
+__pycache__/

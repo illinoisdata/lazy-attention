@@ -1,15 +1,21 @@
 import pytest
-import torch 
+import torch
+import logging
 
 from vllm.distributed import cleanup_dist_env_and_memory
+
+import lazy.__vllm__
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class TestVLLM:
     @pytest.mark.gpu
     @pytest.mark.integration
     def test_e2e_simple_sync(self, 
-                        mock_prompts,
-                        mock_model_name,
-                        mock_sampling_params,):
+                             mock_prompts,
+                             mock_model_name,
+                             mock_sampling_params,):
         torch.cuda.empty_cache()
         llm = None
         try:
@@ -20,7 +26,7 @@ class TestVLLM:
                            enable_prefix_caching=True,
                            seed=42,
                            max_model_len=2048,)
-            print("llm created")
+            logger.info("llm created")
             prompts = []
             docs = [["doc1 "*50, "doc2 "*50, "doc3 "*50], 
                     ["doc2 "*50, "doc1 "*50, "doc3 "*50],
@@ -33,7 +39,7 @@ class TestVLLM:
             outputs = llm.generate(prompts=prompts,
                                    sampling_params=mock_sampling_params)
             for output in outputs:
-                print(output.outputs[0].text)
+                logger.info(output.outputs[0].text)
         finally:
             if llm is not None:
                 del llm

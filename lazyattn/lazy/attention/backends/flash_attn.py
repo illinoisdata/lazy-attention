@@ -99,7 +99,7 @@ class FlashAttentionMetadata:
     # For logging.
     num_input_tokens: int = 0  # Number of tokens including padding.
 
-    # Optional lazy attention
+    # NOTE(haocheng): Optional fields, only for lazy attention
     is_lazy: Optional[torch.Tensor] = None # [num_seqs]
     q_offset: Optional[torch.Tensor] = None # [num_seqs, num_blocks]
     q_mask: Optional[torch.Tensor] = None # [num_seqs, num_blocks]

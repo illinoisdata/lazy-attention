@@ -65,7 +65,7 @@ def kernel_paged_attention_2d(
         is_lazy_ptr,
         q_offset_ptr,
 ):
-    # TODO(haocheng): consider the case rot dim != head size
+    # TODO(haocheng): low priority: consider the case rot dim != head size
     seq_idx = tl.program_id(0)
     # Get the condition as early as possible
     is_lazy = tl.load(is_lazy_ptr + seq_idx)
