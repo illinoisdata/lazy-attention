@@ -12,7 +12,7 @@ def hash_request_tokens_docs(hash_function: Any, block_size: int,
     """Compute the hash values for each document in the document sequence.
     Note the the return value is a list of lists, where each inner list contains
     the hash values for a single document."""
-    documents_token_ids = request.documents_token_ids
+    documents_token_ids = request.documents_token_ids_padded
 
     ret = []
     for doc_idx, token_ids in enumerate(documents_token_ids):

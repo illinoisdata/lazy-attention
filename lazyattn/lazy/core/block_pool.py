@@ -126,7 +126,7 @@ def cache_full_blocks_docs(
     if num_cached_blocks_docs == num_full_blocks_docs:
         return
     # Need to cache the blocks for documents
-    num_docs = len(request.documents_token_ids)
+    num_docs = len(request.documents_token_ids_padded)
     for doc_idx in range(num_docs):
         num_cached_blocks_doc = num_cached_blocks_docs[doc_idx]
         num_full_blocks_doc = num_full_blocks_docs[doc_idx]
@@ -151,7 +151,7 @@ def cache_full_blocks_docs(
                 blk_idx = num_cached_blocks_doc + i
                 start_token_idx = blk_idx * block_size
                 end_token_idx = (blk_idx + 1) * block_size
-                block_tokens = request.documents_token_ids[doc_idx][
+                block_tokens = request.documents_token_ids_padded[doc_idx][
                     start_token_idx:end_token_idx]
                 block_hash = hash_block_tokens(hash_fn, prev_block_hash_value,
                                 block_tokens, extra_keys=None)

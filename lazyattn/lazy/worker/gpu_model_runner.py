@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+"""Lazy attention version of GPUModelRunner."""
 
 import gc
 import time
@@ -47,8 +47,6 @@ from vllm.v1.utils import bind_kv_cache
 from vllm.v1.worker.gpu_input_batch import InputBatch
 from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
 
-from vllm.v1.worker.gpu_model_runner import GPUModelRunner as BaseGPUModelRunner
-
 if TYPE_CHECKING:
     import xgrammar as xgr
 
@@ -59,11 +57,11 @@ else:
 logger = init_logger(__name__)
 
 # ////////////////////////////////////
+from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from lazy.worker.gpu_input_batch import CachedRequestState
 from lazy.attention.backends.flash_attn import FlashAttentionMetadata
 
-
-class LazyGPUModelRunner(BaseGPUModelRunner):
+class LazyGPUModelRunner(GPUModelRunner):
 
     def __init__(
         self,

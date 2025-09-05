@@ -23,5 +23,7 @@ python -c "import vllm; print('load vllm successfully')"
 
 cd /projects/bdjx/hxia3/gh/lazy-attention/lazyattn
 
-PYTHONPATH=. pytest ./tests/test_base.py
+export VLLM_LOGGING_LEVEL=DEBUG
+
+PYTHONPATH=. pytest ./tests/test_base.py -v -s
 

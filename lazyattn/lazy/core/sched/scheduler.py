@@ -2,6 +2,8 @@
 
 """
 Core of LazyAttention
+
+Changed by Haocheng at 2025/09/04
 """
 
 from __future__ import annotations
@@ -167,6 +169,8 @@ class LazyScheduler(OriginalV1Scheduler):
         # e.g., max_num_seqs: int = 128
 
     def schedule(self) -> SchedulerOutput:
+        logger.info(f"Scheduler: waiting={dump_dequeue(self.waiting)}, "
+                    f"running={[req.request_id for req in self.running]}")
         # NOTE(woosuk) on the scheduling algorithm:
         # There's no "decoding phase" nor "prefill phase" in the scheduler.
         # Each request just has the num_computed_tokens and
@@ -383,7 +387,7 @@ class LazyScheduler(OriginalV1Scheduler):
                         # If docs are not ready, there are two cases:
                         # 1. we just need to wait -> not ready part is running
                         # 2. doc requests disappeared
-                        num_docs = len(request.documents_token_ids)
+                        num_docs = len(request.documents_token_ids_padded)
                         # is_doc_ready_flags: [bool], len = num_docs, only false
                         docs_req_ids = [f"{request.request_id}_d{i}" if not is_doc_ready_flags[i] else None for i in range(num_docs)]
                         running_req_ids = set([req.request_id for req in self.running])
@@ -401,7 +405,7 @@ class LazyScheduler(OriginalV1Scheduler):
                                 sampling_params.max_tokens = 1 # TODO(haocheng): how to avoid
                                 doc_req = Request(
                                     request_id = req_id,
-                                    prompt_token_ids = request.documents_token_ids[int(req_id.split('_d')[-1])],
+                                    prompt_token_ids = request.documents_token_ids_padded[int(req_id.split('_d')[-1])],
                                     multi_modal_inputs = request.mm_inputs,
                                     multi_modal_hashes = request.mm_hashes,
                                     multi_modal_placeholders = request.mm_positions,
@@ -461,7 +465,8 @@ class LazyScheduler(OriginalV1Scheduler):
                     computed_blocks = list(chain.from_iterable(
                         computed_blocks_docs)) + computed_blocks
                     assert sum(num_computed_tokens_docs) == \
-                        sum([len(token_ids) for token_ids in requst.documents_token_ids])
+                        sum([len(token_ids) for token_ids 
+                             in request.documents_token_ids_padded])
                     num_computed_tokens += sum(num_computed_tokens_docs)
                     # update req info
                     request = merge_documents(request)
@@ -480,7 +485,7 @@ class LazyScheduler(OriginalV1Scheduler):
                     
                     # Update req to block hash
                     pre_block_hashes = []
-                    for doc_idx in range(len(request.documents_token_ids)):
+                    for doc_idx in range(len(request.documents_token_ids_padded)):
                         doc_id = f"{request.request_id}_d{doc_idx}"
                         pre_block_hashes.extend(
                             self.kv_cache_manager.req_to_block_hashes[doc_id])
@@ -667,6 +672,7 @@ class LazyScheduler(OriginalV1Scheduler):
             self.requests[req_id].num_computed_tokens += num_scheduled_token
 
         self.finished_req_ids = set()
+        logger.info(f"Scheduler output: {scheduler_output}")
         return scheduler_output
 
     def add_request(self, request: Request) -> None:
@@ -684,23 +690,24 @@ class LazyScheduler(OriginalV1Scheduler):
         assert request.has_documents
         _, num_computed_tokens_docs = \
             self.kv_cache_manager.get_computed_blocks_docs(request)
-        return [request.len_documents[i] == num_computed_tokens_docs[i] for i in range(len(request.len_documents))]
+        return [request.document_lens_padded[i] == num_computed_tokens_docs[i] for i in range(len(request.document_lens))]
 
 def metadata_for_lazy_attention(request: Request, block_size: int) -> tuple[list[int], list[int]]:
     """Generate the metadata for lazy attention."""
-    num_docs = len(request.num_padding_tokens)
+    num_docs = len(request.document_lens)
     num_blocks = len(request.all_token_ids) // block_size
     q_mask = np.zeros(num_blocks + 1, dtype=np.int32)
     q_offset = np.zeros(num_blocks + 1, dtype=np.int32)
-    acc_len = 0 # without padding tokens
-    acc_blk = 0
+    accu_blk = 0
+    
+    total_padding = sum(request.document_lens_padded) - sum(request.document_lens)
+    position_distance = -total_padding
     for doc_idx in range(num_docs):
-        doc_len = request.len_documents[doc_idx]
-        num_blks = doc_len // block_size
-        q_offset[acc_blk: acc_blk+num_blks] = acc_len
-        acc_len += doc_len
-        acc_blk += num_blks
-        q_mask[acc_blk-1] = request.num_padding_tokens[doc_idx]
+        num_blks = request.document_lens[doc_idx] // block_size
+        q_offset[accu_blk: accu_blk+num_blks] = position_distance
+        accu_blk += num_blks
+        position_distance -= request.document_lens[doc_idx]
+        q_mask[accu_blk-1] = request.document_lens_padded[doc_idx] - request.document_lens[doc_idx]
     return list(q_offset), list(q_mask)
 
 

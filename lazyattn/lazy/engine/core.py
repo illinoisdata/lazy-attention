@@ -1,4 +1,12 @@
-"""here we modify the core.py to make it compatible with the dynamic rag EngineCoreRequest"""
+"""
+Here we modify the core.py to make it compatible with LazyAttention.
+   
+We added this is only for:
+- Launch LazyEngineCoreProc instead of EngineCoreProc
+- The only difference is `MsgpackDecoder(EngineCoreRequest)`
+
+Changed by Haocheng at 2025/09/04
+"""
 
 import json
 import os
@@ -39,42 +47,14 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
 from vllm.v1.structured_output import StructuredOutputManager
 from vllm.version import __version__ as VLLM_VERSION
+
 from vllm.v1.engine.core import EngineCoreProc, DPEngineCoreProc
 
-from lazy.engine import EngineCoreRequest, EngineCoreEventType
+from lazy.engine import EngineCoreRequest
 
 logger = init_logger(__name__)
 
 class LazyEngineCoreProc(EngineCoreProc):
-    def process_input_socket(self, input_path: str, engine_index: int):                
-        """Input socket IO thread."""
-        # Msgpack serialization decoding.
-        add_request_decoder = MsgpackDecoder(EngineCoreRequest)
-        generic_decoder = MsgpackDecoder()
-        identity = engine_index.to_bytes(length=2, byteorder="little")
-        with zmq_socket_ctx(input_path,
-                            zmq.DEALER,
-                            identity=identity,
-                            bind=False) as socket:
-            # Send ready message to front-end once input socket is connected.
-            message_dict = {
-                'type': 'READY',
-                'num_gpu_blocks': self.vllm_config.cache_config.num_gpu_blocks,
-            }
-            message = json.dumps(message_dict).encode('utf-8')
-            socket.send(message)
-            while True:
-                # (RequestType, RequestData)
-                type_frame, *data_frames = socket.recv_multipart(copy=False)
-                request_type = EngineCoreRequestType(bytes(type_frame.buffer))
-                # Deserialize the request data.
-                decoder = add_request_decoder if (
-                    request_type
-                    == EngineCoreRequestType.ADD) else generic_decoder
-                request = decoder.decode(data_frames)
-                # Push to input queue for core busy loop.
-                self.input_queue.put_nowait((request_type, request)) 
-    
     @staticmethod
     def run_engine_core(*args,
                         dp_rank: int = 0,
@@ -100,7 +80,7 @@ class LazyEngineCoreProc(EngineCoreProc):
         signal.signal(signal.SIGTERM, signal_handler)
         signal.signal(signal.SIGINT, signal_handler)
 
-        engine_core: Optional[LazyEngineCoreProc] = None
+        engine_core: Optional[EngineCoreProc] = None
         try:
             parallel_config: ParallelConfig = kwargs[
                 "vllm_config"].parallel_config
@@ -108,7 +88,7 @@ class LazyEngineCoreProc(EngineCoreProc):
                 # Set data parallel rank for this engine process.
                 parallel_config.data_parallel_rank = dp_rank
                 parallel_config.data_parallel_rank_local = local_dp_rank
-                engine_core = DPEngineCoreProc(*args, **kwargs)
+                engine_core = DPLazyEngineCoreProc(*args, **kwargs)
             else:
                 engine_core = LazyEngineCoreProc(*args, **kwargs)
 
@@ -128,6 +108,42 @@ class LazyEngineCoreProc(EngineCoreProc):
             if engine_core is not None:
                 engine_core.shutdown()
     
+    def process_input_socket(self, input_path: str, engine_index: int):
+        """Input socket IO thread."""
+
+        # Msgpack serialization decoding.
+        add_request_decoder = MsgpackDecoder(EngineCoreRequest)
+        generic_decoder = MsgpackDecoder()
+        identity = engine_index.to_bytes(length=2, byteorder="little")
+
+        with zmq_socket_ctx(input_path,
+                            zmq.DEALER,
+                            identity=identity,
+                            bind=False) as socket:
+
+            # Send ready message to front-end once input socket is connected.
+            socket.send(b'READY')
+
+            while True:
+                # (RequestType, RequestData)
+                type_frame, *data_frames = socket.recv_multipart(copy=False)
+                request_type = EngineCoreRequestType(bytes(type_frame.buffer))
+
+                # Deserialize the request data.
+                decoder = add_request_decoder if (
+                    request_type
+                    == EngineCoreRequestType.ADD) else generic_decoder
+                request = decoder.decode(data_frames)
+
+                # Push to input queue for core busy loop.
+                self.input_queue.put_nowait((request_type, request))
+    
+    
+class DPLazyEngineCoreProc(LazyEngineCoreProc):
+    # TODO(haocheng): implement DP version
+    pass
+    
+    
 def apply_patch():
     import vllm.v1.engine.core
-    vllm.v1.engine.core.EngineCoreProc = EngineCoreProc
+    vllm.v1.engine.core.EngineCoreProc = LazyEngineCoreProc

@@ -37,11 +37,11 @@ class LazyRequest:
         arrival_time: float,
         lora_request: Optional["LoRARequest"] = None,
         structured_output_request: Optional["StructuredOutputRequest"] = None,
-        cache_salt: Optional[str] = None,
         # Extra attributes for DynamicRAG
-        documents_token_ids: Optional[list[list[int]]] = None,
+        documents_token_ids_padded: Optional[list[list[int]]] = None,
+        document_lens: Optional[list[int]] = None,
+        document_lens_padded: Optional[list[int]] = None,
         document_seq_hash: Optional[str] = None,
-        num_padding_tokens: Optional[list[int]] = None,
     ) -> None:
         self.request_id = request_id
         self.sampling_params = sampling_params
@@ -64,7 +64,6 @@ class LazyRequest:
         self._all_token_ids: list[int] = self.prompt_token_ids.copy()
         self.spec_token_ids: list[int] = []
         self.num_computed_tokens = 0
-        self.cache_salt: Optional[str] = cache_salt
 
         # Multi-modal related
         self.mm_positions = multi_modal_placeholders or []
@@ -87,21 +86,19 @@ class LazyRequest:
         # /////////////////////////////////////////
         self.arrival_time = arrival_time
         # Get extra attributes for LazyAttention
-        self.documents_token_ids = documents_token_ids
+        self.documents_token_ids_padded = documents_token_ids_padded
+        self.document_lens = document_lens
+        self.document_lens_padded = document_lens_padded
         self.document_seq_hash = document_seq_hash
-        self.num_padding_tokens = num_padding_tokens
-        # Obtain the length of each document
-        self.len_documents = None
-        self.num_computed_tokens_docs = None
-        if documents_token_ids is not None:
-            self.len_documents = [len(document_token_ids) for document_token_ids 
-                                  in documents_token_ids]
-            self.num_computed_tokens_docs = [0 for _ in documents_token_ids]
+        self.num_computed_tokens_docs = ([0 for _ in document_lens] 
+                                         if document_lens is not None else None)
             
     def merge_documents(self):
+        """Merge the document token ids into the prompt token ids."""
         from itertools import chain
         assert self.has_documents
-        self.prompt_token_ids = list(chain.from_iterable(self.documents_token_ids)) + self.prompt_token_ids
+        self.prompt_token_ids = (list(chain.from_iterable(self.documents_token_ids_padded)) + 
+                                 self.prompt_token_ids)
         self.num_prompt_tokens = len(self.prompt_token_ids)
         self._all_token_ids = self.prompt_token_ids.copy()
         self.all_token_ids = ConstantList(self._all_token_ids)
@@ -113,7 +110,6 @@ class LazyRequest:
             assert is_list_of(request.mm_inputs, MultiModalKwargs), (
                 "mm_inputs was not updated in EngineCore.add_request")
 
-        
         return cls(
             request_id=request.request_id,
             prompt_token_ids=request.prompt_token_ids,
@@ -126,11 +122,11 @@ class LazyRequest:
             lora_request=request.lora_request,
             structured_output_request=StructuredOutputRequest(
                 sampling_params=request.sampling_params),
-            cache_salt=request.cache_salt,
-            # Extra attributes for DynamicRAG
-            documents_token_ids=request.documents_token_ids,
+            # Extra attributes for LazyAttention
+            documents_token_ids_padded=request.documents_token_ids_padded,
             document_seq_hash=request.document_seq_hash,
-            num_padding_tokens=request.num_padding_tokens,
+            document_lens=request.document_lens,
+            document_lens_padded=request.document_lens_padded,
         )
 
     def append_output_token_ids(
@@ -146,8 +142,8 @@ class LazyRequest:
             
     @property
     def has_documents(self) -> bool:
-        return self.documents_token_ids is not None
-    
+        return self.documents_token_ids_padded is not None
+
     @property
     def num_tokens(self) -> int:
         return len(self._all_token_ids)
@@ -192,8 +188,9 @@ class LazyRequest:
         return f"Request(request_id={self.request_id}," \
                f"prompt_token_ids={self.prompt_token_ids}, sampling_params={self.sampling_params}, " \
                f"eos_token_id={self.eos_token_id}, arrival_time={self.arrival_time}, " \
-               f"documents_token_ids={self.documents_token_ids}," \
-               f"len_documents={self.len_documents})," \
+               f"documents_token_ids_padded={self.documents_token_ids_padded}," \
+               f"document_lens={self.document_lens}," \
+               f"document_lens_padded={self.document_lens_padded}," \
                f"num_computed_tokens_docs={self.num_computed_tokens_docs})"
 
 
@@ -209,7 +206,7 @@ class RequestStatus(enum.IntEnum):
     FINISHED_LENGTH_CAPPED = enum.auto()
     FINISHED_ABORTED = enum.auto()
     FINISHED_IGNORED = enum.auto()
-    
+    # For lazy attention with documents
     WAITING_FOR_DOC = enum.auto()
 
     @staticmethod

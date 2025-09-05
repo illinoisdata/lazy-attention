@@ -33,8 +33,7 @@ class CachedRequestState:
     num_computed_tokens: int
     output_token_ids: list[int]
     
-    # //////////
-    # For q rotation
+    # For q rotation in lazy attention
     has_docs: bool = False
     q_offset: Optional[list[int]] = None
 

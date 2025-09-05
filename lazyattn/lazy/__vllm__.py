@@ -12,13 +12,9 @@ from lazy.model_executor.models.llama import forward as llama_attn_forward
 
 # frontend
 from lazy.request import LazyRequest
-from lazy.entrypoints.llm import (
-    generate as llm_generate,
-    _validate_and_add_requests as llm_validate_and_add_requests, 
-    _add_request as llm_add_request,
-)
-from lazy.engine.llm_engine import add_request as llm_engine_add_request
-from lazy.engine.processor import process_inputs as llm_engine_process_inputs
+from lazy.entrypoints.llm import LazyLLM
+from lazy.engine.llm_engine import LazyLLMEngine
+from lazy.engine.processor import LazyProcessor
 from lazy.engine import EngineCoreRequest, EngineCoreEventType
 from lazy.engine.core import LazyEngineCoreProc
 
@@ -26,7 +22,7 @@ from lazy.engine.core import LazyEngineCoreProc
 from lazy.core.sched.scheduler import LazyScheduler
 
 # async
-from lazy.engine.async_llm import add_request, generate, _add_request
+from lazy.engine.async_llm import AsyncLazyLLM
 
 # ///////////////////////////////
 from lazy.worker.gpu_input_batch import CachedRequestState
@@ -65,15 +61,12 @@ def proc_patch():
     
     import vllm.v1.request
     vllm.v1.request.Request = LazyRequest
-
     import vllm.entrypoints.llm
-    vllm.entrypoints.llm.LLM.generate = llm_generate
-    vllm.entrypoints.llm.LLM._validate_and_add_requests = llm_validate_and_add_requests
-    vllm.entrypoints.llm.LLM._add_request = llm_add_request
+    vllm.entrypoints.llm.LLM = LazyLLM
     import vllm.v1.engine.llm_engine
-    vllm.v1.engine.llm_engine.LLMEngine.add_request = llm_engine_add_request
+    vllm.v1.engine.llm_engine.LLMEngine = LazyLLMEngine
     import vllm.v1.engine.processor
-    vllm.v1.engine.processor.Processor.process_inputs = llm_engine_process_inputs
+    vllm.v1.engine.processor.Processor = LazyProcessor
     import vllm.v1.engine.core
     vllm.v1.engine.core.EngineCoreProc = LazyEngineCoreProc
     import vllm.v1.engine.core_client
@@ -90,8 +83,6 @@ def proc_patch():
     
     # Step 4: patch for async mode
     import vllm.v1.engine.async_llm
-    vllm.v1.engine.async_llm.AsyncLLM.add_request = add_request
-    vllm.v1.engine.async_llm.AsyncLLM._add_request = _add_request
-    vllm.v1.engine.async_llm.AsyncLLM.generate = generate
+    vllm.v1.engine.async_llm.AsyncLLM = AsyncLazyLLM
 
 proc_patch()

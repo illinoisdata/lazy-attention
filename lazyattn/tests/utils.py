@@ -4,6 +4,26 @@ import torch
 
 from lazy.ctxmgr import LazyAttentionContextManager
 
+import signal
+import functools
+
+def timeout(seconds=120, error_message="Timeout!"):
+    """Limit the execution time of a function."""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            def handler(signum, frame):
+                raise TimeoutError(error_message)
+
+            signal.signal(signal.SIGALRM, handler)
+            signal.alarm(seconds)
+            try:
+                return func(*args, **kwargs)
+            finally:
+                signal.alarm(0)  # Ensure the alarm is turned off
+        return wrapper
+    return decorator
+
 
 def setup_deterministic_env():
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"

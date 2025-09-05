@@ -1,9 +1,13 @@
-# SPDX-License-Identifier: Apache-2.0
+"""
+We change this to add extra fields in EngineCoreRequest for LazyAttention.
+
+Changed by Haocheng at 2025/09/04
+"""
 
 import enum
 import time
+from collections.abc import Sequence
 from typing import Any, Optional, Union
-from collections.abc import Mapping, Sequence
 
 import msgspec
 
@@ -20,8 +24,7 @@ class EngineCoreEventType(enum.IntEnum):
     QUEUED = 1
     SCHEDULED = 2
     PREEMPTED = 3
-    DOC_QUEUED = 4
-    QUERY_QUEUED = 5
+    # TODO(haocheng): add more detailed events for lazy attention
     
     
 class EngineCoreRequest(
@@ -43,17 +46,18 @@ class EngineCoreRequest(
     eos_token_id: Optional[int]
     arrival_time: float
     lora_request: Optional[LoRARequest]
-    cache_salt: Optional[str]
+    
     # Extra arguments for lazy attention
-    documents_token_ids: Optional[list[list[int]]]
+    documents_token_ids_padded: Optional[list[list[int]]]
     document_seq_hash: Optional[str]
-    num_padding_tokens: Optional[list[int]]
+    document_lens: Optional[list[int]]
+    document_lens_padded: Optional[list[int]]
 
     # Used in DP case to indicate which wave of requests this is expected to
     # belong to, to cover a race condition where the request is sent before
     # a wave finished notification is received.
     current_wave: int = 0
-    
+
 
 def apply_patch():
     import vllm.v1.engine.__init__

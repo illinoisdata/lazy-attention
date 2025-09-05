@@ -187,7 +187,7 @@ class DragKVCacheManager(KVCacheManager):
            computed blocks for the documents indenpently with prefix caching.
         """
         assert request.has_documents, "Request does not have documents"
-        num_docs = len(request.documents_token_ids)
+        num_docs = len(request.documents_token_ids_padded)
         if not self.enable_caching:
             return [[] for _ in range(num_docs)], \
                     [0 for _ in range(num_docs)]
@@ -362,7 +362,7 @@ class DragKVCacheManager(KVCacheManager):
         if sum(num_tokens_docs) == 0:
             raise ValueError("sum of num_tokens_docs must be greater than 0")
         
-        num_docs = len(request.documents_token_ids)
+        num_docs = len(request.documents_token_ids_padded)
         new_computed_blocks_docs = new_computed_blocks_docs or [[] for _ in range(num_docs)]
         req_blocks_docs = self.req_to_blocks_docs[request.request_id]
 

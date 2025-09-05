@@ -6,12 +6,16 @@ from vllm.distributed import cleanup_dist_env_and_memory
 
 import lazy.__vllm__
 
+from .utils import timeout
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 class TestVLLM:
     @pytest.mark.gpu
     @pytest.mark.integration
+    @timeout(300, "Base test took too long (4 minutes). Interrupted!")
     def test_e2e_simple_sync(self, 
                              mock_prompts,
                              mock_model_name,
@@ -26,7 +30,7 @@ class TestVLLM:
                            enable_prefix_caching=True,
                            seed=42,
                            max_model_len=2048,)
-            logger.info("llm created")
+            logger.info("llm initialized.")
             prompts = []
             docs = [["doc1 "*50, "doc2 "*50, "doc3 "*50], 
                     ["doc2 "*50, "doc1 "*50, "doc3 "*50],
