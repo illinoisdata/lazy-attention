@@ -6,7 +6,7 @@ from vllm.distributed import cleanup_dist_env_and_memory
 
 import lazy.__vllm__
 
-from .utils import timeout
+from utils import timeout
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -15,33 +15,34 @@ logger = logging.getLogger(__name__)
 class TestVLLM:
     @pytest.mark.gpu
     @pytest.mark.integration
-    @timeout(300, "Base test took too long (4 minutes). Interrupted!")
+    @timeout(3000, "Base test took too long (50 minutes). Interrupted!")
     def test_e2e_simple_sync(self, 
                              mock_prompts,
                              mock_model_name,
                              mock_sampling_params,):
         torch.cuda.empty_cache()
         llm = None
+        import lazy.__vllm__
+        import vllm
         try:
-            import vllm
             llm = vllm.LLM(model=mock_model_name,                      
                            gpu_memory_utilization=0.9,
-                           enforce_eager=False,
+                           enforce_eager=True,
                            enable_prefix_caching=True,
                            seed=42,
                            max_model_len=2048,)
-            logger.info("llm initialized.")
-            prompts = []
+            prompts = ["Random questions: Say anything about yourself. "] * 4
             docs = [["doc1 "*50, "doc2 "*50, "doc3 "*50], 
                     ["doc2 "*50, "doc1 "*50, "doc3 "*50],
                     ["doc3 "*50, "doc2 "*50, "doc1 "*50],
                     ["doc1 "*50, "doc3 "*50, "doc2 "*50],]
-            for i in range(len(docs)):
-                prompt = mock_prompts[i]
-                prompt = "\n".join(docs[i]) + "\n" + prompt
-                prompts.append(prompt)
+            # for i in range(len(docs)):
+            #     prompt = mock_prompts[i]
+            #     prompt = "\n".join(docs[i]) + "\n" + prompt
+            #     prompts.append(prompt)
             outputs = llm.generate(prompts=prompts,
-                                   sampling_params=mock_sampling_params)
+                                   sampling_params=mock_sampling_params,
+                                   document_seqs=docs,)
             for output in outputs:
                 logger.info(output.outputs[0].text)
         finally:

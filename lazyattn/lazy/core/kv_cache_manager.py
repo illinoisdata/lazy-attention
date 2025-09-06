@@ -20,7 +20,7 @@ from lazy.metrics.stats import PrefixCacheStats
 from lazy.core.kv_cache_utils import hash_request_tokens_with_doc_hash, hash_request_tokens_docs
 from lazy.core.block_pool import cache_full_blocks, cache_full_blocks_docs
 
-class DragKVCacheManager(KVCacheManager):
+class LazyKVCacheManager(KVCacheManager):
 
     def __init__(
         self,

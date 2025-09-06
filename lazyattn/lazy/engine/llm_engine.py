@@ -30,7 +30,7 @@ from vllm.utils import Device
 from vllm.v1.engine.core_client import EngineCoreClient
 from vllm.v1.engine.output_processor import OutputProcessor
 from vllm.v1.engine.parallel_sampling import ParentRequest
-from vllm.v1.engine.processor import Processor
+# from vllm.v1.engine.processor import Processor
 from vllm.v1.executor.abstract import Executor
 from vllm.v1.metrics.loggers import StatLoggerFactory
 
@@ -38,8 +38,17 @@ logger = init_logger(__name__)
 
 from vllm.v1.engine.llm_engine import LLMEngine
 from collections.abc import Sequence
+from lazy.engine.processor import LazyProcessor
 
 class LazyLLMEngine(LLMEngine):
+    def __init__(self, *args, **kwargs):
+        mm_registry = kwargs.get("mm_registry")
+        super().__init__(*args, **kwargs)
+        # Use custmoized processor to process prompt(query) and documents
+        self.processor = LazyProcessor(vllm_config=self.vllm_config,
+                                       tokenizer=self.tokenizer,
+                                       mm_registry=mm_registry)
+
     def add_request(
         self,
         request_id: str,

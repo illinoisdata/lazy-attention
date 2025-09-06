@@ -43,7 +43,7 @@ import copy
 import numpy as np
 
 # Overwrite classes
-from lazy.core.kv_cache_manager import KVCacheManager
+from lazy.core.kv_cache_manager import LazyKVCacheManager
 from lazy.request import RequestStatus
 from lazy.request import LazyRequest as Request
 from lazy.engine import EngineCoreRequest, EngineCoreEventType
@@ -70,6 +70,7 @@ class LazyScheduler(OriginalV1Scheduler):
         include_finished_set: bool = False,
         log_stats: bool = False,
     ) -> None:
+        logger.info("Initializing LazyScheduler")
         self.vllm_config = vllm_config
         self.scheduler_config = vllm_config.scheduler_config
         self.cache_config = vllm_config.cache_config
@@ -153,7 +154,7 @@ class LazyScheduler(OriginalV1Scheduler):
                 self.num_lookahead_tokens = self.num_spec_tokens
 
         # Create the KV cache manager.
-        self.kv_cache_manager = KVCacheManager(
+        self.kv_cache_manager = LazyKVCacheManager(
             kv_cache_config=kv_cache_config,
             max_model_len=self.max_model_len,
             enable_caching=self.cache_config.enable_prefix_caching,
@@ -167,6 +168,7 @@ class LazyScheduler(OriginalV1Scheduler):
         # - max_num_batched_tokens: int = field(default=None)  # type: ignore
         # - Maximum number of sequences to be processed in a single iteration.
         # e.g., max_num_seqs: int = 128
+        logger.info(f"LazyScheduler launched")
 
     def schedule(self) -> SchedulerOutput:
         logger.info(f"Scheduler: waiting={dump_dequeue(self.waiting)}, "
@@ -678,6 +680,7 @@ class LazyScheduler(OriginalV1Scheduler):
     def add_request(self, request: Request) -> None:
         # NOTE(Haocheng): this function is used to add a request to the waiting
         # queue. For lazy attention, we add the request with `WAITING_FOR_DOC`
+        logger.info(f"Adding request {request.request_id} to LazyScheduler")
         if request.has_documents:
             request.status = RequestStatus.WAITING_FOR_DOC
         self.waiting.append(request)

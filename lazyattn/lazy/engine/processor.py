@@ -226,7 +226,7 @@ class LazyProcessor(Processor):
             documents_token_ids_padded=documents_token_ids_padded, # (num_documents, seq_len)
             document_lens=document_lens, # (num_documents,)
             document_lens_padded=document_lens_padded, # (num_documents,)
-            document_seq_hash=sha256(chain.from_iterable(documents_token_ids_padded)), # TODO(haocheng): tuple needed?
+            document_seq_hash=hex(sha256(chain.from_iterable(documents_token_ids_padded)))[2:], # TODO(haocheng): tuple needed?
         )
 
 

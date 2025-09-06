@@ -15,7 +15,7 @@ from lazy.request import LazyRequest
 from lazy.entrypoints.llm import LazyLLM
 from lazy.engine.llm_engine import LazyLLMEngine
 from lazy.engine.processor import LazyProcessor
-from lazy.engine import EngineCoreRequest, EngineCoreEventType
+from lazy.engine import EngineCoreRequest as LazyEngineCoreRequest
 from lazy.engine.core import LazyEngineCoreProc
 
 # scheduler
@@ -50,23 +50,21 @@ def proc_patch():
     vllm.model_executor.models.llama.LlamaAttention.forward = llama_attn_forward
 
     # Step 2: We need to patch the frontend of the vllm to send our dynamic requests to the backend (real model executor)
-    # vllm.v1.engine.__init__.EngineCoreRequest = EngineCoreRequest
+    # vllm.v1.engine.__init__.EngineCoreRequest = LazyEngineCoreRequest
     import vllm.v1.engine
-    global EngineCoreRequest
-    vllm.v1.engine.EngineCoreRequest = EngineCoreRequest
-    vllm.v1.engine.EngineCoreEventType = EngineCoreEventType
+    vllm.v1.engine.EngineCoreRequest = LazyEngineCoreRequest
+    vllm.v1.engine.core.EngineCoreRequest = LazyEngineCoreRequest
+    vllm.v1.engine.core_client.EngineCoreRequest = LazyEngineCoreRequest
     vllm.v1.engine.core.Request = LazyRequest
-    vllm.v1.engine.core.EngineCoreRequest = EngineCoreRequest
-    vllm.v1.engine.core_client.EngineCoreRequest = EngineCoreRequest
-    
+
     import vllm.v1.request
     vllm.v1.request.Request = LazyRequest
     import vllm.entrypoints.llm
     vllm.entrypoints.llm.LLM = LazyLLM
-    import vllm.v1.engine.llm_engine
-    vllm.v1.engine.llm_engine.LLMEngine = LazyLLMEngine
     import vllm.v1.engine.processor
     vllm.v1.engine.processor.Processor = LazyProcessor
+    import vllm.v1.engine.llm_engine
+    vllm.v1.engine.llm_engine.LLMEngine = LazyLLMEngine
     import vllm.v1.engine.core
     vllm.v1.engine.core.EngineCoreProc = LazyEngineCoreProc
     import vllm.v1.engine.core_client
@@ -84,5 +82,7 @@ def proc_patch():
     # Step 4: patch for async mode
     import vllm.v1.engine.async_llm
     vllm.v1.engine.async_llm.AsyncLLM = AsyncLazyLLM
+
+    vllm.LLM = LazyLLM
 
 proc_patch()

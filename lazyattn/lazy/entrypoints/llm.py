@@ -55,6 +55,10 @@ logger = init_logger(__name__)
 from vllm.entrypoints.llm import LLM
 
 class LazyLLM(LLM):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        logger.info("LazyLLM initialized.")
+    
     @deprecate_kwargs(
         "prompt_token_ids",
         is_deprecated=lambda: LLM.DEPRECATE_LEGACY,

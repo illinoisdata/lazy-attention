@@ -91,7 +91,7 @@ class LazyEngineCoreProc(EngineCoreProc):
                 engine_core = DPLazyEngineCoreProc(*args, **kwargs)
             else:
                 engine_core = LazyEngineCoreProc(*args, **kwargs)
-
+            logger.info(f"Starting LazyEngineCoreProc {engine_core}")
             engine_core.run_busy_loop()
 
         except SystemExit:
@@ -110,7 +110,7 @@ class LazyEngineCoreProc(EngineCoreProc):
     
     def process_input_socket(self, input_path: str, engine_index: int):
         """Input socket IO thread."""
-
+        logger.info(f"Starting input socket thread for lazy engine {engine_index}")
         # Msgpack serialization decoding.
         add_request_decoder = MsgpackDecoder(EngineCoreRequest)
         generic_decoder = MsgpackDecoder()
@@ -130,11 +130,13 @@ class LazyEngineCoreProc(EngineCoreProc):
                 request_type = EngineCoreRequestType(bytes(type_frame.buffer))
 
                 # Deserialize the request data.
+                logger.info(f"Received request of type {request_type}")
                 decoder = add_request_decoder if (
                     request_type
                     == EngineCoreRequestType.ADD) else generic_decoder
                 request = decoder.decode(data_frames)
-
+                
+                logger.info(f"Decoded request: {request}")
                 # Push to input queue for core busy loop.
                 self.input_queue.put_nowait((request_type, request))
     

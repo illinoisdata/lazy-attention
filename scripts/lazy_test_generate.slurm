@@ -19,7 +19,7 @@ source ~/.bashrc  # for conda path
 conda activate vllm
 module load cuda/12.4.0
 
-python -c "import vllm; print('load vllm successfully')"
+# python -c "import vllm; print('load vllm successfully')"
 
 cd /projects/bdjx/hxia3/gh/lazy-attention/lazyattn
 
