@@ -40,6 +40,8 @@ def hash_request_tokens_with_doc_hash(hash_function: Any, block_size: int,
 
     ret = []
     parent_block_hash_value = request.document_seq_hash
+    if isinstance(parent_block_hash_value, str):
+        parent_block_hash_value = int(parent_block_hash_value, 16)
     for start in range(0, len(token_ids), block_size):
         end = start + block_size
         block_token_ids = token_ids[start:end]

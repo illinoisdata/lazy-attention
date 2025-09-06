@@ -22,93 +22,16 @@ from lazy.core.block_pool import cache_full_blocks, cache_full_blocks_docs
 
 class LazyKVCacheManager(KVCacheManager):
 
-    def __init__(
-        self,
-        kv_cache_config: KVCacheConfig,
-        max_model_len: int,
-        enable_caching: bool = True,
-        caching_hash_algo: str = "builtin",
-        use_eagle: bool = False,
-        log_stats: bool = False,
-        enable_kv_cache_events: bool = False,
-    ) -> None:
-        
-        # ----------------------------------
-        import os
-        self.log_cache = False
-        if os.environ.get("LAZY_CACHE_LOG") == "1":
-            self.log_cache = True
-            log_stats = True
-        # ----------------------------------
+    def __init__(*args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
 
-        assert len(kv_cache_config.kv_cache_groups) == 1, (
-            "KVCacheManager does not support hybrid models with more than 1 "
-            "kv cache group")
-        kv_cache_spec = kv_cache_config.kv_cache_groups[0].kv_cache_spec
-        self.block_size = kv_cache_spec.block_size
-        self.num_gpu_blocks = kv_cache_config.num_blocks
-        self.max_model_len = max_model_len
-        self.max_num_blocks_per_req = cdiv(max_model_len, self.block_size)
-
-        self.enable_caching = enable_caching
-        self.caching_hash_fn = sha256 if caching_hash_algo == "sha256" else hash
-        self.use_eagle = use_eagle
-        self.log_stats = log_stats
-        # FIXME: make prefix cache stats conditional on log_stats
-        self.prefix_cache_stats = PrefixCacheStats() if log_stats else None
-
-        self.block_pool = BlockPool(self.num_gpu_blocks, enable_caching,
-                                    enable_kv_cache_events)
-
-        self.specialized_manager = get_specialized_manager(
-            kv_cache_spec=kv_cache_spec,
-            block_pool=self.block_pool,
-            use_eagle=self.use_eagle,
-        )
-
-        # Mapping from request ID to blocks to track the blocks allocated
-        # for each request, so that we can free the blocks when the request
-        # is finished.
-        self.req_to_blocks: defaultdict[str,
-                                        list[KVCacheBlock]] = defaultdict(list)
         self.req_to_blocks_docs: defaultdict[
             str, list[list[KVCacheBlock]]] = defaultdict(list)
-
-        # Mapping from request ID to kv block hashes.
-        # This is to avoid recomputing the block hashes for each call of
-        # `get_computed_blocks` or `allocate_slots`.
-        self.req_to_block_hashes: defaultdict[
-            str, list[BlockHashType]] = defaultdict(list)
+        
         self.req_to_block_hashes_docs: defaultdict[
             str, list[list[BlockHashType]]] = defaultdict(list)
-
-        # {req_id: The number of cached blocks for this given request}
-        # This is used to track the number of cached blocks for each request.
-        # This is only used to track the RUNNING requests, we do not track the
-        # data for reempted ones.
-        self.num_cached_block: dict[str, int] = {}
+        
         self.num_cached_block_docs: dict[str, list[int]] = {}
-
-    @property
-    def usage(self) -> float:
-        """Get the KV cache usage.
-
-        Returns:
-            The KV cache usage (between 0.0 and 1.0).
-        """
-        return self.block_pool.get_usage()
-
-    def make_prefix_cache_stats(self) -> Optional[PrefixCacheStats]:
-        """Get (and reset) the prefix cache stats.
-
-        Returns:
-            The current prefix caching stats, or None if logging is disabled.
-        """
-        if not self.log_stats:
-            return None
-        stats = self.prefix_cache_stats
-        self.prefix_cache_stats = PrefixCacheStats()
-        return stats
 
     def get_computed_blocks(
             self, request: Request) -> tuple[list[KVCacheBlock], int]:
