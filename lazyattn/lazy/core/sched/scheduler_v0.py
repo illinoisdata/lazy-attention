@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Core of LazyAttention
+Core of LazyAttention V0
+
+This version is a more aggresive version,
+sub request spawning happens when add request only once
 
 Changed by Haocheng at 2025/09/04
 """
@@ -408,53 +411,50 @@ class LazyScheduler(Scheduler):
                 # NOTE(Haocheng): if one request reach here, there are three cases,
                 # 1. it does not have documents
                 #   1.1. it is a document request
-                #   1.2. it is a normal request without documents (no extra process)
+                #   1.2. it is a normal request without documents
                 # 2. its documents are all ready at *this* minor step
 
                 # TODO(Haocheng): test whether this can bring benefit
-                # fastening Case 1.1
                 if request.is_document_request and \
                     num_computed_tokens == request.num_tokens:
                     self.waiting.popleft()
                     continue
 
-                # NOTE(haocheng): new block is allocated, then we assemble
-                # lazy request if needed
-                # The role:
-                # - General new request attends all documents
-                # - Lock all documents by increasing ref cnt
+                # NOTE(Haocheng): Case 1.2 and Case 2
                 if request.has_documents:
                     # Case 2 -> Case 1.2
-                    request.merge_documents()
-                    logger.debug(f"Request {request.request_id} merges "
-                                 f"documents, total prompt len "
-                                 f"{request.num_prompt_tokens}")
-
                     computed_blocks_docs, num_computed_tokens_docs = \
                         self.kv_cache_manager.get_computed_blocks_docs(request)
                     computed_blocks = list(chain.from_iterable(
                         computed_blocks_docs)) + computed_blocks
                     assert sum(num_computed_tokens_docs) == \
-                        sum(request.document_lens_padded), "Cached document lengths do not match"
+                        sum([len(token_ids) for token_ids 
+                             in request.documents_token_ids_padded])
                     num_computed_tokens += sum(num_computed_tokens_docs)
-                    logger.debug(f"After merging documents, "
-                                 f"request {request.request_id} has "
-                                 f"{num_computed_tokens} computed tokens.")
+                    # update req info
+                    request.merge_documents()
 
                     # Get metadata for lazy attention
                     (req_to_q_offset[request.request_id], 
                      req_to_q_mask[request.request_id]) = \
                         metadata_for_lazy_attention(request, self.block_size)
-                    logger.debug(f"Request {request.request_id} has "
-                                 f"query offset {req_to_q_offset[request.request_id]} "
-                                 f"and query mask {req_to_q_mask[request.request_id]}")
-
+                    
                     # Update corresponding data in kv_cache_manager
                     # TODO(haocheng): optimize it
                     pre = self.kv_cache_manager.req_to_block_hashes_docs[request.request_id]
                     self.kv_cache_manager.req_to_block_hashes[request.request_id] = \
                         list(chain.from_iterable(pre)) + \
                         self.kv_cache_manager.req_to_block_hashes[request.request_id]
+                    
+                    # Update req to block hash
+                    pre_block_hashes = []
+                    for doc_idx in range(len(request.documents_token_ids_padded)):
+                        doc_id = f"{request.request_id}_d{doc_idx}"
+                        pre_block_hashes.extend(
+                            self.kv_cache_manager.req_to_block_hashes[doc_id])
+                    self.kv_cache_manager.req_to_block_hashes[request.request_id] = (
+                        pre_block_hashes + 
+                        self.kv_cache_manager.req_to_block_hashes[request.request_id])
 
                 # Number of tokens to be scheduled.
                 # We use `request.num_tokens` instead of
@@ -463,13 +463,10 @@ class LazyScheduler(Scheduler):
                 num_new_tokens = request.num_tokens - num_computed_tokens
                 if (0 < self.scheduler_config.long_prefill_token_threshold <
                         num_new_tokens):
-                    logger.debug(f"Long prefill req {request.request_id} "
-                                 f"num_new_tokens {num_new_tokens} "
-                                 f"threshold {self.scheduler_config.long_prefill_token_threshold}")
                     num_new_tokens = (
                         self.scheduler_config.long_prefill_token_threshold)
                 num_new_tokens = min(num_new_tokens, token_budget)
-                assert num_new_tokens > 0
+                # assert num_new_tokens > 0
 
                 # Schedule encoder inputs.
                 if request.has_encoder_inputs:
@@ -483,15 +480,19 @@ class LazyScheduler(Scheduler):
                 else:
                     encoder_inputs_to_schedule = None
                     new_encoder_budget = encoder_budget
-                # Mark
+
                 new_blocks = self.kv_cache_manager.allocate_slots(
                     request,
                     num_new_tokens + num_external_tokens,
-                    computed_blocks, # will be touched in allocate_slots
+                    computed_blocks,
                     num_lookahead_tokens=self.num_lookahead_tokens,
                 )
                 if new_blocks is None:
                     # The request cannot be scheduled.
+                    # NOTE(Haocheng): if one request has documents but cannot
+                    # be scheduled, fallback as we cannot promise the doc alive
+                    # in the cache
+                    request.status = RequestStatus.WAITING_FOR_DOC
                     break
 
                 # KVConnector: update internal state after allocation.

@@ -86,6 +86,7 @@ class LazyRequest:
         # /////////////////////////////////////////
         self.arrival_time = arrival_time
         # Get extra attributes for LazyAttention
+        self.is_document_request = False
         self.documents_token_ids_padded = documents_token_ids_padded
         self.document_lens = document_lens
         self.document_lens_padded = document_lens_padded
@@ -211,7 +212,7 @@ class RequestStatus(enum.IntEnum):
     FINISHED_ABORTED = enum.auto()
     FINISHED_IGNORED = enum.auto()
     # For lazy attention with documents
-    WAITING_FOR_DOC = enum.auto()
+    DOC_WAITING = enum.auto()
 
     @staticmethod
     def is_finished(status: "RequestStatus") -> bool:

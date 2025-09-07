@@ -2,6 +2,8 @@
 
 """
 Add lazy attention support to the BlockPool.
+
+Changed by Haocheng at 2025/09/07
 """
 from collections import defaultdict
 from collections.abc import Iterable
@@ -61,8 +63,16 @@ def cache_full_blocks(
         # The query part attends all documents, so the first block is 
         # the document sequence hash.
         if request.has_documents:
+            assert False, "Should not reach here, since if the query part of a "\
+            "document is allocated for slots, its documents must be allocated too. "\
+            "Then the num_cached_blocks should not be 0."
+            logger.debug(f"Request {request.request_id} is lazy, "
+                     f"attending to all documents. We override the first block hash to "
+                     f"be the document sequence hash {request.document_seq_hash}.")
             # The first block is the document sequence hash.
             prev_block_hash_value = request.document_seq_hash
+            if isinstance(prev_block_hash_value, str):
+                prev_block_hash_value = int(prev_block_hash_value, 16)
     else:
         prev_block = blocks[num_cached_blocks - 1]
         assert prev_block.block_hash is not None
@@ -105,58 +115,3 @@ def cache_full_blocks(
         blk.block_hash = block_hash
         self.cached_block_hash_to_block[block_hash][blk.block_id] = blk
         prev_block_hash_value = block_hash.hash_value
-
-def cache_full_blocks_docs(
-    self,
-    request: Request,
-    blocks_docs: list[list[KVCacheBlock]],
-    block_hashes_docs: list[list[BlockHashType]],
-    num_cached_blocks_docs: list[int],
-    num_full_blocks_docs: list[int],
-    block_size: int,
-    hash_fn: Callable,
-) -> None:
-    """
-    Cache a list of full blocks for prefix caching.
-
-    This is a variant of cache_full_blocks, but for documents.
-    The document blocks are cached separately.
-    """
-    assert request.has_documents
-    if num_cached_blocks_docs == num_full_blocks_docs:
-        return
-    # Need to cache the blocks for documents
-    num_docs = len(request.documents_token_ids_padded)
-    for doc_idx in range(num_docs):
-        num_cached_blocks_doc = num_cached_blocks_docs[doc_idx]
-        num_full_blocks_doc = num_full_blocks_docs[doc_idx]
-        new_full_blocks_doc = \
-            blocks_docs[doc_idx][num_cached_blocks_doc:
-                                num_full_blocks_doc]
-        new_block_hashes_doc = \
-            block_hashes_docs[doc_idx][num_cached_blocks_doc:]
-        if num_cached_blocks_doc == 0:
-            prev_block_hash_value = None
-        else:
-            prev_block = blocks_docs[doc_idx][num_cached_blocks_doc - 1]
-            assert prev_block.block_hash is not None
-            prev_block_hash_value = prev_block.block_hash.hash_value
-        for i, blk in enumerate(new_full_blocks_doc):
-            assert blk.block_hash is None
-            if i < len(new_block_hashes_doc):
-                block_hash = new_block_hashes_doc[i]
-            else:
-                # assert False, (
-                #     f"Document block will not created during generation ")
-                blk_idx = num_cached_blocks_doc + i
-                start_token_idx = blk_idx * block_size
-                end_token_idx = (blk_idx + 1) * block_size
-                block_tokens = request.documents_token_ids_padded[doc_idx][
-                    start_token_idx:end_token_idx]
-                block_hash = hash_block_tokens(hash_fn, prev_block_hash_value,
-                                block_tokens, extra_keys=None)
-                block_hashes_docs[doc_idx].append(block_hash)
-            # Update and added the full block to the cache.
-            blk.block_hash = block_hash
-            self.cached_block_hash_to_block[block_hash][blk.block_id] = blk
-            prev_block_hash_value = block_hash.hash_value

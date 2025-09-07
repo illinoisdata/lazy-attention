@@ -1,3 +1,7 @@
+"""
+Changed by Haocheng at 2025/09/07
+"""
+
 from typing import Any
 
 from vllm.v1.core.kv_cache_utils import need_extra_keys, generate_block_hash_extra_keys, hash_block_tokens
@@ -14,9 +18,8 @@ def hash_request_tokens_docs(hash_function: Any, block_size: int,
     the hash values for a single document."""
     documents_token_ids = request.documents_token_ids_padded
 
-    ret = []
+    ret = [[] for _ in range(len(documents_token_ids))]
     for doc_idx, token_ids in enumerate(documents_token_ids):
-        ret.append([])
         parent_block_hash_value = None
         for start in range(0, len(token_ids), block_size):
             end = start + block_size
