@@ -22,7 +22,7 @@ from lazy.core.block_pool import cache_full_blocks, cache_full_blocks_docs
 
 class LazyKVCacheManager(KVCacheManager):
 
-    def __init__(*args, **kwargs) -> None:
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
         self.req_to_blocks_docs: defaultdict[

@@ -23,7 +23,7 @@ module load cuda/12.4.0
 
 cd /projects/bdjx/hxia3/gh/lazy-attention/lazyattn
 
-export VLLM_LOGGING_LEVEL=DEBUG
+export VLLM_LOGGING_LEVEL=INFO
 
 PYTHONPATH=. pytest ./tests/test_base.py -v -s
 

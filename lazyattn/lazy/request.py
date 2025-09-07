@@ -185,6 +185,10 @@ class LazyRequest:
         return events
 
     def __repr__(self) -> str:
+        detailed = False
+        if not detailed:
+            return f"Request(request_id={self.request_id})"
+
         return f"Request(request_id={self.request_id}," \
                f"prompt_token_ids={self.prompt_token_ids}, sampling_params={self.sampling_params}, " \
                f"eos_token_id={self.eos_token_id}, arrival_time={self.arrival_time}, " \

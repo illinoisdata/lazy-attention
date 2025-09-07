@@ -130,16 +130,16 @@ class LazyEngineCoreProc(EngineCoreProc):
                 request_type = EngineCoreRequestType(bytes(type_frame.buffer))
 
                 # Deserialize the request data.
-                logger.info(f"Received request of type {request_type}")
+                logger.debug(f"Received request of type {request_type}")
                 decoder = add_request_decoder if (
                     request_type
                     == EngineCoreRequestType.ADD) else generic_decoder
                 request = decoder.decode(data_frames)
                 
-                logger.info(f"Decoded request: {request}")
+                logger.debug(f"Decoded request: {request}")
                 # Push to input queue for core busy loop.
                 self.input_queue.put_nowait((request_type, request))
-    
+                logger.info(f"Add request {request.request_id} to core busy loop")
     
 class DPLazyEngineCoreProc(LazyEngineCoreProc):
     # TODO(haocheng): implement DP version

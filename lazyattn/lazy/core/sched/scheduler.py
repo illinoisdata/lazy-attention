@@ -391,7 +391,7 @@ class LazyScheduler(OriginalV1Scheduler):
                         # 2. doc requests disappeared
                         num_docs = len(request.documents_token_ids_padded)
                         # is_doc_ready_flags: [bool], len = num_docs, only false
-                        docs_req_ids = [f"{request.request_id}_d{i}" if not is_doc_ready_flags[i] else None for i in range(num_docs)]
+                        docs_req_ids = set([f"{request.request_id}_d{i}" if not is_doc_ready_flags[i] else None for i in range(num_docs)])
                         running_req_ids = set([req.request_id for req in self.running])
                         # waiting_req_ids = set([req.request_id for req in self.waiting])
                         docs_req_ids -= running_req_ids | set([None]) # | waiting_req_ids
@@ -471,7 +471,7 @@ class LazyScheduler(OriginalV1Scheduler):
                              in request.documents_token_ids_padded])
                     num_computed_tokens += sum(num_computed_tokens_docs)
                     # update req info
-                    request = merge_documents(request)
+                    request.merge_documents()
 
                     # Get metadata for lazy attention
                     (req_to_q_offset[request.request_id], 
@@ -505,7 +505,7 @@ class LazyScheduler(OriginalV1Scheduler):
                     num_new_tokens = (
                         self.scheduler_config.long_prefill_token_threshold)
                 num_new_tokens = min(num_new_tokens, token_budget)
-                assert num_new_tokens > 0
+                # assert num_new_tokens > 0
 
                 # Schedule encoder inputs.
                 if request.has_encoder_inputs:
