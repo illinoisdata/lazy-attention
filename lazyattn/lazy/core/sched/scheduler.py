@@ -483,7 +483,7 @@ class LazyScheduler(Scheduler):
                 else:
                     encoder_inputs_to_schedule = None
                     new_encoder_budget = encoder_budget
-                # Mark
+
                 new_blocks = self.kv_cache_manager.allocate_slots(
                     request,
                     num_new_tokens + num_external_tokens,
@@ -637,11 +637,19 @@ class LazyScheduler(Scheduler):
         logger.info(f"Scheduler output: {scheduler_output}")
         return scheduler_output
 
-    def add_request(self, request: Request) -> None:
+    def add_request(self, request: Request, left=False) -> None:
         # NOTE(Haocheng): this function is used to add a request to the waiting
         # queue. For lazy attention, we add the request with `DOC_WAITING`
-        logger.info(f"Adding request {request.request_id} to LazyScheduler")
-        self.waiting.append(request)
+        tag = "[Normal]"
+        if request.is_document_request:
+            tag = "[Document]"
+        elif request.has_documents:
+            tag = "[Lazy]"
+        logger.info(f"Adding {tag} request {request.request_id} to LazyScheduler")
+        if left:
+            self.waiting.appendleft(request)
+        else:
+            self.waiting.append(request)
         self.requests[request.request_id] = request
         if self.log_stats:
             request.record_event(EngineCoreEventType.QUEUED)
@@ -651,12 +659,29 @@ class LazyScheduler(Scheduler):
         assert request.has_documents
         _, num_computed_tokens_docs = \
             self.kv_cache_manager.get_computed_blocks_docs(request)
-        return [request.document_lens_padded[i] == num_computed_tokens_docs[i] for i in range(len(request.document_lens))]
+        return [request.document_lens_padded[i] == num_computed_tokens_docs[i] 
+                for i in range(len(request.document_lens))]
 
     def add_doc_request(self, doc_idx: int, request: Request) -> None:
+        assert request.has_documents
         logger.debug(f"request {request.request_id} "
                      f"doc {doc_idx} not ready (add to waiting), "
                      f"hash {sha256(tuple(request.documents_token_ids_padded[doc_idx]))}")
+        # Spawn a new request for the document and add it to the top of waiting
+        sampling_params = copy.deepcopy(request.sampling_params)
+        sampling_params.max_tokens = 1 # TODO(haocheng): how to avoid
+        req = Request(
+            request_id=f"{request.request_id}_d{doc_idx}",
+            prompt_token_ids=request.documents_token_ids_padded[doc_idx],
+            multi_modal_inputs=request.mm_inputs,
+            multi_modal_hashes=request.mm_hashes,
+            multi_modal_placeholders=request.mm_positions,
+            sampling_params=sampling_params,
+            eos_token_id=request.eos_token_id,
+            is_document_request=True,
+            arrival_time=request.arrival_time,
+        )
+        self.add_request(req, left=True)
 
 def metadata_for_lazy_attention(request: Request, block_size: int) -> tuple[list[int], list[int]]:
     """Generate the metadata for lazy attention."""

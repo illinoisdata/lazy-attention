@@ -42,6 +42,7 @@ class LazyRequest:
         document_lens: Optional[list[int]] = None,
         document_lens_padded: Optional[list[int]] = None,
         document_seq_hash: Optional[str] = None,
+        is_document_request: bool = False,
     ) -> None:
         self.request_id = request_id
         self.sampling_params = sampling_params
@@ -86,7 +87,7 @@ class LazyRequest:
         # /////////////////////////////////////////
         self.arrival_time = arrival_time
         # Get extra attributes for LazyAttention
-        self.is_document_request = False
+        self.is_document_request = is_document_request
         self.documents_token_ids_padded = documents_token_ids_padded
         self.document_lens = document_lens
         self.document_lens_padded = document_lens_padded

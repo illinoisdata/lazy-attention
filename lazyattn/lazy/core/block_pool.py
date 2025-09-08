@@ -74,12 +74,29 @@ def cache_full_blocks(
             if isinstance(prev_block_hash_value, str):
                 prev_block_hash_value = int(prev_block_hash_value, 16)
     else:
-        prev_block = blocks[num_cached_blocks - 1]
-        assert prev_block.block_hash is not None
-        prev_block_hash_value = prev_block.block_hash.hash_value
+        if request.has_documents and num_cached_blocks == sum(request.document_lens_padded) // block_size:
+            # The first block after the document blocks is the document
+            # sequence hash.
+            logger.debug(f"Request {request.request_id} is lazy, "
+                         f"attending to all documents. We override the "
+                         f"{num_cached_blocks}th block hash to be the "
+                         f"document sequence hash "
+                         f"{request.document_seq_hash}.")
+            prev_block_hash_value = request.document_seq_hash
+            if isinstance(prev_block_hash_value, str):
+                prev_block_hash_value = int(prev_block_hash_value, 16)
+        else:
+            prev_block = blocks[num_cached_blocks - 1]
+            assert prev_block.block_hash is not None
+            prev_block_hash_value = prev_block.block_hash.hash_value
 
     for i, blk in enumerate(new_full_blocks):
         assert blk.block_hash is None
+
+        if request.has_documents:
+            assert num_cached_blocks >= sum(request.document_lens_padded) // block_size, (
+                f"if one req has documents and want to allocate slots, it must have cached all documents. Therefore, "
+                f"num_cached_blocks {num_cached_blocks} must be >= total document blocks {sum(request.document_lens_padded) // block_size}")
 
         if i < len(new_block_hashes):
             # The block hash may already be computed in
