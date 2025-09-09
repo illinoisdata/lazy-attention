@@ -1,5 +1,6 @@
-# SPDX-License-Identifier: Apache-2.0
-# Datastructures defining an input batch
+"""
+Changed by Haocheng at 2025/09/08
+"""
 
 from dataclasses import dataclass
 from typing import Optional, cast
@@ -34,7 +35,7 @@ class CachedRequestState:
     output_token_ids: list[int]
     
     # For q rotation in lazy attention
-    has_docs: bool = False
+    is_lazy: bool = False
     q_offset: Optional[list[int]] = None
 
     mrope_positions: Optional[torch.Tensor] = None

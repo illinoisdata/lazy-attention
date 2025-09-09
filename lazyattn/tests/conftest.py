@@ -41,7 +41,7 @@ def mock_prompts():
 @pytest.fixture(scope="session")
 def mock_sampling_params():
     from vllm import SamplingParams
-    return SamplingParams(temperature=0, max_tokens=10, seed=42)
+    return SamplingParams(temperature=0, max_tokens=10, min_tokens=5, seed=42)
 
 
 @pytest.fixture(scope="session")

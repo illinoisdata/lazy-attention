@@ -44,7 +44,7 @@ class LazyLLMEngine(LLMEngine):
     def __init__(self, *args, **kwargs):
         mm_registry = kwargs.get("mm_registry")
         super().__init__(*args, **kwargs)
-        # Use custmoized processor to process prompt(query) and documents
+        # Use customized processor to process prompt(query) and documents
         self.processor = LazyProcessor(vllm_config=self.vllm_config,
                                        tokenizer=self.tokenizer,
                                        mm_registry=mm_registry)

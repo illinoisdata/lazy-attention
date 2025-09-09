@@ -45,10 +45,19 @@ from vllm.v1.engine.async_llm import AsyncLLM
 logger = init_logger(__name__)
 
 from lazy.engine import EngineCoreRequest
+from lazy.engine.processor import LazyProcessor
 from collections.abc import Sequence
 from typing import Any, Optional, Union
 
 class AsyncLazyLLM(AsyncLLM):
+    def __init__(self, *args, **kwargs):
+        mm_registry = kwargs.get("mm_registry")
+        super().__init__(*args, **kwargs)
+        # Use customized processor to process prompt(query) and documents
+        self.processor = LazyProcessor(vllm_config=self.vllm_config,
+                                       tokenizer=self.tokenizer,
+                                       mm_registry=mm_registry)
+
     async def add_request(
         self,
         request_id: str,
@@ -74,6 +83,9 @@ class AsyncLazyLLM(AsyncLLM):
         queue = RequestOutputCollector(output_kind=params.output_kind)
 
         # Convert Input --> Request.
+        block_size = (self.vllm_config.cache_config.block_size
+                      if self.vllm_config.cache_config else None)
+        assert block_size is not None, "block_size must be set for LazyAttention"
         prompt_str, request = self.processor.process_inputs(
             request_id, prompt, params, arrival_time, lora_request,
             trace_headers, prompt_adapter_request, priority,
@@ -95,65 +107,8 @@ class AsyncLazyLLM(AsyncLLM):
             child_request.sampling_params = params
             await self._add_request(child_request, prompt_str, parent_request,
                                     idx, queue)
-        return queue        
-        
-async def add_request(
-    self,
-    request_id: str,
-    prompt: PromptType,
-    params: Union[SamplingParams, PoolingParams],
-    arrival_time: Optional[float] = None,
-    lora_request: Optional[LoRARequest] = None,
-    tokenization_kwargs: Optional[dict[str, Any]] = None,
-    trace_headers: Optional[Mapping[str, str]] = None,
-    prompt_adapter_request: Optional[PromptAdapterRequest] = None,
-    priority: int = 0,
-    # For dynamic rag
-    document_seq: Optional[Sequence[PromptType]] = None,
-) -> RequestOutputCollector:
-    """Add new request to the AsyncLLM."""
-    assert isinstance(params, SamplingParams), \
-        "Pooling is not supported in V1"
-    # Create a new output collector for the request.
-    queue = RequestOutputCollector(output_kind=params.output_kind)
-    # Convert Input --> Request.
-    if document_seq is None:
-        # Fall back to the default behavior.
-        prompt_str, request = self.processor.process_inputs(
-            request_id, prompt, params, arrival_time, lora_request,
-            tokenization_kwargs, trace_headers, prompt_adapter_request,
-            priority)
-    else:
-        # Use customized behavior.
-        block_size = self.vllm_config.cache_config.block_size
-        prompt_str, request = self.processor.process_inputs(
-            request_id, prompt, params, arrival_time, lora_request,
-            tokenization_kwargs, trace_headers, prompt_adapter_request,
-            priority,
-            # For dynamic rag
-            block_size=block_size,
-            document_seq=document_seq)
-        
-    if params.n == 1:
-        await self._add_request(request, prompt_str, None, 0, queue)
         return queue
-    
-    # TODO(haocheng): currently we do not support child requests in lazy attention
-    if params.n > 1:
-        raise NotImplementedError("Currently we do not support n>1 in lazy attention.")
-    
-    # Fan out child requests (for n>1).
-    parent_request = ParentRequest(request_id, params)
-    for idx in range(params.n):
-        request_id, params = parent_request.get_child_info(idx)
-        child_request = request if idx == params.n - 1 else copy(request)
-        child_request.request_id = request_id
-        child_request.sampling_params = params
-        await self._add_request(child_request, prompt_str, parent_request,
-                                idx, queue)
-    return queue
 
-    # TODO(haocheng): can we remove it?
     async def _add_request(self, request: EngineCoreRequest,
                            prompt: Optional[str],
                            parent_req: Optional[ParentRequest], index: int,

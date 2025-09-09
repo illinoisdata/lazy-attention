@@ -25,5 +25,6 @@ cd /projects/bdjx/hxia3/gh/lazy-attention/lazyattn
 
 export VLLM_LOGGING_LEVEL=INFO
 
-PYTHONPATH=. pytest ./tests/test_base.py -v -s
+PYTHONPATH=. pytest ./tests/test_e2e_acc.py -v -s
+# PYTHONPATH=. pytest ./tests/test_e2e_reuse.py -v -s
 

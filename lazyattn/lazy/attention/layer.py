@@ -18,6 +18,10 @@ from vllm.utils import direct_register_custom_op
 # Avoid duplication of code from vllm/attention/layer.py
 from vllm.attention.layer import maybe_save_kv_layer_to_connector, wait_for_kv_layer_from_connector
 
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
+
 # class Attention(nn.Module):
 def forward(
     self,
@@ -80,9 +84,9 @@ def forward(
                                   is_neox_style,
                                   output=output)
             else:
-                # We use dynamic_unified_attention_with_output to replace
+                # We use unified_lazy_attention_with_output to replace
                 # unified_attention_with_output to support dynamic RAG's block attention.
-                torch.ops.vllm.dynamic_unified_attention_with_output(
+                torch.ops.vllm.unified_lazy_attention_with_output(
                     query, key, value, output, self.layer_name,
                     cos_sin_cache, rotary_dim, is_neox_style)
             return output.view(-1, hidden_size)
@@ -91,7 +95,7 @@ def forward(
                 "Attention layer must be configured to use output tensor for lazy attention. ")
 
 
-def dynamic_unified_attention_with_output(
+def unified_lazy_attention_with_output(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -120,7 +124,7 @@ def dynamic_unified_attention_with_output(
     maybe_save_kv_layer_to_connector(layer_name, kv_cache)
 
 
-def dynamic_unified_attention_with_output_fake(
+def unified_lazy_attention_with_output_fake(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -133,10 +137,10 @@ def dynamic_unified_attention_with_output_fake(
     return
 
 direct_register_custom_op(
-    op_name="dynamic_unified_attention_with_output",
-    op_func=dynamic_unified_attention_with_output,
+    op_name="unified_lazy_attention_with_output",
+    op_func=unified_lazy_attention_with_output,
     mutates_args=["output"],
-    fake_impl=dynamic_unified_attention_with_output_fake,
+    fake_impl=unified_lazy_attention_with_output_fake,
     dispatch_key=current_platform.dispatch_key,
 )
 
@@ -149,7 +153,7 @@ def set_splitting_ops_for_v1(self):
         self.splitting_ops = [
             "vllm.unified_attention",
             "vllm.unified_attention_with_output",
-            "vllm.dynamic_unified_attention_with_output",
+            "vllm.unified_lazy_attention_with_output",
         ]
 
 

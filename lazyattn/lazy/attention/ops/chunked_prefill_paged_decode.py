@@ -12,7 +12,9 @@ from vllm.attention.ops.chunked_prefill_paged_decode import kernel_paged_attenti
 
 from .prefix_prefill import context_attention_fwd, IS_TURING
 
+from vllm.logger import init_logger
 
+logger = init_logger(__name__)
 
 @triton.jit
 def cdiv_fn(x, y):
@@ -506,15 +508,10 @@ def chunked_prefill_paged_decode(
     q_offset=None,
     q_mask=None,
 ):
-    # # Note(haocheng): for debugging purpose
-    # print("is lazy:", is_lazy)
-    # print("q_offset:", q_offset)
-    # # print("q_mask:", q_mask)
-    # print("is_lazy shape:", is_lazy.shape)
-    # print("q_offset shape:", q_offset.shape)
-    # print("block_table shape:", block_table.shape)
-    
-    # breakpoint()
+    logger.info("Using custom chunked_prefill_paged_decode attention")
+    logger.info(f"is lazy: {is_lazy}")
+    logger.info(f"q_offset: {q_offset}")
+    logger.info(f"q_mask: {q_mask}")
     
     q_dtype_is_f32 = query.dtype is torch.float32
     IN_PRECISION = 'ieee' if IS_TURING and q_dtype_is_f32 else None
