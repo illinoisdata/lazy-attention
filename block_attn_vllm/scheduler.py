@@ -61,13 +61,6 @@ from lazy.core.sched.output import NewRequestData
 # For patch
 from vllm.v1.core.sched.scheduler import Scheduler
 
-# NOTE(Haocheng)
-# Different from the original V1Scheduler, this scheduler need to process the 
-# documents inner the request
-# Here we abort the constraint of num running request, since our 
-# request can have multiple subrequests, and we need to process all of them
-# in the same time.
-
 
 class BlockAttnScheduler(Scheduler):
     def __init__(
@@ -178,6 +171,14 @@ class BlockAttnScheduler(Scheduler):
         # - Maximum number of sequences to be processed in a single iteration.
         # e.g., max_num_seqs: int = 128
         logger.info(f"BlockAttnScheduler launched")
+        
+        # For block attention
+        # NOTE(Haocheng): How does it work?
+        # Block Attention will first discard all positional embeddings, and apply the new
+        # positional embeddings based on the position in the block attention cache.
+        # e.g., first the position is from 0 to 63, at this point, the offset is all 0 for involved blocks,
+        # then when the position is from 64 to 127, the offset is all 64, etc.
+        self.block_id_to_position_offset: dict[int, int] = {}
 
     def schedule(self) -> SchedulerOutput:
         logger.info(f"Scheduler: waiting={dump_dequeue(self.waiting)}, "
@@ -279,6 +280,12 @@ class BlockAttnScheduler(Scheduler):
                     request,
                     num_new_tokens,
                     num_lookahead_tokens=self.num_lookahead_tokens)
+                
+                # NOTE(haocheng): if new_blocks are for documents, record it with offset 0
+                if request.is_document_request:
+                    for b in new_blocks:
+                        self.block_id_to_position_offset[b.block_id] = 0
+                
                 if new_blocks is None:
                     # The request cannot be scheduled.
                     # Preempt the lowest-priority request.
@@ -448,6 +455,53 @@ class BlockAttnScheduler(Scheduler):
                     logger.debug(f"After merging documents, "
                                  f"request {request.request_id} has "
                                  f"{num_computed_tokens} computed tokens.")
+                    
+                    # NOTE(haocheng): !!! Core difference for block-attn from lazy attention !!!
+                    # Here we decide copy, discard position, and re-assign position
+                    # for all blocks in documents, we need to change their ref cnt
+                    desired_position_offset = 0
+                    begin_block_idx = 0
+                    end_block_idx = 0
+                    for doc_idx, blocks_for_one_doc in enumerate(computed_blocks_docs):
+                        # Check if we need to copy
+                        end_block_idx += len(blocks_for_one_doc)
+                        need_to_copy = False
+                        real_position_offset = self.block_id_to_position_offset.get(block.block_id, 0)
+                        for block in blocks_for_one_doc:
+                            if block.ref_cnt > 0 and real_position_offset != desired_position_offset:
+                                need_to_copy = True
+                                break
+                            
+                        if need_to_copy:
+                            logger.info(f"Request {request.request_id} needs to copy document {doc_idx} since its position offset does not match desired offset {desired_position_offset}")
+                            doc_req = Request(
+                                request_id=f"{request.request_id}_d{doc_idx}",
+                                prompt_token_ids=request.documents_token_ids_padded[doc_idx],
+                                multi_modal_inputs=request.mm_inputs,
+                                multi_modal_hashes=request.mm_hashes,
+                                multi_modal_placeholders=request.mm_positions,
+                                sampling_params=sampling_params,
+                                eos_token_id=request.eos_token_id,
+                                is_document_request=True,
+                                arrival_time=request.arrival_time,
+                            )
+                            new_blocks = self.kv_cache_manager.allocate_slots(request=doc_req, 
+                                                                 num_new_tokens=self.block_size * len(blocks_for_one_doc))
+                            
+                            for i, old_block in enumerate(blocks_for_one_doc):
+                                new_block = new_blocks[i]
+                                new_block.data = copy.deepcopy(old_block.data)
+                                # Then we need to discard the old position offset
+                                
+                                # Apply new position offset
+                                # Record new position offset
+                                self.block_id_to_position_offset[new_block.block_id] = desired_position_offset
+                            
+                            # Replace the blocks for documents
+                            computed_blocks[start_block_idx:end_block_idx] = new_blocks
+                            start_block_idx = end_block_idx
+                        # update desired position offset
+                        desired_position_offset += self.block_size * len(blocks_for_one_doc)
 
                     # Get metadata for lazy attention
                     (req_to_q_offset[request.request_id], 
@@ -456,6 +510,9 @@ class BlockAttnScheduler(Scheduler):
                     logger.debug(f"Request {request.request_id} has "
                                  f"query offset {req_to_q_offset[request.request_id]} "
                                  f"and query mask {req_to_q_mask[request.request_id]}")
+                    assert all([req_to_q_offset[request.request_id][i] == 0
+                                for i in range(len(req_to_q_offset[request.request_id]))]), \
+                        "After merging, the offset should be all 0"
 
                     # Update corresponding data in kv_cache_manager
                     # TODO(haocheng): optimize it
@@ -498,6 +555,12 @@ class BlockAttnScheduler(Scheduler):
                     computed_blocks, # will be touched in allocate_slots
                     num_lookahead_tokens=self.num_lookahead_tokens,
                 )
+                
+                # NOTE(haocheng): if new_blocks are for documents, record it with offset 0
+                if request.is_document_request:
+                    for b in new_blocks:
+                        self.block_id_to_position_offset[b.block_id] = 0
+                        
                 if new_blocks is None:
                     # The request cannot be scheduled.
                     break
@@ -703,7 +766,7 @@ def metadata_for_lazy_attention(request: Request, block_size: int) -> tuple[list
     position_distance = -total_padding
     for doc_idx in range(num_docs):
         num_blks = request.document_lens[doc_idx] // block_size
-        q_offset[accu_blk: accu_blk+num_blks] = position_distance
+        # q_offset[accu_blk: accu_blk+num_blks] = position_distance  # No need, since position is processed in Scheduler
         accu_blk += num_blks
         position_distance -= request.document_lens[doc_idx]
         q_mask[accu_blk-1] = request.document_lens_padded[doc_idx] - request.document_lens[doc_idx]

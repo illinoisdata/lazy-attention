@@ -15,7 +15,7 @@ CHECK_MODULES = True
 # ================================================
 
 # Add lazyattn directory to python path
-lazyattn_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../lazyattn"))
+lazyattn_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../lazy_attn"))
 sys.path.insert(0, lazyattn_root)
 logger.info(f"Added lazyattn to Python path: {lazyattn_root}")
 

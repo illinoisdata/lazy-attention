@@ -508,11 +508,11 @@ def chunked_prefill_paged_decode(
     q_offset=None,
     q_mask=None,
 ):
-    logger.info("Using custom chunked_prefill_paged_decode attention")
-    logger.info(f"is lazy: {is_lazy}")
-    logger.info(f"q_offset: {q_offset}")
-    logger.info(f"q_mask: {q_mask}")
-    
+    logger.debug("Using custom chunked_prefill_paged_decode attention")
+    logger.debug(f"is lazy: {is_lazy}")
+    logger.debug(f"q_offset: {q_offset}")
+    logger.debug(f"q_mask: {q_mask}")
+
     q_dtype_is_f32 = query.dtype is torch.float32
     IN_PRECISION = 'ieee' if IS_TURING and q_dtype_is_f32 else None
     if sm_scale is None:

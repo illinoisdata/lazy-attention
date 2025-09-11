@@ -21,10 +21,9 @@ module load cuda/12.4.0
 
 # python -c "import vllm; print('load vllm successfully')"
 
-cd /projects/bdjx/hxia3/gh/lazy-attention/lazyattn
+cd /projects/bdjx/hxia3/gh/lazy-attention/lazy_attn
 
 export VLLM_LOGGING_LEVEL=INFO
 
 PYTHONPATH=. pytest ./tests/test_e2e_acc.py -v -s
-# PYTHONPATH=. pytest ./tests/test_e2e_reuse.py -v -s
-
+PYTHONPATH=. pytest ./tests/test_e2e_reuse.py -v -s
