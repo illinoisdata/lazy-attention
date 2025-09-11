@@ -474,6 +474,8 @@ class BlockAttnScheduler(Scheduler):
                             
                         if need_to_copy:
                             logger.info(f"Request {request.request_id} needs to copy document {doc_idx} since its position offset does not match desired offset {desired_position_offset}")
+                            sampling_params = copy.deepcopy(request.sampling_params)
+                            sampling_params.max_tokens = 1 # TODO(haocheng): how to avoid
                             doc_req = Request(
                                 request_id=f"{request.request_id}_d{doc_idx}",
                                 prompt_token_ids=request.documents_token_ids_padded[doc_idx],
@@ -487,19 +489,16 @@ class BlockAttnScheduler(Scheduler):
                             )
                             new_blocks = self.kv_cache_manager.allocate_slots(request=doc_req, 
                                                                  num_new_tokens=self.block_size * len(blocks_for_one_doc))
+                            assert new_blocks is not None and len(new_blocks) == len(blocks_for_one_doc), \
+                                f"Allocated blocks {new_blocks} do not match old blocks {blocks_for_one_doc}"
                             
-                            for i, old_block in enumerate(blocks_for_one_doc):
-                                new_block = new_blocks[i]
-                                new_block.data = copy.deepcopy(old_block.data)
-                                # Then we need to discard the old position offset
-                                
-                                # Apply new position offset
-                                # Record new position offset
-                                self.block_id_to_position_offset[new_block.block_id] = desired_position_offset
+                            copy_blocks(from_block=blocks_for_one_doc, to_block=new_blocks)
+                            reverse_rotate(new_blocks, real_position_offset)
+                            rotate(new_blocks, desired_position_offset)
                             
                             # Replace the blocks for documents
-                            computed_blocks[start_block_idx:end_block_idx] = new_blocks
-                            start_block_idx = end_block_idx
+                            computed_blocks[begin_block_idx:end_block_idx] = new_blocks
+                            begin_block_idx = end_block_idx
                         # update desired position offset
                         desired_position_offset += self.block_size * len(blocks_for_one_doc)
 

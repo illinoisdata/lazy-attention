@@ -4,6 +4,24 @@ Utility functions for the block attention VLLM.
 Created by Haocheng at 2025/09/09
 """
 
+"""
+                            copy_blocks(from_block=blocks_for_one_doc, to_block=new_blocks)
+                            reverse_rotate(new_blocks, real_position_offset)
+                            rotate(new_blocks, desired_position_offset)
+
+"""
+
+from vllm.v1.core.kv_cache_utils import KVCacheBlock
+
+def copy_blocks(from_block: list[KVCacheBlock], to_block: list[KVCacheBlock]):
+    """
+    Copy the content from `from_block` to `to_block`.
+    """
+    assert len(from_block) == len(to_block), f"from_block and to_block must have the same length, but got {len(from_block)} and {len(to_block)}"
+    for i in range(len(from_block)):
+        to_block[i].copy_from(other=from_block[i])
+
+
 def rotate_half(x):
     """
     transformers.models.llama.modeling_llama.rotate_half
