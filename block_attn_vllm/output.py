@@ -34,10 +34,10 @@ class NewRequestData:
     q_mask: Optional[list[int]] = None # [num_seqs, num_blocks]
 
     # Block attention
-    need_to_copy: bool = False # Whether need to copy the blocks from old position to new position
-    mapping_old_to_new_block_ids: dict[int, int] = None # If need_to_copy is True, this is a mapping from old block id to new block id
-    mapping_real_to_desired_position_offset: dict[int, int] = None # If need_to_copy is True, this is a mapping from real position offset to desired position offset
-
+    mapping_new_to_old_block_ids: Optional[dict[int, int]] = None
+    mapping_new_to_desired_position_offset: Optional[dict[int, int]] = None
+    mapping_old_to_real_position_offset: Optional[dict[int, int]] = None
+    
     @classmethod
     def from_request(
         cls,
@@ -45,9 +45,9 @@ class NewRequestData:
         block_ids: list[int],
         q_offset: Optional[list[int]] = None,
         q_mask: Optional[list[int]] = None,
-        need_to_copy: bool = False,
-        mapping_old_to_new_block_ids: Optional[dict[int, int]] = None,
-        mapping_real_to_desired_position_offset: Optional[dict[int, int]] = None,
+        mapping_new_to_old_block_ids: Optional[dict[int, int]] = None,
+        mapping_new_to_desired_position_offset: Optional[dict[int, int]] = None,
+        mapping_old_to_real_position_offset: Optional[dict[int, int]] = None,
     ) -> NewRequestData:
         return cls(
             req_id=request.request_id,
@@ -62,7 +62,8 @@ class NewRequestData:
             is_lazy=request.has_documents,
             q_offset=q_offset,
             q_mask=q_mask,
-            need_to_copy=need_to_copy,
-            mapping_old_to_new_block_ids=mapping_old_to_new_block_ids,
-            mapping_real_to_desired_position_offset=mapping_real_to_desired_position_offset,
+            # Extra for block attention
+            mapping_new_to_old_block_ids=mapping_new_to_old_block_ids,
+            mapping_new_to_desired_position_offset=mapping_new_to_desired_position_offset,
+            mapping_old_to_real_position_offset=mapping_old_to_real_position_offset,
         )

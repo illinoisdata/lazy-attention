@@ -221,10 +221,14 @@ class BlockAttnScheduler(Scheduler):
         # For logging.
         scheduled_timestamp = time.monotonic()
 
-        
         # For lazy attention.
         req_to_q_offset: dict[str, list[int]] = {}
         req_to_q_mask: dict[str, list[int]] = {}
+
+        # For block attention
+        req_to_mapping_new_block_ids_to_old_block_ids: dict[str, dict[int, int]] = {}
+        req_to_mapping_new_block_ids_desired_pos_offset: dict[str, dict[int, int]] = {}
+        req_to_mapping_old_block_ids_real_pos_offset: dict[str, dict[int, int]] = {}
 
         # ///////////////////////////////////////////////////////////////////////
         # First, schedule the RUNNING requests.
@@ -462,6 +466,9 @@ class BlockAttnScheduler(Scheduler):
                     desired_position_offset = 0
                     begin_block_idx = 0
                     end_block_idx = 0
+                    mapping_new_to_old_block_ids = {}
+                    mapping_new_block_ids_desired_pos_offset = {}
+                    mapping_old_block_ids_real_pos_offset = {}
                     for doc_idx, blocks_for_one_doc in enumerate(computed_blocks_docs):
                         # Check if we need to copy
                         end_block_idx += len(blocks_for_one_doc)
@@ -492,15 +499,33 @@ class BlockAttnScheduler(Scheduler):
                             assert new_blocks is not None and len(new_blocks) == len(blocks_for_one_doc), \
                                 f"Allocated blocks {new_blocks} do not match old blocks {blocks_for_one_doc}"
                             
-                            copy_blocks(from_block=blocks_for_one_doc, to_block=new_blocks)
-                            reverse_rotate(new_blocks, real_position_offset)
-                            rotate(new_blocks, desired_position_offset)
-                            
+                            # Then we need to construct metadata for block attention
+                            for old_block, new_block in zip(blocks_for_one_doc, new_blocks):
+                                # Record mapping
+                                mapping_new_to_old_block_ids[new_block.block_id] = old_block.block_id
+                                mapping_new_block_ids_desired_pos_offset[new_block.block_id] = desired_position_offset
+                                mapping_old_block_ids_real_pos_offset[old_block.block_id] = real_position_offset
+
                             # Replace the blocks for documents
                             computed_blocks[begin_block_idx:end_block_idx] = new_blocks
-                            begin_block_idx = end_block_idx
+                        else:
+                            logger.debug(f"Request {request.request_id} does not need to copy document {doc_idx} since its position offset matches desired offset {desired_position_offset}")
+                            # Even if we do not need to copy, we still need to update the position offset
+                            for block in blocks_for_one_doc:
+                                self.block_id_to_position_offset[block.block_id] = desired_position_offset
+                                mapping_new_to_old_block_ids[block.block_id] = block.block_id
+                                mapping_new_block_ids_desired_pos_offset[block.block_id] = desired_position_offset
+                                mapping_old_block_ids_real_pos_offset[block.block_id] = real_position_offset
+                        
+                        begin_block_idx = end_block_idx
                         # update desired position offset
                         desired_position_offset += self.block_size * len(blocks_for_one_doc)
+                    req_to_mapping_new_block_ids_to_old_block_ids[request.request_id] = mapping_new_to_old_block_ids
+                    req_to_mapping_new_block_ids_desired_pos_offset[request.request_id] = mapping_new_block_ids_desired_pos_offset
+                    req_to_mapping_old_block_ids_real_pos_offset[request.request_id] = mapping_old_block_ids_real_pos_offset
+                    logger.debug(f"Request {request.request_id} has mapping from new to old block ids {mapping_new_to_old_block_ids}, "
+                                 f"desired pos offset {mapping_new_block_ids_desired_pos_offset}, "
+                                 f"real pos offset {mapping_old_block_ids_real_pos_offset}")
 
                     # Get metadata for lazy attention
                     (req_to_q_offset[request.request_id], 
