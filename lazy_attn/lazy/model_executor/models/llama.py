@@ -13,11 +13,13 @@ def forward(
     # customized rotary embedding, only rotate query but keep key unchanged
     # keep the signature of the original rotary embedding
     q, k = self.rotary_emb(positions, q, k)
-        
+
     attn_output = self.attn(q, k, v,
-                            cos_sin_cache=self.rotary_emb.cos_sin_cache, 
+                            freqs=self.rotary_emb.inv_freq,
+                            cos_sin_cache=self.rotary_emb.cos_sin_cache,
                             rotary_dim=self.rotary_emb.rotary_dim,
                             is_neox_style=self.rotary_emb.is_neox_style)
+    
     output, _ = self.o_proj(attn_output)
     return output
 

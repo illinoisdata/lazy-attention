@@ -172,7 +172,7 @@ class LazyScheduler(Scheduler):
         logger.info(f"LazyScheduler launched")
 
     def schedule(self) -> SchedulerOutput:
-        logger.info(f"Scheduler: waiting={dump_dequeue(self.waiting)}, "
+        logger.debug(f"Scheduler: waiting={dump_dequeue(self.waiting)}, "
                     f"running={[req.request_id for req in self.running]}")
         # NOTE(woosuk) on the scheduling algorithm:
         # There's no "decoding phase" nor "prefill phase" in the scheduler.
@@ -634,7 +634,7 @@ class LazyScheduler(Scheduler):
             self.requests[req_id].num_computed_tokens += num_scheduled_token
 
         self.finished_req_ids = set()
-        logger.info(f"Scheduler output: {scheduler_output}")
+        logger.debug(f"Scheduler output: {scheduler_output}")
         return scheduler_output
 
     def add_request(self, request: Request, left=False) -> None:
@@ -645,7 +645,7 @@ class LazyScheduler(Scheduler):
             tag = "[Document]"
         elif request.has_documents:
             tag = "[Lazy]"
-        logger.info(f"Adding {tag} request {request.request_id} to LazyScheduler")
+        logger.debug(f"Adding {tag} request {request.request_id} to LazyScheduler")
         if left:
             self.waiting.appendleft(request)
         else:

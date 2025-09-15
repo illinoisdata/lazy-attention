@@ -6,13 +6,13 @@ int_handler() {
     exit 1
 }
 trap 'int_handler' INT
-source scripts/bench_consts.sh
+source scripts/benchmark/bench_consts.sh
 
 if [ "$#" -lt 2 ]
 then
     echo "Require 2 argument (SUT, DATANAME), $# provided"
-    echo 'Example: bash scripts/bench_exp1_single.sh parrot randtiny'
-    echo 'Example: bash scripts/bench_exp1_single.sh llmrag sqa'
+    echo 'Example: bash scripts/benchmark/bench_exp1_single.sh parrot randtiny'
+    echo 'Example: bash scripts/benchmark/bench_exp1_single.sh llmrag sqa'
     exit 1
 fi
 
@@ -31,6 +31,8 @@ sleep 2
 prepare_sut ${SUT}
 python benchmarks/benchmark_rag_serving.py \
     --exp exp1_${SUT}_${DATANAME} \
+    --sample-requests 200 \
+    --max-concurrency 10 \
     ${dataargs} \
     ${sut_args} \
     ${EXTRA_ARGS}

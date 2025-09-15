@@ -2,6 +2,8 @@ from __future__ import annotations  # isort:skip
 
 import os
 
+from lazy.model_executor.layers.rotary_embedding import Llama3RotaryEmbedding
+
 # backend (model -> attention layer -> attention impl)
 from lazy.attention.backends.triton_attn import forward as triton_attn_forward
 from lazy.attention.layer import (
@@ -36,7 +38,9 @@ os.environ["VLLM_ATTENTION_BACKEND"] = "TRITON_ATTN_VLLM_V1"
 def proc_patch():
     import vllm
     # TODO: fix the routering problem, when reuse and when not reuse
-    
+    # Step 0
+    vllm.model_executor.layers.rotary_embedding.Llama3RotaryEmbedding = Llama3RotaryEmbedding
+
     # Step 1.1: Patch triton attention forward function
     import vllm.v1.attention.backends.triton_attn
     vllm.v1.attention.backends.triton_attn.TritonAttentionImpl.forward = triton_attn_forward

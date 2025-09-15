@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 from pathlib import Path
 import json
 
+ENFORCE_EAGER = True
+
 def test_load_data_acc():
     data_path = Path(__file__).parent / 'data' / 'test_data_acc.jsonl'
     with open(data_path, "r") as f:
@@ -34,7 +36,7 @@ class TestVLLM:
         try:
             llm = vllm.LLM(model=mock_model_name,                      
                            gpu_memory_utilization=0.9,
-                           enforce_eager=False,
+                           enforce_eager=ENFORCE_EAGER,
                            enable_prefix_caching=True,
                            seed=42,
                            max_model_len=2048,)
@@ -64,7 +66,7 @@ class TestVLLM:
             from vllm.v1.engine.async_llm import AsyncLLM
 
             engine_args = AsyncEngineArgs(model=mock_model_name, 
-                                          enforce_eager=False, 
+                                          enforce_eager=ENFORCE_EAGER, 
                                           max_model_len=2048)
             model = AsyncLLM.from_engine_args(engine_args)
             

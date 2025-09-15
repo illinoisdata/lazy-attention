@@ -11,3 +11,7 @@ vllm_proj/triton/
 slurm/
 
 __pycache__/
+
+
+ChatRAG-Bench/
+Hotpot-Bench/

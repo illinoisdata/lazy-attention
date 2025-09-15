@@ -7,6 +7,7 @@ os.environ["VLLM_ATTENTION_BACKEND"] = "TRITON_ATTN_VLLM_V1"
 if os.environ.get("VLLM_USE_LAZY_ATTENTION", "0") == "1":
     import lazy.__vllm__
     
+import uuid
 import asyncio
 import dataclasses
 import sys
@@ -369,7 +370,7 @@ class LLMRAG(RAG):
             async for _ in self._llm.generate(
                 prompt=doc,
                 sampling_params=SamplingParams(temperature=0.0, max_tokens=1),
-                request_id=f"cache_{request_id}_{idx}",
+                request_id=f"cache_{request_id}_{idx}_{uuid.uuid4().hex}",
             ):
                 # 我们只需要等待生成完成，不需要使用生成的内容
                 pass
@@ -385,7 +386,7 @@ class LLMRAG(RAG):
         request_id = self._next_request_id()
         preamble = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an intelligent AI assistant. Please answer questions based on the user's instructions. Below are some reference documents that may help you in answering the user's question.\n\n"
         query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
-        document = [self._docs[doc_id] for doc_id in doc_ids]
+        document = [self._docs[doc_id] for doc_id in doc_ids[:8]]
         document = [preamble] + document
         if isinstance(document, str):
             context = document
@@ -504,7 +505,8 @@ class ReuseLLMRAG(RAG):
         async for _ in self._llm.generate(
             prompt=context,
             sampling_params=SamplingParams(temperature=0.0, max_tokens=1),
-            request_id=f"cache_{request_id}",):
+            request_id=f"cache_{request_id}_{uuid.uuid4().hex}",
+        ):
             pass
 
     async def iter_generate(
@@ -1155,7 +1157,7 @@ class PromptCacheRAG(RAG):
                 self._cache_engine.remove_schema(schema_name)
 
 # simple adapted from LLMRAG          
-class DynamicRAG(RAG):
+class LazyRAG(RAG):
     def __init__(self, llm: "AsyncLLM") -> None:
         RAG.__init__(self)
         self._llm = llm
@@ -1172,19 +1174,16 @@ class DynamicRAG(RAG):
         return doc_ids
     
     async def add_doc_async(self, request_id: str, docs_ids: List[int]) -> None:
-        pass
-        # for idx, doc_id in enumerate(docs_ids):
-        #     doc = self._docs[doc_id]
-        #     # 使用 async for 来迭代异步生成器
-        #     async for _ in self._llm.generate(
-        #         prompt="blank",
-        #         sampling_params=SamplingParams(temperature=0.0, max_tokens=1),
-        #         request_id=f"cache_{request_id}_{idx}",
-        #         document_seq=[doc],
-        #     ):
-        #         # 我们只需要等待生成完成，不需要使用生成的内容
-        #         pass
-
+        for idx, doc_id in enumerate(docs_ids):
+            doc = self._docs[doc_id]
+            # 使用 async for 来迭代异步生成器
+            async for _ in self._llm.generate(
+                prompt=doc,
+                sampling_params=SamplingParams(temperature=0.0, max_tokens=1),
+                request_id=f"cache_{request_id}_{idx}_{uuid.uuid4().hex}",
+            ):
+                # 我们只需要等待生成完成，不需要使用生成的内容
+                pass
 
     async def iter_generate(
         self,
@@ -1194,27 +1193,16 @@ class DynamicRAG(RAG):
         position_ids: Optional[List[int]] = None,
     ) -> AsyncGenerator[str, None]:
         self.doc_ids.update(doc_ids)
-        # logger.info(f"doc_ids: {self.doc_ids}")
+
         request_id = self._next_request_id()
         latest_idx = 0
         preamble = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an intelligent AI assistant. Please answer questions based on the user's instructions. Below are some reference documents that may help you in answering the user's question.\n\n"
-        document = [self._docs[doc_id] for doc_id in doc_ids]
+        document = [self._docs[doc_id] for doc_id in doc_ids[:8]]
         if isinstance(document, str):
             document_seq = [document]
         else:
             document_seq = document
         document_seq = [preamble] + document_seq
-        # preamble = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an intelligent AI assistant. Please answer questions based on the user's instructions. Below are some reference documents that may help you in answering the user's question.\n\n"
-        # query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
-        # document = [self._docs[doc_id] for doc_id in doc_ids]
-        # document = [preamble] + document
-        # if isinstance(document, str):
-        #     context = document
-        # else:
-        #     context = "\n".join(document)
-        
-        # document_seq = [context]
-        # await self.add_doc_async(request_id, document_seq)
         
         query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
         async for generate_output in self._llm.generate(
@@ -1238,8 +1226,8 @@ class DynamicRAG(RAG):
         request_id = str(self._last_request_id)
         self._last_request_id += 1
         return request_id
-    
-class BaselineDynamicRAG(RAG):
+
+class BaselineLazyRAG(RAG):
     def __init__(self, llm: "AsyncLLM") -> None:
         RAG.__init__(self)
         self._llm = llm
@@ -1254,6 +1242,18 @@ class BaselineDynamicRAG(RAG):
             doc_ids.append(doc_id)
         return doc_ids
 
+    async def add_doc_async(self, request_id: str, docs_ids: List[int]) -> None:
+        for idx, doc_id in enumerate(docs_ids):
+            doc = self._docs[doc_id]
+            # 使用 async for 来迭代异步生成器
+            async for _ in self._llm.generate(
+                prompt=doc,
+                sampling_params=SamplingParams(temperature=0.0, max_tokens=1),
+                request_id=f"cache_{request_id}_{idx}_{uuid.uuid4().hex}",
+            ):
+                # 我们只需要等待生成完成，不需要使用生成的内容
+                pass
+
     async def iter_generate(
         self,
         doc_ids: List[DocumentId],
@@ -1264,7 +1264,7 @@ class BaselineDynamicRAG(RAG):
         request_id = self._next_request_id()
         preamble = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an intelligent AI assistant. Please answer questions based on the user's instructions. Below are some reference documents that may help you in answering the user's question.\n\n"
         query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
-        document = [self._docs[doc_id] for doc_id in doc_ids]
+        document = [self._docs[doc_id] for doc_id in doc_ids[:8]]
         document = [preamble] + document
         if isinstance(document, str):
             context = document
@@ -1390,15 +1390,15 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
             enable_cpu_inference=args.pc_enable_cpu_inference,
             cache_max_token=args.pc_cache_max_token,
         )
-    elif args.rag_type == "drag":
+    elif args.rag_type == "lazyrag":
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
-        logger.info(f"[drag] Using async engine args: {async_engine_args}")
-        return DynamicRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
-    elif args.rag_type == "basedrag":
+        logger.info(f"[lazyrag] Using async engine args: {async_engine_args}")
+        return LazyRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
+    elif args.rag_type == "baseline":
         async_engine_args = AsyncEngineArgs(**dataclasses.asdict(engine_args))
         # prepare_lmcache(async_engine_args)
-        logger.info(f"[basedrag] Using async engine args: {async_engine_args}")
-        return BaselineDynamicRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
+        logger.info(f"[baseline] Using async engine args: {async_engine_args}")
+        return BaselineLazyRAG(llm=AsyncLLM.from_engine_args(async_engine_args))
     logger.error(f"Invalid RAG type {args.rag_type}")
     sys.exit(1)
     

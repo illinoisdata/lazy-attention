@@ -51,7 +51,7 @@ DATA_KEYS=(
 # GLOBAL_DATA_ARGS="--request-sampling-method zipf --request-zipf-param 1.01 --sample-documents 10 --document-sampling-method zipf --document-zipf-param 2"
 GLOBAL_DATA_ARGS="--request-sampling-method uniform --sample-documents 10 --document-sampling-method uniform"
 # For e1 2wikimqa
-GLOBAL_DATA_ARGS+=" --sample-requests 200 --max-concurrency 1"
+# GLOBAL_DATA_ARGS+=" --max-concurrency 1"
 
 
 function get_data_args() {
@@ -267,6 +267,7 @@ SUTS=(
     "pcrag"
     "cacheblend"
     "lazyrag"
+    "baseline"
     "recllmrag"
     "reullmrag"
     "blockattnrag"
@@ -332,7 +333,10 @@ function get_sut_args() {
         sut_args="--rag_type=cacheblend --tokenizer ${SUTS_MODEL} --model ${SUTS_MODEL}"
     elif [[ $_SUT == "lazyrag" ]]
     then
-        sut_args="--rag_type=lazyrag --tokenizer ${SUTS_MODEL} --model ${SUTS_MODEL} --gpu-memory-utilization 0.9 --enforce-eager --enable-prefix-caching"
+        sut_args="--rag_type=lazyrag --tokenizer ${SUTS_MODEL} --model ${SUTS_MODEL} --gpu-memory-utilization 0.9 --enable-prefix-caching"
+    elif [[ $_SUT == "baseline" ]]
+    then
+        sut_args="--rag_type=baseline --tokenizer ${SUTS_MODEL} --model ${SUTS_MODEL} --gpu-memory-utilization 0.9 --enable-prefix-caching"
     elif [[ $_SUT == "recllmrag" ]]
     then
         sut_args="--rag_type=recllmrag --tokenizer ${SUTS_MODEL} --model ${SUTS_MODEL}"
@@ -417,7 +421,7 @@ function prepare_sut() {
         echo "Preparing example"
     else
         echo "Prepare SUT $_SUT."
-            if [[ $_SUT == "lazyrag" ]]
+            if [[ $_SUT == "lazyrag" || $_SUT == "baseline" ]]
             then
                 echo "Setting VLLM_USE_LAZY_ATTENTION=1 for lazyrag"
                 export VLLM_USE_LAZY_ATTENTION=1

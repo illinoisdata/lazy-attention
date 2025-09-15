@@ -3,6 +3,7 @@
 import torch
 import triton
 import triton.language as tl
+from triton.language.extra import libdevice
 
 from vllm import _custom_ops as ops
 from vllm.platforms.rocm import use_rocm_custom_paged_attention
@@ -12,9 +13,7 @@ from vllm.attention.ops.chunked_prefill_paged_decode import kernel_paged_attenti
 
 from .prefix_prefill import context_attention_fwd, IS_TURING
 
-from vllm.logger import init_logger
 
-logger = init_logger(__name__)
 
 @triton.jit
 def cdiv_fn(x, y):
@@ -61,22 +60,31 @@ def kernel_paged_attention_2d(
         query_start_len_ptr,  # [num_seqs+1]
         rotary_dim: tl.constexpr,  # int
         rotary_dim_pow2: tl.constexpr,  # int
-        cos_sin_cache_ptr,
+        # cos_sin_cache_ptr,
+        freqs_ptr,
         is_neox_style: tl.constexpr,  # bool
         # To rotate the query
         is_lazy_ptr,
         q_offset_ptr,
+        q_mask_ptr,
 ):
-    # TODO(haocheng): low priority: consider the case rot dim != head size
+    # TODO(haocheng): consider the case rot dim != head size
     seq_idx = tl.program_id(0)
     # Get the condition as early as possible
     is_lazy = tl.load(is_lazy_ptr + seq_idx)
+    # new_freq = tl.load(freqs_ptr + tl.arange(0, HEAD_SIZE_PADDED))
 
 # /////////////////////////////////////////////////////////////////////////////////////////
 # Rotate the query
     if is_lazy:
         kv_head_idx = tl.program_id(1)
-
+        # # Load freq in advance
+        # freqs: (HEAD_SIZE_PADDED,) repeated two times to match the padded size
+        # freq = tl.load(freqs_ptr + tl.arange(0, HEAD_SIZE_PADDED))
+        # freq = tl.load(query_ptr + tl.arange(0, HEAD_SIZE_PADDED)) 
+        # new_freq = tl.load(freqs_ptr + tl.arange(0, HEAD_SIZE_PADDED))
+        # query_ptr = query_ptr + query_stride_0
+        # new_freq = tl.load(freqs_ptr + tl.arange(0, HEAD_SIZE_PADDED))
         if filter_by_query_len:
             cur_batch_in_all_start_index = tl.load(query_start_len_ptr + seq_idx)
             cur_batch_in_all_stop_index = tl.load(query_start_len_ptr + seq_idx +
@@ -101,29 +109,20 @@ def kernel_paged_attention_2d(
                             0).to(tl.int1)
         dim_mask_half = tl.where(tl.arange(0, HEAD_SIZE_PADDED // 2) < HEAD_SIZE // 2, 1,
                             0).to(tl.int1)
-        # rotary_dim = HEAD_SIZE
-        embed_dim: tl.constexpr = HEAD_SIZE // 2
-        offs_d1 = tl.arange(0, HEAD_SIZE_PADDED // 2)
-        offs_d2 = offs_d1 + HEAD_SIZE // 2
 
-        # # Q : (num_queries_per_kv, HEAD_SIZE,)
-        # Q = tl.load(
-        #     query_ptr + query_offset + tl.arange(0, HEAD_SIZE_PADDED)[None, :],
-        #     mask=dim_mask[None, :] & head_mask[:, None],
-        #     other=0.0,
-        # )
-        # Q_1: (num_queries_per_kv, HEAD_SIZE // 2,)
-        Q_1 = tl.load(
-            query_ptr + query_offset + offs_d1[None, :],
-            mask=dim_mask_half[None, :] & head_mask[:, None],
+
+        # Key optimization: sparse rotation, we keep Q_full as the main representation, Q_1/Q_2 only created when rotating
+        Q_full = tl.load(
+            query_ptr + query_offset + tl.arange(0, HEAD_SIZE_PADDED)[None, :],
+            mask=dim_mask[None, :] & head_mask[:, None],
             other=0.0,
         )
-        # Q_2: (num_queries_per_kv, HEAD_SIZE // 2,)
-        Q_2 = tl.load(
-            query_ptr + query_offset + offs_d2[None, :],
-            mask=dim_mask_half[None, :] & head_mask[:, None],
-            other=0.0,
-        )
+
+        # tl.device_print("pid=%d, BLOCK_SIZE=%d, vector_size=%d\n", BLOCK_SIZE, head_mask.shape[0])
+        
+        # We use Q full by default
+        Q_rotated = Q_full
+        
         block_table_offset = seq_idx * block_table_stride
 
         M = tl.full([num_queries_per_kv_padded], float("-inf"), dtype=tl.float32)
@@ -137,17 +136,17 @@ def kernel_paged_attention_2d(
         # alibi slope for this head
         if USE_ALIBI_SLOPES:
             alibi_slope = tl.load(alibi_slopes_ptr + query_head_idx,
-                                mask=head_mask,
-                                other=0.0)
+                                  mask=head_mask,
+                                  other=0.0)
 
         num_blocks = cdiv_fn(seq_len, BLOCK_SIZE)
-        
         prev_offset = 0
-        # iterate through tiles
+        
+        # iterate through tiles - 稀疏优化版本
         for j in range(0, num_blocks):
-
             physical_block_idx = tl.load(block_tables_ptr + block_table_offset + j)
             rot_offset_val = tl.load(q_offset_ptr + block_table_offset + j)
+            q_mask_val = tl.load(q_mask_ptr + block_table_offset + j)
 
             offs_n = tl.arange(0, BLOCK_SIZE)
             offs_d = tl.arange(0, HEAD_SIZE_PADDED)
@@ -157,49 +156,27 @@ def kernel_paged_attention_2d(
                         offs_d[None, :] * stride_v_cache_2 +
                         offs_n[:, None] * stride_v_cache_3)
 
-            # k_offset = (physical_block_idx * stride_k_cache_0 +
-            #             kv_head_idx * stride_k_cache_1 +
-            #             (offs_d[:, None] // x) * stride_k_cache_2 +
-            #             offs_n[None, :] * stride_k_cache_3 +
-            #             (offs_d[:, None] % x) * stride_k_cache_4)
-            k_offset_1 = (physical_block_idx * stride_k_cache_0 +
+            k_offset = (physical_block_idx * stride_k_cache_0 +
                         kv_head_idx * stride_k_cache_1 +
-                        (offs_d1[:, None] // x) * stride_k_cache_2 +
+                        (offs_d[:, None] // x) * stride_k_cache_2 +
                         offs_n[None, :] * stride_k_cache_3 +
-                        (offs_d1[:, None] % x) * stride_k_cache_4)
-            k_offset_2 = (physical_block_idx * stride_k_cache_0 +
-                        kv_head_idx * stride_k_cache_1 +
-                        (offs_d2[:, None] // x) * stride_k_cache_2 +
-                        offs_n[None, :] * stride_k_cache_3 +
-                        (offs_d2[:, None] % x) * stride_k_cache_4)
+                        (offs_d[:, None] % x) * stride_k_cache_4)
 
-            # # K : (HEAD_SIZE, BLOCK_SIZE)
-            # K_load = tl.load(key_cache_ptr + k_offset,
-            #                  mask=dim_mask[:, None],
-            #                  other=0.0)
-            # K1: (HEAD_SIZE // 2, BLOCK_SIZE)
-            K_load_1 = tl.load(key_cache_ptr + k_offset_1,
-                            mask=dim_mask_half[:, None],
-                            other=0.0)
-            # K2: (HEAD_SIZE // 2, BLOCK_SIZE)
-            K_load_2 = tl.load(key_cache_ptr + k_offset_2,
-                            mask=dim_mask_half[:, None],
-                            other=0.0)
+            K_load_full = tl.load(key_cache_ptr + k_offset,
+                                mask=dim_mask[:, None],
+                                other=0.0)
 
-            if K_load_1.dtype.is_fp8():
-                K_1 = (K_load_1.to(tl.float32) * tl.load(k_scale)).to(Q_1.dtype)
-                K_2 = (K_load_2.to(tl.float32) * tl.load(k_scale)).to(Q_2.dtype)
+            if K_load_full.dtype.is_fp8():
+                K_full = (K_load_full.to(tl.float32) * tl.load(k_scale)).to(Q_rotated.dtype)
             else:
-                K_1 = K_load_1
-                K_2 = K_load_2
+                K_full = K_load_full
 
-            # V : (BLOCK_SIZE, HEAD_SIZE)
             V_load = tl.load(value_cache_ptr + v_offset,
                             mask=dim_mask[None, :],
                             other=0.0)
 
             if V_load.dtype.is_fp8():
-                V = (V_load.to(tl.float32) * tl.load(v_scale)).to(Q_1.dtype)
+                V = (V_load.to(tl.float32) * tl.load(v_scale)).to(Q_rotated.dtype)
             else:
                 V = V_load
 
@@ -207,83 +184,80 @@ def kernel_paged_attention_2d(
             boundary = tl.full([BLOCK_SIZE], seq_len, dtype=tl.int32)
             seq_mask = seq_offset[None, :] < boundary
             
-            # -------------------------------------------------------------
-            # Inplace rotation
-            # -------------------------------------------------------------
-            if prev_offset != rot_offset_val:
-                # -----------------------------------------------------
-                # Here we rotate the query instead of rotate the key
-                # (num_queries_per_kv, HEAD_SIZE // 2)
+            # if q_mask_val != 0:
+            seq_mask = seq_mask & (tl.arange(0, BLOCK_SIZE) < (BLOCK_SIZE - q_mask_val))
+            
+            needs_rotation = (prev_offset != rot_offset_val)
+
+            if needs_rotation:
+                # Only rotate when necessary
                 relative_rot = rot_offset_val - prev_offset
+                cols = tl.arange(0, HEAD_SIZE)
+                # new_freq = tl.load(freqs_ptr + tl.arange(0, HEAD_SIZE_PADDED))
                 
-                positions = tl.full([num_queries_per_kv_padded], tl.abs(relative_rot), dtype=tl.int32)
-                # load cos and sin
-                cos_val = tl.load(cos_sin_cache_ptr + (positions[:, None] * rotary_dim +
-                                offs_d1[None,:]),
-                                mask=dim_mask_half[None,:],
-                                other=0.0)
-                sin_val = tl.load(cos_sin_cache_ptr + (positions[:, None] * rotary_dim +
-                                offs_d2[None,:]),
-                                mask=dim_mask_half[None,:],
-                                other=0.0)
-                if relative_rot < 0:
-                    sin_val = -sin_val
-                
-                # -----------------------------------------------------
-                
-                # # fuse rotary embedding
-                # positions = seq_offset
+                # new_freq = new_freq.to(Q_rotated.dtype)
+                # -------
+                # offs = tl.arange(0, HEAD_SIZE) % (HEAD_SIZE // 2)
 
-                # cos_val = tl.load(cos_sin_cache_ptr + (positions[None, :] * rotary_dim +
-                #                 offs_d1[:, None]),
-                #                 mask=dim_mask_half[:, None],
-                #                 other=0.0)
-                # sin_val = tl.load(cos_sin_cache_ptr + (positions[None, :] * rotary_dim +
-                #                 offs_d2[:, None]), 
-                #                 mask=dim_mask_half[:, None],
-                #                 other=0.0)
-                # update Q
-                Q1 = Q_1 * cos_val + Q_2 * sin_val
-                Q_2 = Q_1 * -sin_val + Q_2 * cos_val
-                Q_1 = Q1
+                # new_freq = 1 / libdevice.pow(10000.0, 2 * offs / HEAD_SIZE)
+                # -------
+                low_factor, high_factor, scaling_factor, pi_value = 1.0, 4.0, 8.0, 3.14159265358979323846
+                orig_max_position, low_wave, high_wave = 8192, 8192, 2048
+
+                offs = tl.arange(0, HEAD_SIZE) % (HEAD_SIZE // 2)
+
+                inv_freq = 1 / libdevice.pow(10000.0, 2 * offs / HEAD_SIZE)
+
+                # wave_len = 2π / inv_freq
+                # 所以 orig_max_position / wave_len = orig_max_position * inv_freq / (2π)
+                smooth = tl.where(
+                    high_factor != low_factor,
+                    (orig_max_position * inv_freq / (2 * pi_value) - low_factor) / (high_factor - low_factor),
+                    0.0
+                )
+
+                # 条件 wave_len < high_wave <=> inv_freq > 2π / high_wave
+                # 条件 wave_len > low_wave <=> inv_freq < 2π / low_wave
+                new_freq = tl.where(
+                    inv_freq > (2 * pi_value / high_wave),
+                    inv_freq,
+                    tl.where(
+                        inv_freq < (2 * pi_value / low_wave),
+                        inv_freq / scaling_factor,
+                        inv_freq * (smooth + (1 - smooth) / scaling_factor)
+                    )
+                )
+                # -------
+                theta = relative_rot * new_freq # / libdevice.pow(10000.0, 2 * offs / HEAD_SIZE)
+                cos_val = libdevice.cos(theta)
+                sin_val = libdevice.sin(theta)
+
+                # mask for前半 / 后半
+                mask_q1 = cols < HEAD_SIZE // 2
+                mask_q2 = ~mask_q1
+
+                # 从Q_rotated里挑出对应部分，确保类型一致
+                q1 = tl.where(mask_q1[None, :], Q_rotated, 0.0)
+                q2 = tl.where(mask_q2[None, :], Q_rotated, 0.0)
+                
+                # 向量化旋转计算，保持原始数据类型
+                q1_new = q1 * cos_val - q2 * sin_val
+                q2_new = q1 * sin_val + q2 * cos_val
+
+                # 重建Q_rotated，保持原始数据类型
+                Q_rotated = tl.where(mask_q1[None, :], 
+                q1_new.to(Q_rotated.dtype), 
+                q2_new.to(Q_rotated.dtype))
+                
                 prev_offset = rot_offset_val
-
-            # S : (num_queries_per_kv, BLOCK_SIZE,)
+            
+            # 统一路径：都使用完整GEMM
             S = tl.where(head_mask[:, None] & seq_mask, 0.0,
-                            float("-inf")).to(tl.float32)
-            qk = tl.zeros([num_queries_per_kv_padded, BLOCK_SIZE],
-                            dtype=tl.float32)
-            qk = tl.dot(Q_1, K_1, acc=qk, input_precision=IN_PRECISION)
-            qk = tl.dot(Q_2, K_2, acc=qk, input_precision=IN_PRECISION)
-            # rotated_k1 = K_1 * cos_val - K_2 * sin_val
-            # rotated_k2 = K_1 * sin_val + K_2 * cos_val
-            # qk1 = tl.dot(Q_1, rotated_k1, input_precision=IN_PRECISION)
-            # qk2 = tl.dot(Q_2, rotated_k2, input_precision=IN_PRECISION)
-            # qk = qk1 + qk2
-            # S += scale * tl.dot(Q, K)
-            # --------------------------------------------------------------
-
-            # # -------------------------------------------------------------
-            # # not inplace rotation
-            # # -------------------------------------------------------------
-            # positions = tl.full([num_queries_per_kv_padded], rot_offset_val, dtype=tl.int32)
-            # # load cos and sin
-            # cos_val = tl.load(cos_sin_cache_ptr + (positions[:, None] * rotary_dim +
-            #                     offs_d1[None,:]),
-            #                     mask=dim_mask_half[None,:],
-            #                     other=0.0)
-            # sin_val = tl.load(cos_sin_cache_ptr + (positions[:, None] * rotary_dim +
-            #                     offs_d2[None,:]),
-            #                     mask=dim_mask_half[None,:],
-            #                     other=0.0)
-
-            # S = tl.where(head_mask[:, None] & seq_mask, 0.0,
-            #                 float("-inf")).to(tl.float32)
-            # qk = tl.zeros([num_queries_per_kv_padded, BLOCK_SIZE],
-            #                 dtype=tl.float32)
-            # qk = tl.dot(Q_1 * cos_val + Q_2 * sin_val, K_1, acc=qk, input_precision=IN_PRECISION)
-            # qk = tl.dot(Q_1 * -sin_val + Q_2 * cos_val, K_2, acc=qk, input_precision=IN_PRECISION)
-            # # --------------------------------------------------------------
+                        float("-inf")).to(tl.float32)
+            
+            # 关键优化：所有blocks都使用高效的完整GEMM
+            qk = tl.dot(Q_rotated, K_full, input_precision=IN_PRECISION)
+            
             S += scale * qk
 
             context_len = seq_len - 1
@@ -296,26 +270,13 @@ def kernel_paged_attention_2d(
                 S += alibi_slope[:, None] * (seq_offset - context_len)
 
             # compute running maximum
-            # m_j : (num_queries_per_kv,)
             m_j = tl.maximum(M, tl.max(S, axis=1))
-
-            # P : (num_queries_per_kv, BLOCK_SIZE,)
             P = tl.exp(S - m_j[:, None])
-
-            # l_j : (num_queries_per_kv,)
             l_j = tl.sum(P, axis=1)
-
-            # alpha : (num_queries_per_kv, )
             alpha = tl.exp(M - m_j)
-
-            # acc : (num_queries_per_kv, BLOCK_SIZE,)
             acc = acc * alpha[:, None]
-
-            # update constants
             L = L * alpha + l_j
             M = m_j
-
-            # acc : (num_queries_per_kv, BLOCK_SIZE,)
             acc += tl.dot(P.to(V.dtype), V)
 
         # epilogue
@@ -482,6 +443,23 @@ def kernel_paged_attention_2d(
 # /////////////////////////////////////////////////////////////////////////////////////
 
 
+def embed_freqs_continuously(query, freqs):
+    """将freqs连续存储在query tensor的开头"""
+    batch_size, num_heads, head_size = query.shape
+    
+    # 在第一个维度扩展，为freqs留出连续空间
+    extended_query = torch.zeros(batch_size + 1, num_heads, head_size, 
+                               dtype=query.dtype, device=query.device)
+    
+    # 原始query数据
+    extended_query[1:, :, :] = query
+    
+    # freqs连续存储在开头
+    extended_query[0, 0, :freqs.shape[0]] = freqs
+    
+    return extended_query
+
+
 def chunked_prefill_paged_decode(
     query,
     key,
@@ -501,6 +479,7 @@ def chunked_prefill_paged_decode(
     sliding_window=None,
     sm_scale=None,
     rotary_dim=None,
+    freqs=None,
     cos_sin_cache=None,
     is_neox_style=True,
     # To rotate the query
@@ -508,10 +487,13 @@ def chunked_prefill_paged_decode(
     q_offset=None,
     q_mask=None,
 ):
-    logger.debug("Using custom chunked_prefill_paged_decode attention")
-    logger.debug(f"is lazy: {is_lazy}")
-    logger.debug(f"q_offset: {q_offset}")
-    logger.debug(f"q_mask: {q_mask}")
+
+    new_freqs = None
+    if freqs is not None:
+        new_freqs = torch.cat([freqs, freqs], dim=0).contiguous().to(freqs.device)
+        # new_freqs = torch.zeros(2 * freqs.shape[0], dtype=query.dtype, device=query.device)
+        # new_freqs[:freqs.shape[0]] = freqs
+        # new_freqs[freqs.shape[0]:] = freqs
 
     q_dtype_is_f32 = query.dtype is torch.float32
     IN_PRECISION = 'ieee' if IS_TURING and q_dtype_is_f32 else None
@@ -549,7 +531,7 @@ def chunked_prefill_paged_decode(
             # To rotate the query
             is_lazy=is_lazy,
             q_offset=q_offset,
-            # q_mask=None,
+            q_mask=q_mask,
         )
 
     block_size = value_cache.shape[3]
@@ -582,6 +564,9 @@ def chunked_prefill_paged_decode(
                                                  block_size,
                                                  num_queries_per_kv,
                                                  max_seq_len, sliding_window)
+    
+    # print(f"Lazy debug: {num_query_heads} {num_queries_per_kv}, {num_queries_per_kv_padded}") # 4 16
+    
     if use_custom:
         raise NotImplementedError("Custom paged attention is not implemented")
     else:
@@ -627,10 +612,11 @@ def chunked_prefill_paged_decode(
             query_start_len_ptr=query_start_loc,
             rotary_dim=rotary_dim,
             rotary_dim_pow2=triton.next_power_of_2(rotary_dim),  # padded
-            cos_sin_cache_ptr=cos_sin_cache,
+            # cos_sin_cache_ptr=cos_sin_cache,
+            freqs_ptr=new_freqs,
             is_neox_style=is_neox_style,
             # To rotate the query
             is_lazy_ptr=is_lazy,
             q_offset_ptr=q_offset,
-            # q_mask=None,
+            q_mask_ptr=q_mask,
         )

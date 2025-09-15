@@ -28,6 +28,7 @@ def forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
+    freqs: Optional[torch.Tensor] = None,
     cos_sin_cache: Optional[torch.Tensor] = None,
     rotary_dim: Optional[int] = None,
     is_neox_style: bool = True,
@@ -79,6 +80,7 @@ def forward(
                                   value,
                                   self_kv_cache,
                                   attn_metadata,
+                                  freqs,
                                   cos_sin_cache,
                                   rotary_dim,
                                   is_neox_style,
@@ -87,7 +89,7 @@ def forward(
                 # We use unified_lazy_attention_with_output to replace
                 # unified_attention_with_output to support dynamic RAG's block attention.
                 torch.ops.vllm.unified_lazy_attention_with_output(
-                    query, key, value, output, self.layer_name,
+                    query, key, value, output, self.layer_name, freqs,
                     cos_sin_cache, rotary_dim, is_neox_style)
             return output.view(-1, hidden_size)
         else:
@@ -101,6 +103,7 @@ def unified_lazy_attention_with_output(
     value: torch.Tensor,
     output: torch.Tensor,
     layer_name: str,
+    freqs: Optional[torch.Tensor]=None,
     cos_sin_cache: Optional[torch.Tensor]=None,
     rotary_dim: Optional[int]=None,
     is_neox_style: bool=True,
@@ -116,6 +119,7 @@ def unified_lazy_attention_with_output(
                       value,
                       kv_cache,
                       attn_metadata,
+                      freqs,
                       cos_sin_cache,
                       rotary_dim,
                       is_neox_style,
@@ -130,6 +134,7 @@ def unified_lazy_attention_with_output_fake(
     value: torch.Tensor,
     output: torch.Tensor,
     layer_name: str,
+    freqs: Optional[torch.Tensor]=None,
     cos_sin_cache: Optional[torch.Tensor]=None,
     rotary_dim: Optional[int]=None,
     is_neox_style: bool=True,

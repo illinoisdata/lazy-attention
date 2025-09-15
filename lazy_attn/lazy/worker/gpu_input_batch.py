@@ -37,6 +37,7 @@ class CachedRequestState:
     # For q rotation in lazy attention
     is_lazy: bool = False
     q_offset: Optional[list[int]] = None
+    q_mask: Optional[list[int]] = None
 
     mrope_positions: Optional[torch.Tensor] = None
     mrope_position_delta: Optional[int] = None

@@ -76,7 +76,7 @@ def load_dataset(dataset_name: str) -> LongBenchDataset:
                 all_classes=row["all_classes"],
                 _id=row["_id"],
             )
-            for row in datasets.load_dataset("THUDM/LongBench", dataset_name, split="test")
+            for row in datasets.load_dataset("THUDM/LongBench", dataset_name, split="test", trust_remote_code=True)
         ]
     )
     
