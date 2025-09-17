@@ -443,24 +443,6 @@ def kernel_paged_attention_2d(
 
 # /////////////////////////////////////////////////////////////////////////////////////
 
-
-def embed_freqs_continuously(query, freqs):
-    """将freqs连续存储在query tensor的开头"""
-    batch_size, num_heads, head_size = query.shape
-    
-    # 在第一个维度扩展，为freqs留出连续空间
-    extended_query = torch.zeros(batch_size + 1, num_heads, head_size, 
-                               dtype=query.dtype, device=query.device)
-    
-    # 原始query数据
-    extended_query[1:, :, :] = query
-    
-    # freqs连续存储在开头
-    extended_query[0, 0, :freqs.shape[0]] = freqs
-    
-    return extended_query
-
-
 def chunked_prefill_paged_decode(
     query,
     key,
@@ -488,14 +470,6 @@ def chunked_prefill_paged_decode(
     q_offset=None,
     q_mask=None,
 ):
-
-    new_freqs = None
-    if freqs is not None:
-        # print("Freq for reference:", freqs)
-        new_freqs = torch.cat([freqs, freqs], dim=0).contiguous().to(freqs.device)
-        # new_freqs = torch.zeros(2 * freqs.shape[0], dtype=query.dtype, device=query.device)
-        # new_freqs[:freqs.shape[0]] = freqs
-        # new_freqs[freqs.shape[0]:] = freqs
 
     q_dtype_is_f32 = query.dtype is torch.float32
     IN_PRECISION = 'ieee' if IS_TURING and q_dtype_is_f32 else None
@@ -566,8 +540,6 @@ def chunked_prefill_paged_decode(
                                                  block_size,
                                                  num_queries_per_kv,
                                                  max_seq_len, sliding_window)
-    
-    # print(f"Lazy debug: {num_query_heads} {num_queries_per_kv}, {num_queries_per_kv_padded}") # 4 16
     
     if use_custom:
         raise NotImplementedError("Custom paged attention is not implemented")
