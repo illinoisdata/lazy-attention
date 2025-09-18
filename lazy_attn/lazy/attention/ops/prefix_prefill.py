@@ -163,7 +163,6 @@ def _fwd_kernel(Q,
         l_i = tl.full([BLOCK_M], 1.0, dtype=tl.float32)
         acc = tl.zeros([BLOCK_M, BLOCK_DMODEL_PADDED], dtype=tl.float32)  # [M,D]
 
-        acc_pos = 0
         # compute query against context (no causal mask here)
         for start_n in tl.range(0, cur_batch_ctx_len, BLOCK_SIZE, \
                                 loop_unroll_factor=num_unroll_cache):
@@ -178,23 +177,22 @@ def _fwd_kernel(Q,
             # here we get M tokens in the query
             # NUM_BLOCKS_OVER_Q: tl.constexpr = BLOCK_M // BLOCK_SIZE
             # Q is [M,D//2]
-            rot_sign = 1
+            abs_rot_pos = 0
+            # rot_sign = -1 # it is always -1 for neox style
             rot_offset_val = tl.load(
                 q_offset_ptr + cur_batch * stride_b_loc_b +
                 (start_n // BLOCK_SIZE) * stride_b_loc_s)
-            acc_pos += rot_offset_val
 
-            abs_acc_pos = acc_pos
-            if abs_acc_pos < 0:
-                rot_sign = -1
-                abs_acc_pos = -abs_acc_pos
-            positions = tl.full([BLOCK_M], abs_acc_pos, dtype=tl.int32)
+            if rot_offset_val != 0:
+                abs_rot_pos = -(rot_offset_val + 1)
+
+            positions = tl.full([BLOCK_M], abs_rot_pos, dtype=tl.int32)
             # Then we need to rotate the query
             # tl.device_print("rot_offset_val:", rot_offset_val)
             off_cos = ((positions[:, None]) * rotary_dim +
                     offs_d1[None,:])
             cos_val = tl.load(cos_sin_cache + off_cos)
-            sin_val = tl.load(cos_sin_cache + off_cos + embed_dim) * rot_sign
+            sin_val = tl.load(cos_sin_cache + off_cos + embed_dim) * (-1)
             sin_val = sin_val.to(cos_val.dtype)
             
             # [D,BLOCK_SIZE]

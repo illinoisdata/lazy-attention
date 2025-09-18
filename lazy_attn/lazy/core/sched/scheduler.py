@@ -683,7 +683,7 @@ class LazyScheduler(Scheduler):
         )
         self.add_request(req, left=True)
 
-def metadata_for_lazy_attention(request: Request, block_size: int) -> tuple[list[int], list[int]]:
+def metadata_for_lazy_attention_old(request: Request, block_size: int) -> tuple[list[int], list[int]]:
     """Generate the metadata for lazy attention."""
     num_docs = len(request.document_lens)
     # Number of blocks for docs + 1 (for query)
@@ -710,6 +710,39 @@ def metadata_for_lazy_attention(request: Request, block_size: int) -> tuple[list
 
     return list(q_offset), list(q_mask)
 
+
+def metadata_for_lazy_attention(request: Request, block_size: int) -> tuple[list[int], list[int]]:
+    """Generate the metadata for lazy attention."""
+    num_docs = len(request.document_lens)
+    # Number of blocks for docs + 1 (for query)
+    num_blocks = sum(request.document_lens_padded) // block_size + 1
+    q_mask = np.zeros(num_blocks, dtype=np.int32)
+    q_offset = np.zeros(num_blocks, dtype=np.int32)
+    cursor = 0
+    # First doc
+    padding_lens = np.array(request.document_lens_padded) - \
+                   np.array(request.document_lens)
+    num_blk_doc = request.document_lens_padded[0] // block_size
+    base = -1
+    q_offset[0] = -sum(padding_lens) + base
+    base += -sum(padding_lens)
+    
+    cursor += num_blk_doc
+    q_mask[cursor - 1] = padding_lens[0]
+
+    # Process other docs
+    for doc_idx in range(1, num_docs):
+        num_blk_doc = request.document_lens_padded[doc_idx] // block_size
+        q_offset[cursor] = -request.document_lens[doc_idx-1] + base
+        base += -request.document_lens[doc_idx-1]
+        cursor += num_blk_doc
+        q_mask[cursor-1] = padding_lens[doc_idx]
+
+    q_offset[cursor] = sum(request.document_lens_padded) - request.document_lens[-1] + base
+
+    # print(q_offset)
+    # breakpoint()
+    return list(q_offset), list(q_mask)
 
 original_scheduler = None
 

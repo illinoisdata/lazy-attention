@@ -2,7 +2,7 @@
 #SBATCH --job-name="exp1_lazy_bench"
 #SBATCH --account=bdjx-dtai-gh
 #SBATCH --partition=ghx4
-#SBATCH --time=0:30:00
+#SBATCH --time=0:40:00
 #SBATCH --gpus-per-node=1
 #SBATCH --mem=110G
 #SBATCH --cpus-per-task=72
@@ -37,3 +37,5 @@ export VLLM_LOGGING_LEVEL=INFO
 
 export output=log_${USER}.txt;
 echo "@@@@@@@@@@@@" >> $output; (bash scripts/benchmark/bench_exp1.sh baseline,lazyrag 2wikimqa) 2>& 1 | tee -a $output; unset output
+
+# baseline,

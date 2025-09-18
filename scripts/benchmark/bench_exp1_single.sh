@@ -31,8 +31,8 @@ sleep 2
 prepare_sut ${SUT}
 python benchmarks/benchmark_rag_serving.py \
     --exp exp1_${SUT}_${DATANAME} \
-    --sample-requests 200 \
-    --max-concurrency 10 \
+    --sample-requests 10 \
+    --max-concurrency 1 \
     ${dataargs} \
     ${sut_args} \
     ${EXTRA_ARGS}

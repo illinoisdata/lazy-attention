@@ -297,7 +297,7 @@ def sample_chatragbench_requests(
                 document_len=document_len,
                 documents=prompt_doc_ids,
                 sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, 
-                                               temperature=0, seed=42),
+                                               temperature=0, seed=42, min_tokens=output_len),
             )
         )
         max_len = max(max_len, prompt_len + document_len)
@@ -358,7 +358,8 @@ def sample_longbench_requests(
                 output_len=output_len,
                 document_len=document_len,
                 documents=prompt_doc_ids,
-                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42, min_tokens=output_len),
+                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, 
+                                               temperature=0, seed=42, min_tokens=output_len),
                 ground_truth=row.answers,
             )
         )
@@ -419,7 +420,8 @@ def sample_2wikimqa_block_requests(
                 output_len=output_len,
                 document_len=document_len,
                 documents=prompt_doc_ids,
-                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42),
+                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, 
+                                               temperature=0, seed=42, min_tokens=output_len),
                 ground_truth=ground_truth,
             )
         )
@@ -481,7 +483,8 @@ def sample_hotpotqa_block_requests(
                 output_len=output_len,
                 document_len=document_len,
                 documents=prompt_doc_ids,
-                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42),
+                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, 
+                                               temperature=0, seed=42, min_tokens=output_len),
                 ground_truth=ground_truth
             )
         )
@@ -540,7 +543,8 @@ def sample_2wikimqa_cacheblend_requests(
                 output_len=output_len,
                 document_len=document_len,
                 documents=prompt_doc_ids,
-                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42),
+                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, 
+                                               temperature=0, seed=42, min_tokens=output_len),
                 ground_truth=ground_truth,
             )
         )
@@ -598,7 +602,8 @@ def sample_samsum_cacheblend_requests(
                 output_len=output_len,
                 document_len=document_len,
                 documents=prompt_doc_ids,
-                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42),
+                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, 
+                                               temperature=0, seed=42, min_tokens=output_len),
                 ground_truth=ground_truth,
             )
         )
@@ -658,7 +663,8 @@ def sample_musique_cacheblend_requests(
                 output_len=output_len,
                 document_len=document_len,
                 documents=prompt_doc_ids,
-                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, temperature=0, seed=42),
+                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, 
+                                               temperature=0, seed=42, min_tokens=output_len),
                 ground_truth=ground_truth,
             )
         )
@@ -961,6 +967,24 @@ async def benchmark(
         gootput_config_dict=gootput_config_dict,
     )
 
+    # EM
+    ground_truth = [input_requests[i].ground_truth for i in input_request_ids]
+    generated_res = [output.generated_text for output in outputs]
+    def compute_exact(list_a, list_b):
+        match_count = 0
+        for a, b in zip(list_a, list_b):
+            if isinstance(a, list):
+                for a_s in a:
+                    if a_s == b or a_s in b:
+                        match_count += 1
+                        break
+            else:
+                # if a is substring of b, count as match
+                if a == b or a in b:
+                    match_count += 1
+        return match_count / len(list_a) if len(list_a) > 0 else 0.0
+    em_score = compute_exact(ground_truth, generated_res)
+
     benchmark_result_strs = [
         "",
         "{s:{c}^{n}}".format(s=" Serving Benchmark Result ", n=50, c="="),
@@ -972,6 +996,7 @@ async def benchmark(
         "{:<40} {:<10.2f}".format("Request goodput (req/s):", metrics.request_goodput if gootput_config_dict else -1),
         "{:<40} {:<10.2f}".format("Output token throughput (tok/s):", metrics.output_throughput),
         "{:<40} {:<10.2f}".format("Total Token throughput (tok/s):", metrics.total_token_throughput),
+        "{:<40} {:<10.2f}".format("Exact Match (EM):", em_score * 100),
     ]
 
     result = {
