@@ -1,4 +1,7 @@
 from longbench import load_dataset, split_context
+from blockbench import BlockBenchArgs, load_dataset
+
+load_dataset('2wiki')
 
 # dataset = load_dataset('2wikimqa')
 # num_rows = len(dataset.rows)
@@ -23,17 +26,17 @@ from longbench import load_dataset, split_context
 # print("Average length of passages:", sum(average_length_list) / num_rows)
 # print("Max length of passages:", sum(max_length_list) / num_rows)
 # print("Min length of passages:", sum(min_length_list) / num_rows)
-print("Loading dataset...")
-dataset = load_dataset('2wikimqa')
-print(len(dataset.rows))
-for i in range(5):
-    print("-" * 20)
-    context_example = dataset.rows[i].context
-    question_example = dataset.rows[i].input
-    for con in context_example:
-        print("Example context:", con)
-    print("-" * 20)
-    print("Example question:", question_example)
+# print("Loading dataset...")
+# dataset = load_dataset('2wikimqa')
+# print(len(dataset.rows))
+# for i in range(5):
+#     print("-" * 20)
+#     context_example = dataset.rows[i].context
+#     question_example = dataset.rows[i].input
+#     for con in context_example:
+#         print("Example context:", con)
+#     print("-" * 20)
+#     print("Example question:", question_example)
 # musique
 # samsum
 # multi_news

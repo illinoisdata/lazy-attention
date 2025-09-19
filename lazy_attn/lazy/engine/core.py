@@ -139,7 +139,7 @@ class LazyEngineCoreProc(EngineCoreProc):
                 logger.debug(f"Decoded request: {request}")
                 # Push to input queue for core busy loop.
                 self.input_queue.put_nowait((request_type, request))
-                logger.info(f"Add request {request.request_id} to core busy loop")
+                logger.debug(f"Add request {request.request_id} to core busy loop")
     
 class DPLazyEngineCoreProc(LazyEngineCoreProc):
     # TODO(haocheng): implement DP version

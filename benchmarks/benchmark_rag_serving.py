@@ -27,6 +27,7 @@ from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, Tuple, ge
 
 import chatragbench
 import longbench
+import blockbench
 import numpy as np
 from simple_parsing import ArgumentParser
 from tqdm.asyncio import tqdm
@@ -305,6 +306,64 @@ def sample_chatragbench_requests(
     return input_requests
 
 
+def sample_block_attn_bench_requests(
+    args: blockbench.BlockBenchArgs,
+    rag: RAG,
+    tokenizer: PreTrainedTokenizerBase,
+) -> List[RAGRequest]:
+    blockbench_dataset = blockbench.load_dataset(args.blockbench_dataset_name)
+    logger.info(f"Loaded {len(blockbench_dataset.rows)} BlockBench prompts")
+
+    # Fill document cache and collect prompt document IDs.
+    doc_hash_to_id: Dict[int, DocumentId] = {}
+    doc_ids_by_prompt: List[List[DocumentId]] = []
+    document_len_by_prompt: List[int] = []
+    sum_tokens: int = 0
+    for row in blockbench_dataset.rows:
+        documents = row.blocks  # Multiple document per BlockBench prompt.
+        assert isinstance(documents, list), f"documents should be a list, but got {type(documents)}"
+        document_token = 0
+        context_doc_ids = []
+        for doc in documents:
+            document_token += len(tokenizer.encode(doc))
+            doc_hash = hash(doc)
+            if doc_hash not in doc_hash_to_id:
+                doc_ids = rag.add_cache([doc]) # Record to get a doc_id ! not prefill just add list
+                doc_id = doc_ids[0]
+                doc_hash_to_id[doc_hash] = doc_id
+            else:
+                doc_id = doc_hash_to_id[doc_hash]
+            context_doc_ids.append(doc_id)
+        assert len(context_doc_ids) == len(documents), f"doc_ids: {len(doc_ids)}, document: {len(documents)}"
+        sum_tokens += document_token
+        doc_ids_by_prompt.append(context_doc_ids)
+        document_len_by_prompt.append(document_token)
+    logger.info(f"{len(doc_hash_to_id)} unique documents, sum tokens= {sum_tokens}")
+
+    # Generate input requests.
+    input_requests = []
+    max_len = 0
+    for row, prompt_doc_ids, document_len in zip(blockbench_dataset.rows, doc_ids_by_prompt, document_len_by_prompt):
+        prompt = row.instruction
+        prompt_len = len(tokenizer.encode(prompt))
+        output_len = args.blockbench_out_seq_len
+        input_requests.append(
+            RAGRequest(
+                prompt=prompt,
+                prompt_len=prompt_len,
+                output_len=output_len,
+                document_len=document_len,
+                documents=prompt_doc_ids,
+                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, 
+                                               temperature=0, seed=42, min_tokens=output_len),
+                ground_truth=row.answers,
+            )
+        )
+        max_len = max(max_len, prompt_len + document_len)
+    logger.info(f"max_len= {max_len} tokens")
+    return input_requests
+
+
 def sample_longbench_requests(
     args: longbench.LongBenchArgs,
     rag: RAG,
@@ -365,132 +424,6 @@ def sample_longbench_requests(
         )
         max_len = max(max_len, prompt_len + document_len)
     logger.info(f"max_len= {max_len} tokens")
-    return input_requests
-
-def sample_2wikimqa_block_requests(
-    args,
-    rag,
-    tokenizer: PreTrainedTokenizerBase,
-) -> List:
-    
-    jsonl_path = '/u/mpamnani/vllm/lazy/scripts/block-attn-bench-datahub/processed_data/2wiki_eval/dataset'
-    data = []
-    with open(jsonl_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            if line.strip():
-                data.append(json.loads(line))
-
-    logger.info(f"Loaded {len(data)} 2WikiMultiHopQA prompts")
-
-    doc_hash_to_id: Dict[int, str] = {}
-    doc_ids_by_prompt: List[List[str]] = []
-    document_len_by_prompt: List[int] = []
-    ground_truths: List[str] = []
-    sum_tokens = 0
-
-    for sample in data:
-        doc_ids = []
-        doc_token_count = 0
-        ground_truth = sample["answers"]
-        ground_truths.append(ground_truth)
-        for doc in sample["documents"]:
-            doc_str = f"Title: {doc['title']}\n{doc['text'].strip()}"
-            doc_hash = hash(doc_str)
-            if doc_hash not in doc_hash_to_id:
-                new_ids = rag.add_cache([doc_str])
-                assert len(new_ids) == 1
-                doc_hash_to_id[doc_hash] = new_ids[0]
-                doc_token_count += len(tokenizer.encode(doc_str))
-            doc_ids.append(doc_hash_to_id[doc_hash])
-        doc_ids_by_prompt.append(doc_ids)
-        document_len_by_prompt.append(doc_token_count)
-        sum_tokens += doc_token_count
-    logger.info(f"{len(doc_hash_to_id)} unique documents, sum tokens={sum_tokens}")
-
-    input_requests = []
-    max_len = 0
-    for sample, prompt_doc_ids, document_len, ground_truth in zip(data, doc_ids_by_prompt, document_len_by_prompt, ground_truths):
-        prompt = sample["question"]
-        prompt_len = len(tokenizer.encode(prompt))
-        output_len = 32 # args.longbench_out_seq_len
-        input_requests.append(
-            RAGRequest(
-                prompt=prompt,
-                prompt_len=prompt_len,
-                output_len=output_len,
-                document_len=document_len,
-                documents=prompt_doc_ids,
-                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, 
-                                               temperature=0, seed=42, min_tokens=output_len),
-                ground_truth=ground_truth,
-            )
-        )
-        max_len = max(max_len, prompt_len + document_len)
-    logger.info(f"max_len= {max_len} tokens")
-
-    return input_requests
-
-def sample_hotpotqa_block_requests(
-    args,
-    rag,
-    tokenizer: PreTrainedTokenizerBase,
-) -> List:
-    
-    jsonl_path = '/u/mpamnani/vllm/lazy/scripts/block-attn-bench-datahub/processed_data/hqa_eval/dataset'
-    data = []
-    with open(jsonl_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            if line.strip():
-                data.append(json.loads(line))
-
-    logger.info(f"Loaded {len(data)} HotpotQA prompts")
-
-    doc_hash_to_id: Dict[int, str] = {}
-    doc_ids_by_prompt: List[List[str]] = []
-    document_len_by_prompt: List[int] = []
-    ground_truths: List[str] = []
-    sum_tokens = 0
-
-    for sample in data:
-        doc_ids = []
-        doc_token_count = 0
-        ground_truth = sample["answers"]
-        ground_truths.append(ground_truth)
-        for doc in sample["documents"]:
-            doc_str = f"Title: {doc['title']}\n{doc['text'].strip()}"
-            doc_hash = hash(doc_str)
-            if doc_hash not in doc_hash_to_id:
-                new_ids = rag.add_cache([doc_str])
-                assert len(new_ids) == 1
-                doc_hash_to_id[doc_hash] = new_ids[0]
-                doc_token_count += len(tokenizer.encode(doc_str))
-            doc_ids.append(doc_hash_to_id[doc_hash])
-        doc_ids_by_prompt.append(doc_ids)
-        document_len_by_prompt.append(doc_token_count)
-        sum_tokens += doc_token_count
-    logger.info(f"{len(doc_hash_to_id)} unique documents, sum tokens={sum_tokens}")
-
-    input_requests = []
-    max_len = 0
-    for sample, prompt_doc_ids, document_len, ground_truth in zip(data, doc_ids_by_prompt, document_len_by_prompt, ground_truths):
-        prompt = sample["question"]
-        prompt_len = len(tokenizer.encode(prompt))
-        output_len = 32 # args.longbench_out_seq_len
-        input_requests.append(
-            RAGRequest(
-                prompt=prompt,
-                prompt_len=prompt_len,
-                output_len=output_len,
-                document_len=document_len,
-                documents=prompt_doc_ids,
-                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, 
-                                               temperature=0, seed=42, min_tokens=output_len),
-                ground_truth=ground_truth
-            )
-        )
-        max_len = max(max_len, prompt_len + document_len)
-    logger.info(f"max_len= {max_len} tokens")
-
     return input_requests
 
 def sample_2wikimqa_cacheblend_requests(
@@ -674,6 +607,43 @@ def sample_musique_cacheblend_requests(
     return input_requests
 
 
+async def get_block_request(
+    input_requests: List[RAGRequest],
+    request_rate: float,
+    sample_requests: Optional[int],
+    request_sampling_method: SamplingMethod = "uniform",
+    request_zipf_param: float = 1.5,
+    sample_documents: Optional[int] = None,
+    document_sampling_method: SamplingMethod = "uniform",
+    document_zipf_param: float = 1.5,
+    seed: int = 1111,
+) -> AsyncGenerator[Tuple[int, RAGRequest], None]:
+    request_ids = list(range(len(input_requests)))
+    rng = np.random.default_rng(seed=seed)
+    if sample_requests is not None:
+        request_ids = sample_elems(
+            rng=rng,
+            num_elems=len(input_requests),
+            num_sample_elems=sample_requests,
+            elem_sampling_method=request_sampling_method,
+            zipf_param=request_zipf_param,
+        )
+
+    logger.info(f"{request_ids=}")
+    for request_id in request_ids:
+        request = input_requests[request_id]
+        yield int(request_id), request
+
+        if request_rate == float("inf"):
+            # If the request rate is infinity, then we don't need to wait.
+            continue
+
+        # Sample the request interval from the exponential distribution.
+        interval = np.random.exponential(1.0 / request_rate)
+        # The next request will be sent after the interval.
+        await asyncio.sleep(interval)
+
+
 async def get_request(
     input_requests: List[RAGRequest],
     request_rate: float,
@@ -725,8 +695,7 @@ async def rag_request_func(
 ) -> RAGRequestFuncOutput:
     output = RAGRequestFuncOutput()
     output.prompt_len = request_func_input.request.prompt_len
-    # before generating, check if the documents are cached
-    # logger.info(f"num docs: {len(request_func_input.request.documents)}")
+    # before generating, make sure all documents are added to the cache
     await request_func_input.rag.add_doc_async(request_func_input.rag._last_request_id, 
                                                 request_func_input.request.documents)
     generated_texts: List[str] = []
@@ -891,7 +860,9 @@ async def benchmark(
     sample_documents: Optional[int] = None,
     document_sampling_method: SamplingMethod = "uniform",
     document_zipf_param: float = 1.5,
+    is_block_dataset: bool = False,
 ):
+    global get_request
     if backend in ASYNC_REQUEST_FUNCS:
         request_func = ASYNC_REQUEST_FUNCS[backend]
     else:
@@ -932,6 +903,11 @@ async def benchmark(
     benchmark_start_time = time.perf_counter()
     input_request_ids: List[int] = []
     tasks: List[asyncio.Task] = []
+
+    if is_block_dataset:
+        get_request = get_block_request
+        logger.info("Using block dataset request sampler, which does not sample documents.")
+    
     async_request = get_request(
         input_requests,
         request_rate,
@@ -970,21 +946,11 @@ async def benchmark(
     # EM
     ground_truth = [input_requests[i].ground_truth for i in input_request_ids]
     generated_res = [output.generated_text for output in outputs]
-    def compute_exact(list_a, list_b):
-        match_count = 0
-        for a, b in zip(list_a, list_b):
-            if isinstance(a, list):
-                for a_s in a:
-                    if a_s == b or a_s in b:
-                        match_count += 1
-                        break
-            else:
-                # if a is substring of b, count as match
-                if a == b or a in b:
-                    match_count += 1
-        return match_count / len(list_a) if len(list_a) > 0 else 0.0
-    em_score = compute_exact(ground_truth, generated_res)
-
+    acc_em = 0
+    for gen, gt in zip(generated_res, ground_truth):
+        # print(f"Gen: {gen}, GT: {gt}")
+        acc_em += blockbench.qa_em_score(gen, gt)
+    em_score = acc_em / len(generated_res)
     benchmark_result_strs = [
         "",
         "{s:{c}^{n}}".format(s=" Serving Benchmark Result ", n=50, c="="),
@@ -1126,16 +1092,12 @@ def load_dataset(
             rag=rag,
             tokenizer=tokenizer,
         )
-    elif args.dataset_name == "2wikimqa_block":
-        return sample_2wikimqa_block_requests(args=args,
-                                        rag=rag, 
-                                        tokenizer=tokenizer,
-                                       )
-    elif args.dataset_name == "hotpotqa_block":
-        return sample_hotpotqa_block_requests(args=args,
-                                        rag=rag, 
-                                        tokenizer=tokenizer,
-                                        )
+    elif args.dataset_name == "blockbench":
+        return sample_block_attn_bench_requests(
+            args=args.blockbench,
+            rag=rag,
+            tokenizer=tokenizer,
+        )
     elif args.dataset_name == "2wikimqa_cacheblend":
         return sample_2wikimqa_cacheblend_requests(args=args,
                                         rag=rag, 
@@ -1190,6 +1152,7 @@ def main(args: argparse.Namespace):
             sample_documents=args.sample_documents,
             document_sampling_method=args.document_sampling_method,
             document_zipf_param=args.document_zipf_param,
+            is_block_dataset=args.dataset_name == "blockbench"
         )
     )
 
@@ -1249,7 +1212,7 @@ if __name__ == "__main__":
         "--dataset-name",
         type=str,
         default="random",
-        choices=["random", "chatragbench", "longbench","2wikimqa_block", "hotpotqa_block", "2wikimqa_cacheblend", "samsum_cacheblend", "musique_cacheblend"],
+        choices=["random", "chatragbench", "longbench","blockbench"],
         help="Name of the dataset to benchmark on.",
     )
     parser.add_argument(
@@ -1280,7 +1243,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--sample-requests",
         type=int,
-        default=1,
+        default=None,
         help="IF set, randomly sample this many requests with replacement to test.",
     )
     parser.add_argument(
@@ -1442,6 +1405,7 @@ if __name__ == "__main__":
     parser.add_arguments(RAGArgs, "rag")
     parser.add_arguments(chatragbench.ChatRAGBenchArgs, "chatragbench")
     parser.add_arguments(longbench.LongBenchArgs, "longbench")
+    parser.add_arguments(blockbench.BlockBenchArgs, "blockbench")
 
     args = parser.parse_args()
     main(args)

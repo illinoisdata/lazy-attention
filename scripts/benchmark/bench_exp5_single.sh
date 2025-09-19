@@ -28,11 +28,10 @@ echo "      sut_args=\"${sut_args}\""
 echo "      datakey=${datakey}, dataargs=\"${dataargs}\""
 sleep 2
 
+# No request rate limit for exp5
 prepare_sut ${SUT}
 python benchmarks/benchmark_rag_serving.py \
-    --exp exp1_${SUT}_${DATANAME} \
-    --sample-requests 200 \
-    --request-rate 1 \
+    --exp exp5_${SUT}_${DATANAME} \
     ${dataargs} \
     ${sut_args} \
     ${EXTRA_ARGS}

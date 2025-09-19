@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name="exp1_lazy_bench"
+#SBATCH --job-name="exp1_baseline_bench"
 #SBATCH --account=bdjx-dtai-gh
 #SBATCH --partition=ghx4
 #SBATCH --time=12:00:00
 #SBATCH --gpus-per-node=1
 #SBATCH --mem=110G
 #SBATCH --cpus-per-task=72
-#SBATCH --output=slurm/exp1_lazy_bench_%j.out
-#SBATCH --error=slurm/exp1_lazy_bench_%j.err
+#SBATCH --output=slurm/exp1_baseline_bench_%j.out
+#SBATCH --error=slurm/exp1_baseline_bench_%j.err
 
 
 # Description of exp 1:
@@ -36,6 +36,6 @@ cd /projects/bdjx/${USER}/gh/lazy-attention
 export VLLM_LOGGING_LEVEL=INFO
 
 export output=log_${USER}.txt;
-echo "@@@@@@@@@@@@" >> $output; (bash scripts/benchmark/bench_exp1.sh lazyrag blk_nq,blk_hqa) 2>& 1 | tee -a $output; unset output
+echo "@@@@@@@@@@@@" >> $output; (bash scripts/benchmark/bench_exp1.sh baseline blk_nq,blk_hqa) 2>& 1 | tee -a $output; unset output
 
 # baseline blk_2wiki,blk_tqa

@@ -148,9 +148,9 @@ if __name__ == '__main__':
     if llama3_tokenizer.chat_template is None:
         llama3_tokenizer.chat_template = "{% set loop_messages = messages %}{% for message in loop_messages %}{% set content = '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'+ message['content'] | trim + '<|eot_id|>' %}{% if loop.index0 == 0 %}{% set content = bos_token + content %}{% endif %}{{ content }}{% endfor %}{% if add_generation_prompt %}{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}{% endif %}"
 
-    process_file(
-        input_file=args.train_fp, output_file=os.path.join(args.output_dir, "tqa_train", "dataset"), num_samples=-1
-    )
+    # process_file(
+    #    input_file=args.train_fp, output_file=os.path.join(args.output_dir, "tqa_train", "dataset"), num_samples=-1
+    # )
     process_file(
         input_file=args.eval_fp, output_file=os.path.join(args.output_dir, "tqa_eval", "dataset"), num_samples=-1
     )

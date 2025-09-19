@@ -162,9 +162,18 @@ function get_data_args() {
     elif [[ $key == "repobench-p" ]]
     then
         data_args="--dataset-name longbench --longbench_dataset_name repobench-p"
-    elif [[ $key == "2wikimqa_block" ]]
+    elif [[ $key == "blk_2wiki" ]]
     then
-        data_args="--dataset-name 2wikimqa_block"
+        data_args="--dataset-name blockbench --blockbench_dataset_name 2wiki"
+    elif [[ $key == "blk_hqa" ]]
+    then
+        data_args="--dataset-name blockbench --blockbench_dataset_name hqa"
+    elif [[ $key == "blk_tqa" ]]
+    then
+        data_args="--dataset-name blockbench --blockbench_dataset_name tqa"
+    elif [[ $key == "blk_nq" ]]
+    then
+        data_args="--dataset-name blockbench --blockbench_dataset_name nq"
     elif [[ $key == "hotpotqa_block" ]]
     then
         data_args="--dataset-name hotpotqa_block"

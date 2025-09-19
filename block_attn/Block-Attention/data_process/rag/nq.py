@@ -68,7 +68,7 @@ def process_instance(ins: Dict[str, Any]) -> SFTDataInstance:
     return SFTDataInstance(
         prompt="",
         question=ins['question'],
-        answers=[ins['answer']],
+        answers=[ins['answers']],
         generated='',
         inputs=SFTDataInstanceInputs(input_ids=[], labels=[]),
         documents=documents[:10]

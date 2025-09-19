@@ -231,6 +231,7 @@ if __name__ == "__main__":
     parser.add_arguments(GradeAccuracyArgs, "grade")
     parser.add_arguments(chatragbench.ChatRAGBenchArgs, "chatragbench")
     parser.add_arguments(longbench.LongBenchArgs, "longbench")
+    parser.add_arguments(blockbench.BlockBenchArgs, "blockbench")
     args, unknown = parser.parse_known_args()
     if len(unknown) > 0:
         logger.warning(f"Unrecognized arguments: {unknown}")

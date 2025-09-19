@@ -384,15 +384,12 @@ class LLMRAG(RAG):
     ) -> AsyncGenerator[str, None]:
         # print(sampling_params)
         request_id = self._next_request_id()
-        preamble = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an intelligent AI assistant. Please answer questions based on the user's instructions. Below are some reference documents that may help you in answering the user's question.\n\n"
-        query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
         document = [self._docs[doc_id] for doc_id in doc_ids]
-        document = [preamble] + document
         if isinstance(document, str):
             context = document
         else:
-            context = "\n".join(document)
-        prompt = context + "\n\n" + query
+            context = "".join(document)
+        prompt = context + query
         
         latest_idx = 0
         async for generate_output in self._llm.generate(
@@ -1196,15 +1193,13 @@ class LazyRAG(RAG):
 
         request_id = self._next_request_id()
         latest_idx = 0
-        preamble = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an intelligent AI assistant. Please answer questions based on the user's instructions. Below are some reference documents that may help you in answering the user's question.\n\n"
         document = [self._docs[doc_id] for doc_id in doc_ids]
         if isinstance(document, str):
             document_seq = [document]
         else:
             document_seq = document
-        document_seq = [preamble] + document_seq
-        
-        query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
+
+        query = query
         async for generate_output in self._llm.generate(
             prompt=query,
             sampling_params=sampling_params,
@@ -1262,15 +1257,12 @@ class BaselineLazyRAG(RAG):
         position_ids: Optional[List[int]] = None,
     ) -> AsyncGenerator[str, None]:
         request_id = self._next_request_id()
-        preamble = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an intelligent AI assistant. Please answer questions based on the user's instructions. Below are some reference documents that may help you in answering the user's question.\n\n"
-        query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
         document = [self._docs[doc_id] for doc_id in doc_ids]
-        document = [preamble] + document
         if isinstance(document, str):
             context = document
         else:
-            context = "\n".join(document)
-        prompt = context + "\n\n" + query
+            context = "".join(document)
+        prompt = context + query
         latest_idx = 0
         async for generate_output in self._llm.generate(
             prompt=prompt,
@@ -1348,7 +1340,8 @@ def prepare_lmcache(async_engine_args: AsyncEngineArgs)-> None:
 
 
 def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
-    engine_args.max_model_len = 8192 * 8 * 2
+    torch.cuda.empty_cache()
+    engine_args.max_model_len = 8192 * 8
     # engine_args.compilation_config = None
     if args.rag_type == "parrot":
         return ParrotRAG()
