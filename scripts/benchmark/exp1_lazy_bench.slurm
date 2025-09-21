@@ -36,6 +36,6 @@ cd /projects/bdjx/${USER}/gh/lazy-attention
 export VLLM_LOGGING_LEVEL=INFO
 
 export output=log_${USER}.txt;
-echo "@@@@@@@@@@@@" >> $output; (bash scripts/benchmark/bench_exp1.sh lazyrag blk_nq,blk_hqa) 2>& 1 | tee -a $output; unset output
+echo "@@@@@@@@@@@@" >> $output; (bash scripts/benchmark/bench_exp1.sh lazyrag blk_2wiki) 2>& 1 | tee -a $output; unset output
 
 # baseline blk_2wiki,blk_tqa

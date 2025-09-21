@@ -31,7 +31,7 @@ sleep 2
 prepare_sut ${SUT}
 python benchmarks/benchmark_rag_serving.py \
     --exp exp1_${SUT}_${DATANAME} \
-    --sample-requests 200 \
+    --sample-requests 1 \
     --request-rate 1 \
     ${dataargs} \
     ${sut_args} \
