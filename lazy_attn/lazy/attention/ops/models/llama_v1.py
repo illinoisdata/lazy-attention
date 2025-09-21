@@ -25,7 +25,7 @@ def llama_cos_sin(
     high_freq_wavelen: tl.constexpr = ORIG_MAX_POSITION / HIGH_FACTOR
     half_head_size: tl.constexpr = HEAD_SIZE // 2
 
-    inv_freqs = 1.0 / libdevice.pow(BASE, 2 * (tl.arange(0, HEAD_SIZE) % half_head_size) / HEAD_SIZE)
+    inv_freqs = 1.0 / libdevice.pow(BASE, 2 * (tl.arange(0, HEAD_SIZE) % half_head_size) / HEAD_SIZE) # repeat twice
     wave_len = 2 * PI_VALUE / inv_freqs
 
     smooth = (ORIG_MAX_POSITION / wave_len - LOW_FACTOR

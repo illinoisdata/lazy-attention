@@ -5,9 +5,13 @@
 # We want to use the bigger gemm rather than the smaller one.
 # To see whether this is faster, we need to benchmark it.
 
+# Here the extra cost is only the loading of q twice, and extra load of cos/sin.
+
+
 import torch
 import triton
 import triton.language as tl
+from triton.language.extra import libdevice
 
 from vllm.platforms import current_platform
 
@@ -18,6 +22,47 @@ NUM_WARPS = 4 if current_platform.is_rocm() else 8
 # To check compatibility
 IS_TURING = current_platform.get_device_capability() == (7, 5)
 
+
+@triton.jit
+def llama_cos_sin(
+    position: tl.int32,
+    HEAD_SIZE: tl.constexpr,
+    ORIG_MAX_POSITION: tl.constexpr,
+    LOW_FACTOR: tl.constexpr,
+    HIGH_FACTOR: tl.constexpr,
+    SCALING_FACTOR: tl.constexpr,
+    PI_VALUE: tl.constexpr,
+    BASE: tl.constexpr,
+):
+    """Compute the rotary embedding cos and sin values for Llama 3.1."""
+    
+    low_freq_wavelen: tl.constexpr = ORIG_MAX_POSITION / LOW_FACTOR
+    high_freq_wavelen: tl.constexpr = ORIG_MAX_POSITION / HIGH_FACTOR
+    half_head_size: tl.constexpr = HEAD_SIZE // 2
+
+    inv_freqs = 1.0 / libdevice.pow(BASE, 2 * (tl.arange(0, HEAD_SIZE) % half_head_size) / HEAD_SIZE) # repeat twice
+    wave_len = 2 * PI_VALUE / inv_freqs
+
+    smooth = (ORIG_MAX_POSITION / wave_len - LOW_FACTOR
+                      ) / (HIGH_FACTOR - LOW_FACTOR)
+    # NOTE(haocheng): Llama 3.1 8B needs smooth, so we add it here. (not zero)
+
+    new_freqs = tl.where(
+        wave_len < high_freq_wavelen,
+            inv_freqs,
+            tl.where(
+                wave_len > low_freq_wavelen,
+                inv_freqs / SCALING_FACTOR,
+                (1 - smooth) * inv_freqs / SCALING_FACTOR +
+                smooth * inv_freqs,
+            ),
+        )
+    # tl.device_print("llama new_freqs:", new_freqs * 1000000)
+
+    theta = position * new_freqs
+    cos_val = libdevice.cos(theta)
+    sin_val = libdevice.sin(theta)
+    return cos_val, sin_val
 
 @triton.jit
 def _fwd_kernel(Q,
@@ -111,40 +156,32 @@ def _fwd_kernel(Q,
         offs_bs_n = tl.arange(0, BLOCK_SIZE)
         # [N]; starts at 0
         offs_n = tl.arange(0, BLOCK_N)
-        # [D]; starts at 0
+        # [D]; starts at 0 ~ D is 128 for tulu3
         offs_d = tl.arange(0, BLOCK_DMODEL_PADDED)
+        offs_d_rev = (tl.arange(0, BLOCK_DMODEL_PADDED) + 
+               (BLOCK_DMODEL_PADDED // 2)) % BLOCK_DMODEL_PADDED
         # [M]; starts at current position in query
         offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
-        # # [M,D]
-        # off_q = ((cur_batch_in_all_start_index + offs_m[:, None]) * stride_qbs +
-        #          cur_head * stride_qh + offs_d[None, :] * stride_qd)
+        # [M,D]
+        off_q = ((cur_batch_in_all_start_index + offs_m[:, None]) * stride_qbs +
+                 cur_head * stride_qh + offs_d[None, :] * stride_qd)
+        off_q_rev = ((cur_batch_in_all_start_index + offs_m[:, None]) * stride_qbs +
+                     cur_head * stride_qh + offs_d_rev[None, :] * stride_qd)
 
         dim_mask = tl.where(
             tl.arange(0, BLOCK_DMODEL_PADDED) < BLOCK_DMODEL, 1,
             0).to(tl.int1)  # [D]
-        
-        embed_dim: tl.constexpr = rotary_dim // 2
-        # embed_dim_pow2: tl.constexpr = rotary_dim_pow2 // 2
-        # Note(haocheng): assumption: BLOCK_DMODEL_PADDED = embed_dim_pow2
-        offs_d1 = tl.arange(0, BLOCK_DMODEL_PADDED // 2)
-        offs_d2 = offs_d1 + embed_dim
-        
-        dim_mask_half = tl.where(
-            offs_d1 < BLOCK_DMODEL // 2, 1,
-            0).to(tl.int1)  # [D//2]
-        
-        # [M,D//2]
-        off_q_1 = ((cur_batch_in_all_start_index + offs_m[:, None]) * stride_qbs +
-                cur_head * stride_qh + offs_d1[None, :] * stride_qd)
-        
-        q_1 = tl.load(Q + off_q_1,
-                    mask=dim_mask_half[None, :] &
+
+        q = tl.load(Q + off_q,
+                    mask=dim_mask[None, :] &
                     (offs_m[:, None] < cur_batch_query_len),
-                    other=0.0)  # [M,D//2]
-        q_2 = tl.load(Q + off_q_1 + embed_dim * stride_qd,
-                    mask=dim_mask_half[None, :] &
+                    other=0.0)  # [M,D]
+        q_rev = tl.load(Q + off_q_rev,
+                    mask=dim_mask[None, :] &
                     (offs_m[:, None] < cur_batch_query_len),
-                    other=0.0)  # [M,D//2]
+                    other=0.0)  # [M,D]
+        q_rotated = q # Use q as the default value for the rotated q
+        embed_dim: tl.constexpr = BLOCK_DMODEL // 2
 
         # initialize pointer to m and l
         m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
@@ -159,41 +196,22 @@ def _fwd_kernel(Q,
             bn = tl.load(B_Loc + cur_batch * stride_b_loc_b +
                         (start_n // BLOCK_SIZE) * stride_b_loc_s)
             
-            # tl.device_print("bn:", bn)
-            # ****************
-            # TODO(haocheng): check
-            # here we get M tokens in the query
-            # NUM_BLOCKS_OVER_Q: tl.constexpr = BLOCK_M // BLOCK_SIZE
-            # Q is [M,D//2]
-            abs_rot_pos = 0
-            # rot_sign = -1 # it is always -1 for neox style
+            # Prepare the lazy metadata
+            # First we load the q_offset, typically it is an array like [-3, 0, -30, 0, -1, 0, ]
+            # Here if one value is 0, it means no update is needed for this KV block, just use the q from previous steps
             rot_offset_val = tl.load(
                 q_offset_ptr + cur_batch * stride_b_loc_b +
                 (start_n // BLOCK_SIZE) * stride_b_loc_s)
-
-            if rot_offset_val != 0:
-                abs_rot_pos = -(rot_offset_val + 1)
-
-            positions = tl.full([BLOCK_M], abs_rot_pos, dtype=tl.int32)
-            # Then we need to rotate the query
-            # tl.device_print("rot_offset_val:", rot_offset_val)
-            off_cos = ((positions[:, None]) * rotary_dim +
-                    offs_d1[None,:])
-            cos_val = tl.load(cos_sin_cache + off_cos)
-            sin_val = tl.load(cos_sin_cache + off_cos + embed_dim) * (-1)
-            sin_val = sin_val.to(cos_val.dtype)
+            q_mask_val = tl.load(q_mask_ptr + cur_batch * stride_b_loc_b +
+                (start_n // BLOCK_SIZE) * stride_b_loc_s)
             
+            # Load KV as the full blocks
             # [D,BLOCK_SIZE]
-            off_k_1 = (
+            off_k = (
                 bn[None, :] * stride_k_cache_bs + cur_kv_head * stride_k_cache_h +
-                (offs_d1[:, None] // x) * stride_k_cache_d +
+                (offs_d[:, None] // x) * stride_k_cache_d +
                 ((start_n + offs_bs_n[None, :]) % BLOCK_SIZE) * stride_k_cache_bl +
-                (offs_d1[:, None] % x) * stride_k_cache_x)
-            off_k_2 = (
-                bn[None, :] * stride_k_cache_bs + cur_kv_head * stride_k_cache_h +
-                (offs_d2[:, None] // x) * stride_k_cache_d +
-                ((start_n + offs_bs_n[None, :]) % BLOCK_SIZE) * stride_k_cache_bl +
-                (offs_d2[:, None] % x) * stride_k_cache_x)
+                (offs_d[:, None] % x) * stride_k_cache_x)
 
             # [BLOCK_SIZE,D]
             off_v = (bn[:, None] * stride_v_cache_bs +
@@ -203,72 +221,49 @@ def _fwd_kernel(Q,
 
             if start_n + BLOCK_SIZE > cur_batch_ctx_len or \
                 BLOCK_DMODEL != BLOCK_DMODEL_PADDED:
-                # k_load = tl.load(
-                #     K_cache + off_k,
-                #     mask=dim_mask[:, None] &
-                #     ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
-                #     other=0.0)  # [D,N]
-                
-                k_load_1 = tl.load(
-                    K_cache + off_k_1,
-                    mask=dim_mask_half[:, None] &
+                k_load = tl.load(
+                    K_cache + off_k,
+                    mask=dim_mask[:, None] &
                     ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
                     other=0.0)  # [D,N]
-                k_load_2 = tl.load(
-                    K_cache + off_k_2,
-                    mask=dim_mask_half[:, None] &
-                    ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
-                    other=0.0)  # [D,N]
-                # cos_val = tl.load(cos_sin_cache + off_cos,
-                #     mask=dim_mask_half[:, None] &
-                #     ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
-                #     other=0.0)
-                # sin_val = tl.load(cos_sin_cache + off_cos + embed_dim, 
-                #     mask=dim_mask_half[:, None] &
-                #     ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
-                #     other=0.0)
             else:
-                # k_load = tl.load(K_cache + off_k)
-                k_load_1 = tl.load(K_cache + off_k_1)
-                k_load_2 = tl.load(K_cache + off_k_2)
-                
-                # cos_val = tl.load(cos_sin_cache + off_cos)
-                # sin_val = tl.load(cos_sin_cache + off_cos + embed_dim)
+                k_load = tl.load(K_cache + off_k)
 
-            # if k_load.dtype.is_fp8():
-            #     k = (k_load.to(tl.float32) * tl.load(k_scale)).to(q.dtype)
-            # else:
-            #     k = k_load
-                
-            if k_load_1.dtype.is_fp8():
-                k_1 = (k_load_1.to(tl.float32) * tl.load(k_scale)).to(q_1.dtype)
-                k_2 = (k_load_2.to(tl.float32) * tl.load(k_scale)).to(q_1.dtype)
+            if k_load.dtype.is_fp8():
+                k = (k_load.to(tl.float32) * tl.load(k_scale)).to(q.dtype)
             else:
-                k_1 = k_load_1
-                k_2 = k_load_2
-                
-            # fuse rotary embedding
-            qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)  # [M,N]
-            # qk_1 = tl.dot(q_1, (k_1 * cos_val - k_2 * sin_val), input_precision=IN_PRECISION)
-            # qk_2 = tl.dot(q_2, (k_1 * sin_val + k_2 * cos_val), input_precision=IN_PRECISION)
-            qk_1 = tl.dot((q_1*cos_val + q_2*sin_val), k_1, input_precision=IN_PRECISION)
-            qk_2 = tl.dot((q_2*cos_val - q_1*sin_val), k_2, input_precision=IN_PRECISION)
-            qk = qk_1 + qk_2
+                k = k_load
+
+            if rot_offset_val != 0:
+                abs_rot_pos = -(rot_offset_val + 1) # this means we need to rotate the q back by abs_rot_pos positions
             
-            # --------------------------------------------
-            # skip padded tokens
-            # --------------------------------------------
-            q_mask_val = tl.load(q_mask_ptr + cur_batch * stride_b_loc_b +
-                (start_n // BLOCK_SIZE) * stride_b_loc_s)
+                # Then we start to rotate the q
+                positions = tl.full([1], abs_rot_pos, dtype=tl.int32)
+                off_cos = ((positions[:, None]) * rotary_dim +
+                            (offs_d[None,:] % (BLOCK_DMODEL_PADDED // 2))) # repeat twice as well
+                cos_val = tl.load(cos_sin_cache + off_cos)
+                sin_val = tl.load(cos_sin_cache + off_cos + embed_dim)
+                
+                # mask_q1 = offs_d < BLOCK_DMODEL_PADDED // 2
+                # mask_q2 = ~mask_q1
+                # q1 = tl.where(mask_q1[None, :], q, q_rev) # q1 repeats twice
+                # q2 = tl.where(mask_q2[None, :], q, q_rev) # q2 repeats twice
+
+                # # Then we get the rotated q, by default we since the rotation direction is always -1
+                # q1_new = q1 # q1 * cos_val - q2 * sin_val
+                # q2_new = q2 # * sin_val + q2 * cos_val
+                
+                # q_rotated = tl.where(mask_q1[None, :], 
+                # q1_new.to(q_rotated.dtype), 
+                # q2_new.to(q_rotated.dtype))
+                
+            qk = tl.zeros([BLOCK_M, BLOCK_SIZE], dtype=tl.float32)  # [M,N]
+            qk = tl.dot(q_rotated, k, acc=qk, input_precision=IN_PRECISION)
             seq_bound = min(cur_batch_ctx_len, start_n + BLOCK_SIZE - q_mask_val)            
             qk = tl.where((start_n + offs_bs_n[None, :]) < seq_bound, qk,
                             float("-inf"))
-
-            # qk = tl.zeros([BLOCK_M, BLOCK_SIZE], dtype=tl.float32)  # [M,N]
-            # qk = tl.dot(q, k, acc=qk, input_precision=IN_PRECISION)
-            # qk = tl.where((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len, qk,
-            #               float("-inf"))
             qk *= sm_scale
+            
             if SLIDING_WINDOW > 0:
                 # (cur_batch_ctx_len + offs_m[:, None]) are the positions of
                 # Q entries in sequence
@@ -314,13 +309,11 @@ def _fwd_kernel(Q,
             l_i = l_i * alpha + l_ij
             m_i = m_ij
 
-        # -------------------------------------------------------------
-        # TODO(haocheng): for this we can further optimize, like q in a whole body
-        off_k_1 = (offs_n[None, :] * stride_kbs + cur_kv_head * stride_kh +
-                offs_d1[:, None] * stride_kd)
+        off_k = (offs_n[None, :] * stride_kbs + cur_kv_head * stride_kh +
+                offs_d[:, None] * stride_kd)
         off_v = (offs_n[:, None] * stride_vbs + cur_kv_head * stride_vh +
                 offs_d[None, :] * stride_vd)
-        k_ptrs_1 = K + off_k_1
+        k_ptrs = K + off_k
         v_ptrs = V + off_v
 
         # block_mask is 0 when we're already past the current query length
@@ -332,23 +325,14 @@ def _fwd_kernel(Q,
                             loop_unroll_factor=num_unroll_request):
             start_n = tl.multiple_of(start_n, BLOCK_N)
             # -- compute qk ----
-            k_1 = tl.load(k_ptrs_1 +
+            k = tl.load(k_ptrs +
                         (cur_batch_in_all_start_index + start_n) * stride_kbs,
-                        mask=dim_mask_half[:, None] &
-                        ((start_n + offs_n[None, :]) < cur_batch_query_len),
-                        other=0.0)
-            k_2 = tl.load(k_ptrs_1 + embed_dim * stride_kd +
-                        (cur_batch_in_all_start_index + start_n) * stride_kbs,
-                        mask=dim_mask_half[:, None] &
+                        mask=dim_mask[:, None] &
                         ((start_n + offs_n[None, :]) < cur_batch_query_len),
                         other=0.0)
 
-            qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)     
-            qk = tl.dot(q_1, k_1, acc=qk, input_precision=IN_PRECISION)
-            qk = tl.dot(q_2, k_2, acc=qk, input_precision=IN_PRECISION)
-
-            # qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
-            # qk = tl.dot(q, k, acc=qk, input_precision=IN_PRECISION)
+            qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+            qk = tl.dot(q, k, acc=qk, input_precision=IN_PRECISION)
             qk *= sm_scale
             # apply causal mask
             qk = tl.where(offs_m[:, None] >= (start_n + offs_n[None, :]), qk,

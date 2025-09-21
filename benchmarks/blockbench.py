@@ -23,7 +23,7 @@ DATASET_NAMES = [
 class BlockBenchArgs:
     blockbench_dataset_name: str = "nq"  # BlockBench dataset name.
     # We set to 200 to align the BlockAttention paper setting.
-    blockbench_out_seq_len: int = 1  # Output sequence length.
+    blockbench_out_seq_len: int = 10  # Output sequence length.
 
 Document = TypedDict("Document", {"title": str, "text": str, "score": float})
 
