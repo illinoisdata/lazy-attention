@@ -184,18 +184,13 @@ def _fwd_kernel(Q,
                 (start_n // BLOCK_SIZE) * stride_b_loc_s)
 
             if rot_offset_val != 0:
-                abs_rot_pos = -(rot_offset_val + 1)
+                abs_rot_pos = -(rot_offset_val + 1) # non negative now
 
-            positions = tl.full([BLOCK_SIZE], abs_rot_pos, dtype=tl.int32)
-            # Then we need to rotate the query
-            # tl.device_print("rot_offset_val:", rot_offset_val)
-            # off_cos = ((positions[:, None]) * rotary_dim +
-            #         offs_d1[None,:])
+            positions = tl.full([1], abs_rot_pos, dtype=tl.int32)
             off_cos = ((positions[None,:]) * rotary_dim +
                     offs_d1[:,None])
             cos_val = tl.load(cos_sin_cache + off_cos)
-            sin_val = tl.load(cos_sin_cache + off_cos + embed_dim) # * (-1)
-            # sin_val = sin_val.to(cos_val.dtype)
+            sin_val = tl.load(cos_sin_cache + off_cos + embed_dim)
             
             # [D,BLOCK_SIZE]
             off_k_1 = (
@@ -233,21 +228,10 @@ def _fwd_kernel(Q,
                     mask=dim_mask_half[:, None] &
                     ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
                     other=0.0)  # [D,N]
-                # cos_val = tl.load(cos_sin_cache + off_cos,
-                #     mask=dim_mask_half[:, None] &
-                #     ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
-                #     other=0.0)
-                # sin_val = tl.load(cos_sin_cache + off_cos + embed_dim, 
-                #     mask=dim_mask_half[:, None] &
-                #     ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
-                #     other=0.0)
             else:
                 # k_load = tl.load(K_cache + off_k)
                 k_load_1 = tl.load(K_cache + off_k_1)
                 k_load_2 = tl.load(K_cache + off_k_2)
-                
-                # cos_val = tl.load(cos_sin_cache + off_cos)
-                # sin_val = tl.load(cos_sin_cache + off_cos + embed_dim)
 
             # if k_load.dtype.is_fp8():
             #     k = (k_load.to(tl.float32) * tl.load(k_scale)).to(q.dtype)
@@ -261,7 +245,7 @@ def _fwd_kernel(Q,
                 k_1 = k_load_1
                 k_2 = k_load_2
                 
-            # fuse rotary embedding
+            # K rotate forward
             qk = tl.zeros([BLOCK_M, BLOCK_SIZE], dtype=tl.float32)  # [M,N]
             rot_k1 = k_1 * cos_val - k_2 * sin_val
             qk += tl.dot(q_1, rot_k1, input_precision=IN_PRECISION)
@@ -273,20 +257,6 @@ def _fwd_kernel(Q,
             # qk += tl.dot(q_1, k_2 * (-sin_val), input_precision=IN_PRECISION)
             # qk += tl.dot(q_2, k_1 * sin_val, input_precision=IN_PRECISION)
             # qk += tl.dot(q_2, k_2 * cos_val, input_precision=IN_PRECISION)
-            #        prod_1 = q_1 * k_1 * cos_val         # q_1 * (k_1 * cos)
-            #        prod_2 = -q_1 * k_2 * sin_val        # q_1 * (- k_2 * sin)
-            #        prod_3 = q_2 * k_1 * sin_val         # q_2 * (k_1 * sin)
-            #        prod_4 = q_2 * k_2 * cos_val         # q_2 * (k_2 * cos)
-
-            # # sum all contributions
-            # qk_tile = prod_1 + prod_2 + prod_3 + prod_4
-
-            # # reduce over BLOCK_K to get final dot result
-            # qk = tl.sum(qk_tile, 0)
-            
-            # qk_1 = tl.dot((q_1*cos_val + q_2*sin_val), k_1, input_precision=IN_PRECISION)
-            # qk_2 = tl.dot((q_2*cos_val - q_1*sin_val), k_2, input_precision=IN_PRECISION)
-            # qk = qk_1 + qk_2
             
             # --------------------------------------------
             # skip padded tokens

@@ -222,7 +222,7 @@ def kernel_paged_attention_2d_llama(
 
             if rot_offset_val != 0:
                 # Only rotate when necessary
-                cos_val, sin_val = llama_cos_sin(rot_offset_val + 1,
+                cos_val, sin_val = llama_cos_sin(-(rot_offset_val + 1),
                                                  HEAD_SIZE=HEAD_SIZE,
                                                  ORIG_MAX_POSITION=8192,
                                                  LOW_FACTOR=1.0,
@@ -237,8 +237,8 @@ def kernel_paged_attention_2d_llama(
                 q1 = tl.where(mask_q1[None, :], Q_full, Q_rev)
                 q2 = tl.where(mask_q1[None, :], Q_rev, Q_full)
 
-                q1_new = q1 * cos_val - q2 * sin_val
-                q2_new = q1 * sin_val + q2 * cos_val
+                q1_new = q1 * cos_val + q2 * sin_val
+                q2_new = -q1 * sin_val + q2 * cos_val
 
                 # Restore the full Q_rotated
                 Q_rotated = tl.where(mask_q1[None, :], 

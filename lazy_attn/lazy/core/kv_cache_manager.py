@@ -210,12 +210,12 @@ class LazyKVCacheManager(KVCacheManager):
         num_required_blocks = cdiv(
             num_computed_tokens + num_tokens + num_lookahead_tokens,
             self.block_size)
-        logger.info(f"Request {request.request_id} has "
-                     f"{num_computed_tokens} computed tokens, "
-                     f"{num_tokens} new tokens, "
-                     f"{len(new_computed_blocks)} new computed blocks, "
-                     f"{num_lookahead_tokens} lookahead tokens, "
-                     f"and requires {num_required_blocks} blocks.")
+        # logger.info(f"Request {request.request_id} has "
+        #              f"{num_computed_tokens} computed tokens, "
+        #              f"{num_tokens} new tokens, "
+        #              f"{len(new_computed_blocks)} new computed blocks, "
+        #              f"{num_lookahead_tokens} lookahead tokens, "
+        #              f"and requires {num_required_blocks} blocks.")
         
         num_new_blocks = (num_required_blocks - len(req_blocks) -
                           len(new_computed_blocks))
@@ -252,7 +252,7 @@ class LazyKVCacheManager(KVCacheManager):
             # preallocated blocks.
             block_table_limit = self.max_num_blocks_per_req - len(req_blocks)
 
-            logger.info(f"!!! {self.block_pool.get_num_free_blocks()} free blocks")
+            # logger.info(f"!!! {self.block_pool.get_num_free_blocks()} free blocks")
             num_new_blocks = min(
                 num_new_blocks,
                 self.block_pool.get_num_free_blocks(),
@@ -281,13 +281,13 @@ class LazyKVCacheManager(KVCacheManager):
             request.spec_token_ids)) // self.block_size
 
         
-        logger.info(f"Request {request.request_id} has "
-                    f"{num_cached_blocks} cached blocks, "
-                    f"{len(new_computed_blocks)} new computed blocks, "
-                    f"and {len(new_blocks)} new blocks allocated, "
-                    f"and will have {num_full_blocks_after_append} full blocks after appending "
-                    f"the new tokens (excluding {len(request.spec_token_ids)} "
-                    f"speculated tokens).")
+        # logger.info(f"Request {request.request_id} has "
+        #             f"{num_cached_blocks} cached blocks, "
+        #             f"{len(new_computed_blocks)} new computed blocks, "
+        #             f"and {len(new_blocks)} new blocks allocated, "
+        #             f"and will have {num_full_blocks_after_append} full blocks after appending "
+        #             f"the new tokens (excluding {len(request.spec_token_ids)} "
+        #             f"speculated tokens).")
         self.block_pool.cache_full_blocks(
             request=request,
             blocks=req_blocks,
