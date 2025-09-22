@@ -643,6 +643,36 @@ async def get_block_request(
         # The next request will be sent after the interval.
         await asyncio.sleep(interval)
 
+# ---------------------------
+def sample_ablation_requests(
+    args: chatragbench.ChatRAGBenchArgs,
+    rag: RAG,
+    tokenizer: PreTrainedTokenizerBase,
+) -> List[RAGRequest]:
+
+    sample_requests = args.sample_requests
+
+    text = "Hello, my name is ChatGPT. I am here to help you. " * 10
+    ids = tokenizer.encode(text, max_length=100, truncation=True)
+    decoded = tokenizer.decode(ids)
+    query = decoded  # Get a 100 token query
+
+    return sample_random_requests(
+        rag=rag,
+        prefix_len=prefix_len,
+        input_len=input_len,
+        output_len=output_len,
+        document_len=document_len,
+        num_prompts=num_prompts,
+        num_documents=num_documents,
+        num_documents_per_prompt=num_documents_per_prompt,
+        range_ratio=range_ratio,
+        tokenizer=tokenizer,
+        seed=seed,
+    )
+
+
+# ---------------------------
 
 async def get_request(
     input_requests: List[RAGRequest],
