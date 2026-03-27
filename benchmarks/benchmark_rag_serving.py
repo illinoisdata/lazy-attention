@@ -645,31 +645,82 @@ async def get_block_request(
 
 # ---------------------------
 def sample_ablation_requests(
-    args: chatragbench.ChatRAGBenchArgs,
+    args, # full args
     rag: RAG,
     tokenizer: PreTrainedTokenizerBase,
 ) -> List[RAGRequest]:
 
-    sample_requests = args.sample_requests
+    ablation_reqs = args.ablation_reqs
+    doc_per_request = args.doc_per_request
+    # sum_document_len = args.document_len # it is a sum of all documents
+    # document_len = sum_document_len // doc_per_request
+    document_len = args.document_len # it is per document len
 
-    text = "Hello, my name is ChatGPT. I am here to help you. " * 10
-    ids = tokenizer.encode(text, max_length=100, truncation=True)
+    text = "Hello, my name is ChatGPT. I am here to help you. " * 15
+    ids = tokenizer.encode(text, max_length=64, truncation=True) # 64
     decoded = tokenizer.decode(ids)
-    query = decoded  # Get a 100 token query
+    query = decoded  # Get a 16 token query
 
-    return sample_random_requests(
-        rag=rag,
-        prefix_len=prefix_len,
-        input_len=input_len,
-        output_len=output_len,
-        document_len=document_len,
-        num_prompts=num_prompts,
-        num_documents=num_documents,
-        num_documents_per_prompt=num_documents_per_prompt,
-        range_ratio=range_ratio,
-        tokenizer=tokenizer,
-        seed=seed,
-    )
+    all_documents = []
+    for i in range(ablation_reqs):
+        document = []
+        for j in range(doc_per_request):
+            text = f"This is document {j} for req {i}. " * (document_len // 5)
+            ids = tokenizer.encode(text, max_length=document_len, truncation=True)
+            doc = tokenizer.decode(ids)
+            document.append(doc)
+        all_documents.append(document)
+
+    doc_hash_to_id: Dict[int, DocumentId] = {}
+    doc_ids_by_prompt: List[List[DocumentId]] = []
+    document_len_by_prompt: List[int] = []
+    sum_tokens: int = 0
+    for i in range(ablation_reqs):
+        document = all_documents[i]  # One document per LongBench prompt.
+        # make sure is list
+        if isinstance(document, str):
+            document = [document]
+            
+        # print(f"Document: {document}")
+        document_token = 0
+        context_doc_ids = []
+        for doc in document:
+            document_token += len(tokenizer.encode(doc))
+            doc_hash = hash(doc)
+            if doc_hash not in doc_hash_to_id:
+                doc_ids = rag.add_cache([doc])
+                doc_id = doc_ids[0]
+                doc_hash_to_id[doc_hash] = doc_id
+            else:
+                doc_id = doc_hash_to_id[doc_hash]
+            context_doc_ids.append(doc_id)
+        assert len(context_doc_ids) == len(document), f"doc_ids: {len(doc_ids)}, document: {len(document)}"
+        sum_tokens += document_token
+        doc_ids_by_prompt.append(context_doc_ids)
+        document_len_by_prompt.append(document_token)
+    logger.info(f"{len(doc_hash_to_id)} unique documents, sum tokens= {sum_tokens}")
+    # Generate input requests.
+    input_requests = []
+    max_len = 0
+    for prompt_doc_ids, document_len in zip(doc_ids_by_prompt, document_len_by_prompt):
+        prompt = query
+        prompt_len = len(tokenizer.encode(prompt))
+        output_len = 128
+        input_requests.append(
+            RAGRequest(
+                prompt=prompt,
+                prompt_len=prompt_len,
+                output_len=output_len,
+                document_len=document_len,
+                documents=prompt_doc_ids,
+                sampling_params=SamplingParams(max_tokens=output_len, ignore_eos=True, 
+                                               temperature=0, seed=42, min_tokens=output_len),
+                ground_truth=["placeholder"],
+            )
+        )
+        max_len = max(max_len, prompt_len + document_len)
+    logger.info(f"max_len= {max_len} tokens, sampled {len(input_requests)} requests")
+    return input_requests
 
 
 # ---------------------------
@@ -898,20 +949,21 @@ async def benchmark(
     else:
         raise ValueError(f"Unknown backend: {backend}")
 
-    logger.info("Starting initial single prompt test run...")
-    test_request = input_requests[0]
-    test_input = RAGRequestFuncInput(
-        rag=rag,
-        request=test_request,
-    )
-    test_output = await request_func(request_func_input=test_input)
-    if not test_output.success:
-        raise ValueError(
-            "Initial test run failed - Please make sure benchmark arguments "
-            f"are correctly specified. Error: {test_output.error}"
-        )
-    else:
-        logger.info("Initial test run completed. Starting main benchmark run...")
+    # NOTE(haocheng): we should not run it for ablation study as all the requests are the same
+    # logger.info("Starting initial single prompt test run...")
+    # test_request = input_requests[0]
+    # test_input = RAGRequestFuncInput(
+    #     rag=rag,
+    #     request=test_request,
+    # )
+    # test_output = await request_func(request_func_input=test_input)
+    # if not test_output.success:
+    #     raise ValueError(
+    #         "Initial test run failed - Please make sure benchmark arguments "
+    #         f"are correctly specified. Error: {test_output.error}"
+    #     )
+    # else:
+    #     logger.info("Initial test run completed. Starting main benchmark run...")
 
     logger.info(f"Traffic request rate: {request_rate}")
     logger.info(f"Maximum request concurrency: {max_concurrency}")
@@ -1128,6 +1180,12 @@ def load_dataset(
             rag=rag,
             tokenizer=tokenizer,
         )
+    elif args.dataset_name == "ablation":
+        return sample_ablation_requests(
+            args=args,
+            rag=rag,
+            tokenizer=tokenizer,
+        )
     elif args.dataset_name == "2wikimqa_cacheblend":
         return sample_2wikimqa_cacheblend_requests(args=args,
                                         rag=rag, 
@@ -1242,7 +1300,7 @@ if __name__ == "__main__":
         "--dataset-name",
         type=str,
         default="random",
-        choices=["random", "chatragbench", "longbench","blockbench"],
+        choices=["random", "chatragbench", "longbench","blockbench", "ablation"],
         help="Name of the dataset to benchmark on.",
     )
     parser.add_argument(
@@ -1277,6 +1335,24 @@ if __name__ == "__main__":
         help="IF set, randomly sample this many requests with replacement to test.",
     )
     parser.add_argument(
+        "--ablation-reqs",
+        type=int,
+        default=100,
+        help="Number of requests to use for ablation study.",
+    )
+    parser.add_argument(
+        "--document-len",
+        type=int,
+        default=512,
+        help="Number of tokens per document (ablation only).",
+    )
+    parser.add_argument(
+        "--doc-per-request",
+        type=int,
+        default=1,
+        help="Number of documents to retrieve per request (ablation only).",
+    )
+    parser.add_argument(
         "--request-rate",
         type=float,
         default=float("inf"),
@@ -1300,7 +1376,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--sample-documents",
         type=int,
-        default=200,
+        default=None,
         help="IF set, randomly sample this many document with replacement to test.",
     )
     parser.add_argument(

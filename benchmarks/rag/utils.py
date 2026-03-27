@@ -97,4 +97,9 @@ def merge_and_rotary_past_key_values(pkvs: List[DynamicCache], emb: LlamaRotaryE
             dim=-2
         )
     cache = apply_pkv_rotary_position_embeddings(pkv=cache, emb=emb)
+    
+    # 【关键修复】：设置 _seen_tokens 让 transformers 知道缓存的序列长度
+    # 这样 transformers 可以正确推断 cache_position
+    cache._seen_tokens = cache.key_cache[0].shape[-2]
+    
     return cache

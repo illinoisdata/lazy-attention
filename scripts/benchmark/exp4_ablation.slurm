@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name="exp5_lazy_bench"
+#SBATCH --job-name="exp4_ablation"
 #SBATCH --account=bdjx-dtai-gh
 #SBATCH --partition=ghx4
-#SBATCH --time=12:00:00
+#SBATCH --time=00:20:00
 #SBATCH --gpus-per-node=1
 #SBATCH --mem=110G
 #SBATCH --cpus-per-task=72
-#SBATCH --output=slurm/exp5_lazy_bench_%j.out
-#SBATCH --error=slurm/exp5_lazy_bench_%j.err
+#SBATCH --output=slurm/exp4_ablation_%j.out
+#SBATCH --error=slurm/exp4_ablation_%j.err
 
 
 # Description of exp 5:
@@ -35,7 +35,18 @@ module load cuda/12.4.0
 cd /projects/bdjx/${USER}/gh/lazy-attention
 export VLLM_LOGGING_LEVEL=INFO
 
-export output=log_${USER}.txt;
-echo "@@@@@@@@@@@@" >> $output; (bash scripts/benchmark/bench_exp5.sh blockattnrag blk_nq) 2>& 1 | tee -a $output; unset output
+# export NO_LAZY=0  # whether disable lazy attention for ablation study
 
-# blk_2wiki,blk_tqa,blk_nq,  blk_2wiki,blk_tqa,
+# export output=log_${USER}.txt;
+# echo "@@@@@@@@@@@@" >> $output; (bash scripts/benchmark/bench_exp4.sh llmrag ablation) 2>& 1 | tee -a $output; unset output
+
+# export output=log_${USER}.txt;
+# echo "@@@@@@@@@@@@" >> $output; 
+# (bash scripts/benchmark/bench_exp4.sh lazyrag ablation) 2>& 1 | tee -a $output; 
+# (bash scripts/benchmark/bench_exp4.sh lazyrag ablation) 2>& 1 | tee -a $output; 
+# unset output
+
+export NO_LAZY=1  # whether disable lazy attention for ablation study
+
+export output=log_${USER}.txt;
+echo "@@@@@@@@@@@@" >> $output; (bash scripts/benchmark/bench_exp4.sh lazyrag,baseline ablation) 2>& 1 | tee -a $output; unset output

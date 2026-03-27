@@ -184,7 +184,7 @@ def _fwd_kernel(Q,
                 (start_n // BLOCK_SIZE) * stride_b_loc_s)
 
             if rot_offset_val != 0:
-                abs_rot_pos = -(rot_offset_val + 1) # non negative now
+                abs_rot_pos = rot_offset_val - 1 # non negative now
 
             positions = tl.full([1], abs_rot_pos, dtype=tl.int32)
             off_cos = ((positions[None,:]) * rotary_dim +
@@ -246,11 +246,17 @@ def _fwd_kernel(Q,
                 k_2 = k_load_2
                 
             # K rotate forward
+            # qk = tl.zeros([BLOCK_M, BLOCK_SIZE], dtype=tl.float32)  # [M,N]
+            # rot_k = k_1 * cos_val - k_2 * sin_val
+            # qk += tl.dot(q_1, rot_k, input_precision=IN_PRECISION)
+            # rot_k = k_1 * sin_val + k_2 * cos_val
+            # qk += tl.dot(q_2, rot_k, input_precision=IN_PRECISION)
+            
             qk = tl.zeros([BLOCK_M, BLOCK_SIZE], dtype=tl.float32)  # [M,N]
-            rot_k1 = k_1 * cos_val - k_2 * sin_val
-            qk += tl.dot(q_1, rot_k1, input_precision=IN_PRECISION)
-            rot_k2 = k_1 * sin_val + k_2 * cos_val
-            qk += tl.dot(q_2, rot_k2, input_precision=IN_PRECISION)
+            rot_k = k_1 * cos_val - k_2 * sin_val
+            qk += tl.dot(q_1, rot_k, input_precision=IN_PRECISION)
+            rot_k = k_1 * sin_val + k_2 * cos_val
+            qk += tl.dot(q_2, rot_k, input_precision=IN_PRECISION)
 
             # qk = tl.zeros([BLOCK_M, BLOCK_SIZE], dtype=tl.float32)  # [M,N]
             # qk += tl.dot(q_1, k_1 * cos_val, input_precision=IN_PRECISION)

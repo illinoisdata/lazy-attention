@@ -172,11 +172,18 @@ def kernel_paged_attention_2d_llama(
         # acc_pos = 0
         # iterate through tiles - sparse rotation version
         for j in range(0, num_blocks):
-            physical_block_idx = tl.load(block_tables_ptr + block_table_offset + j)
-            rot_offset_val = tl.load(q_offset_ptr + block_table_offset + j)
-            q_mask_val = tl.load(q_mask_ptr + block_table_offset + j)
-
-            # acc_pos += rot_offset_val
+            # physical_block_idx = tl.load(block_tables_ptr + block_table_offset + j)
+            # rot_offset_val = 0 # tl.load(q_offset_ptr + block_table_offset + j)
+            # q_mask_val = 0 #tl.load(q_mask_ptr + block_table_offset + j)
+            
+            packed_val = tl.load(block_tables_ptr + block_table_offset + j)
+            # fused_info = physical_block_idx
+            physical_block_idx = (packed_val >> 32).to(tl.int32)
+            rot_offset_val = ((packed_val >> 16) & 0xFFFF).to(tl.int32)
+            q_mask_val = (packed_val & 0xFFFF).to(tl.int32)
+            # if ((seq_idx == 0 and kv_head_idx == 0) and j == 0):
+            #     tl.device_print("llama packed info:", packed_val, p_physical_block_idx, p_rot_offset_val, p_q_mask_val)
+            #     tl.device_print("llama info:", physical_block_idx, rot_offset_val, q_mask_val)
 
             offs_n = tl.arange(0, BLOCK_SIZE)
             offs_d = tl.arange(0, HEAD_SIZE_PADDED)
@@ -222,7 +229,7 @@ def kernel_paged_attention_2d_llama(
 
             if rot_offset_val != 0:
                 # Only rotate when necessary
-                cos_val, sin_val = llama_cos_sin(-(rot_offset_val + 1),
+                cos_val, sin_val = llama_cos_sin(rot_offset_val - 1,
                                                  HEAD_SIZE=HEAD_SIZE,
                                                  ORIG_MAX_POSITION=8192,
                                                  LOW_FACTOR=1.0,
@@ -350,8 +357,9 @@ def kernel_paged_attention_2d_llama(
 
         # iterate through tiles
         for j in range(0, num_blocks):
-
-            physical_block_idx = tl.load(block_tables_ptr + block_table_offset + j)
+            packed_val = tl.load(block_tables_ptr + block_table_offset + j)
+            physical_block_idx = (packed_val >> 32).to(tl.int32)
+            # physical_block_idx = tl.load(block_tables_ptr + block_table_offset + j)
 
             offs_n = tl.arange(0, BLOCK_SIZE)
             offs_d = tl.arange(0, HEAD_SIZE_PADDED)

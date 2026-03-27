@@ -25,14 +25,16 @@ make_data_args ${DATANAME} datakey dataargs
 
 echo "Using SUT=${SUT}, DATANAME=${DATANAME}"
 echo "      sut_args=\"${sut_args}\""
-echo "      datakey=${datakey}, dataargs=\"${dataargs}\""
+echo "      datakey=${datakey}, dataargs=\"${dataargs}\", EXTRA_ARGS=\"${EXTRA_ARGS}\""
 sleep 2
 
-# No request rate limit for exp5
 prepare_sut ${SUT}
 python benchmarks/benchmark_rag_serving.py \
-    --exp exp5_${SUT}_${DATANAME} \
-    --max-concurrency 50 \
+    --exp exp4_${SUT}_${DATANAME} \
+    --ablation-reqs 1 \
+    --doc-per-request 5 \
+    --document-len 10000 \
+    --max-concurrency 1 \
     ${dataargs} \
     ${sut_args} \
     ${EXTRA_ARGS}

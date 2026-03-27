@@ -1,20 +1,19 @@
 #!/bin/bash
-#SBATCH --job-name="exp1_lazy_bench"
+#SBATCH --job-name="validate"
 #SBATCH --account=bdjx-dtai-gh
 #SBATCH --partition=ghx4
-#SBATCH --time=12:00:00
+#SBATCH --time=00:20:00
 #SBATCH --gpus-per-node=1
 #SBATCH --mem=110G
 #SBATCH --cpus-per-task=72
-#SBATCH --output=slurm/exp1_lazy_bench_%j.out
-#SBATCH --error=slurm/exp1_lazy_bench_%j.err
+#SBATCH --output=slurm/validate_%j.out
+#SBATCH --error=slurm/validate_%j.err
 
 
-# Description of exp 1:
-# Two groups of data
-# 1. various batch size (batch_size=1, 2, 4, 8) [just use the original documents from the dataset]
-# 2. various document length (each document length can be set to 1k 2k 4k 8k)
-
+# Description of [validate] exp:
+# We use this scripts to expose the internal token ids 
+# and attention output to check the sanity of customized
+# deferred positional encoding
 
 # Assumptions:
 # (1) Logged in into huggingface (`huggingface-cli login`)
@@ -35,7 +34,7 @@ module load cuda/12.4.0
 cd /projects/bdjx/${USER}/gh/lazy-attention
 export VLLM_LOGGING_LEVEL=INFO
 
+# export NO_LAZY=1  # whether disable lazy attention for ablation study
+export DEBUG_LAZY=1
 export output=log_${USER}.txt;
-echo "@@@@@@@@@@@@" >> $output; (bash scripts/benchmark/bench_exp1.sh baseline,lazyrag 2wikimqa) 2>& 1 | tee -a $output; unset output
-
-# baseline blk_2wiki,blk_tqa
+echo "@@@@@@@@@@@@" >> $output; (bash scripts/validate.sh lazyrag ablation) 2>& 1 | tee -a $output; unset output

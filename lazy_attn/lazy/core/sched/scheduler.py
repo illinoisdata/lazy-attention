@@ -707,7 +707,6 @@ def metadata_for_lazy_attention_old(request: Request, block_size: int) -> tuple[
         q_mask[cursor-1] = padding_lens[doc_idx]
     
     q_offset[cursor] = sum(request.document_lens_padded) - request.document_lens[-1]
-
     return list(q_offset), list(q_mask)
 
 
@@ -739,7 +738,7 @@ def metadata_for_lazy_attention(request: Request, block_size: int) -> tuple[list
         q_mask[cursor-1] = padding_lens[doc_idx]
 
     q_offset[cursor] = sum(request.document_lens_padded) - request.document_lens[-1] + base
-
+    q_offset = -q_offset
     # print(q_offset)
     # breakpoint()
     return list(q_offset), list(q_mask)

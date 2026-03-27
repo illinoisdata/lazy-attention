@@ -15,6 +15,8 @@ from transformers import (
     AutoTokenizer, PreTrainedTokenizer, AutoModelForCausalLM, GenerationConfig, AutoConfig
 )
 
+import logging
+
 SFTDataInstanceInputs = TypedDict("SFTDataInstanceInputs", {
     "input_ids": List[int],
     "labels": List[int]
@@ -180,17 +182,19 @@ def block_generate(
         past_key_values = merge_and_rotary_past_key_values(pkvs=past_key_values, emb=emb)
     input_length = input_ids.size(-1)
 
+    decoded_input = tokenizer.decode(input_ids[0].tolist())
+    
     outputs = model.generate(
         input_ids=input_ids, generation_config=generation_config, past_key_values=past_key_values,
         use_cache=True, eos_token_id=[tokenizer.eos_token_id], tokenizer=tokenizer
     )
-    return tokenizer.decode(token_ids=outputs[0][input_length:].tolist())
+    return tokenizer.decode(token_ids=outputs[0][input_length:].tolist()), input_ids, decoded_input
 
 
 @app.route('/generate', methods=['POST'])
 def _block_generate():
     form = request.get_json()
-    generated = block_generate(
+    generated, input_ids, decoded_input = block_generate(
         blocks=form["blocks"][:-1],
         instruction=form["blocks"][-1],
         generation_config=generation_config,
@@ -198,9 +202,13 @@ def _block_generate():
         emb=emb,
         tokenizer=tokenizer,
         num_local_attention_blocks=form.get("num_local_attention_blocks", 10000),
+        task_type=form.get("task_type", "generation")
     )
     print("generated: ", generated)
-    return {"ret": 0, "generated": generated, "message": ""}
+    return {"ret": 0, "generated": generated, "message": "", 
+            "input_ids": input_ids.tolist(),
+            "decoded_input": decoded_input
+    }
 
 
 @dataclass
@@ -225,7 +233,7 @@ if __name__ == '__main__':
         pretrained_model_name_or_path=args.model,
         torch_dtype=torch.bfloat16,
         device_map="cuda:0",
-        attn_implementation="flash_attention_2"
+        # attn_implementation="flash_attention_2"
     )
     model.eval()
     config: LlamaConfig = AutoConfig.from_pretrained(pretrained_model_name_or_path=args.model)

@@ -40,8 +40,8 @@ class TestVLLM:
                            enable_prefix_caching=True,
                            seed=42,
                            max_model_len=2048,)
-            docs = [item["docs"] for item in data]
-            prompts = [item["query"] for item in data]
+            docs = [[item["docs"] for item in data][0]]
+            prompts = [[item["query"] for item in data][0]]
             outputs = llm.generate(prompts=prompts,
                                    sampling_params=mock_sampling_params,
                                    document_seqs=docs,)

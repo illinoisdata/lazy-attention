@@ -42,6 +42,7 @@ from vllm.v1.engine.processor import Processor
 from lazy.engine import EngineCoreRequest
 from itertools import chain
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,9 @@ class LazyProcessor(Processor):
                 encoder_inputs, decoder_inputs = split_enc_dec_inputs(processed_document_seq)
                 
                 # check the length of the document sequence
+                # NOTE!!!(haocheng): Exclude special tokens? It only used by test hqa accuracy now.
                 doc_token_ids = decoder_inputs["prompt_token_ids"]
+                doc_token_ids  = doc_token_ids[1:] # remove the starting bos token
                 document_lens.append(len(doc_token_ids))
                 nearest_multiple = ((document_lens[-1] + block_size - 1) // block_size) * block_size
                 document_lens_padded.append(nearest_multiple)
@@ -146,6 +149,9 @@ class LazyProcessor(Processor):
         self._validate_model_inputs(processed_inputs, lora_request)
 
         encoder_inputs, decoder_inputs = split_enc_dec_inputs(processed_inputs)
+        # NOTE!!!(haocheng): Exclude special tokens? It only used by test hqa accuracy now.
+        if document_seq is not None:
+            decoder_inputs["prompt_token_ids"] = decoder_inputs["prompt_token_ids"][1:]
 
         # TODO: Impl encoder-decoder
         if encoder_inputs is not None:
@@ -211,6 +217,13 @@ class LazyProcessor(Processor):
                     orig_sorted_mm_inputs, sorted_mm_hashes)
             else:
                 sorted_mm_inputs = orig_sorted_mm_inputs
+        
+        # For DEBUGGING
+        if os.environ.get("DEBUG_LAZY") == "1":
+            logger.info(f"Document seq token ids padded: {documents_token_ids_padded}")
+            logger.info(f"Document lens: {document_lens}")
+            logger.info(f"Document lens padded: {document_lens_padded}")
+        
 
         return decoder_inputs.get("prompt"), EngineCoreRequest(
             request_id=request_id,

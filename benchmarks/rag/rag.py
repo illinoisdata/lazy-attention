@@ -616,6 +616,159 @@ class CacheBlendRAG(RAG):
 
 from .utils import *
 class BlockAttentionRAG(RAG):
+    def __init__(self, lm_name: str, max_concurrency: int = 10) -> None:
+        self._docs: Dict[int, str] = {}
+        self._last_request_id: int = 0
+
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._tokenizer = transformers.AutoTokenizer.from_pretrained(pretrained_model_name_or_path=lm_name, use_fast=False)
+        if self._tokenizer.pad_token_id is None:
+            self._tokenizer.pad_token_id = self._tokenizer.eos_token_id
+            
+        self._token_eos = self._tokenizer.eos_token_id
+        self._max_tokens = 200
+        self._document_max_len = 512
+        
+        self._model = transformers.AutoModelForCausalLM.from_pretrained(
+            pretrained_model_name_or_path=lm_name,
+            torch_dtype=torch.bfloat16,
+            device_map="cuda:0",
+        )
+        self._model.eval()
+        
+        config = transformers.AutoConfig.from_pretrained(pretrained_model_name_or_path=lm_name)
+        # Init RoPE
+        self._emb = LlamaRotaryEmbedding(config=config).to(device=self._model.device, dtype=torch.float32)
+        self._emb.eval()
+        
+        # Cache state
+        self.prepared_doc_cache: List[DynamicCache] = []
+        self.cached_tokens_len: int = 0
+        self._local_attention_suffix = ""
+
+        self._gpu_semaphore = asyncio.Semaphore(max_concurrency)
+
+    def add_cache(self, docs: List[str]) -> List[int]:
+        doc_ids = []
+        for doc in docs:
+            doc_id = len(self._docs)
+            self._docs[doc_id] = doc
+            doc_ids.append(doc_id)
+        return doc_ids
+    
+    async def add_doc_async(self, request_id: str, docs_ids: List[int], num_local_attention_blocks: int = 10000) -> None:
+        """异步处理文档，将其 KV Cache 转化为位置无关状态"""
+        self.prepared_doc_cache = []
+        self.cached_tokens_len = 0
+        self.block_input_ids = None  # 【关键修复】：保存block的input_ids用于拼接
+        
+        blocks = [self._docs[doc_id] for doc_id in docs_ids]
+        
+        # 处理超出数量限制的块
+        if len(blocks) > num_local_attention_blocks:
+            self._local_attention_suffix = "".join(blocks[num_local_attention_blocks:])
+            blocks = blocks[:num_local_attention_blocks]
+        else:
+            self._local_attention_suffix = ""
+        
+        if num_local_attention_blocks == 0:
+            self._local_attention_suffix = "".join(blocks)
+            blocks = []
+        
+        for b_idx, block in enumerate(blocks):
+            with torch.no_grad():
+                block_input_ids = torch.tensor(
+                    data=[self._tokenizer.encode(block, add_special_tokens=False)],
+                    dtype=torch.int64,
+                    device=self._model.device
+                )
+                # 拼接所有block的input_ids（和block_generate_server.py一致）
+                if b_idx == 0:
+                    self.block_input_ids = block_input_ids
+                else:
+                    self.block_input_ids = torch.cat([self.block_input_ids, block_input_ids], dim=-1)
+                
+                # 1. 正常推理获取 KV Cache (此时位置从 0 开始)
+                output = self._model(
+                    input_ids=block_input_ids, 
+                    use_cache=True, 
+                    past_key_values=DynamicCache(), 
+                    return_dict=True
+                )
+                # 2. 逆旋转处理：使其变为 Position-agnostic
+                pkv = apply_pkv_rerotary_position_embeddings(pkv=output.past_key_values, emb=self._emb)
+                
+            self.prepared_doc_cache.append(pkv)
+            self.cached_tokens_len += block_input_ids.shape[1]
+        
+        await asyncio.sleep(0) 
+    
+    async def iter_generate(
+        self,
+        doc_ids: List[int],
+        query: str,
+        sampling_params: SamplingParams,
+        position_ids: Optional[List[int]] = None,
+    ) -> AsyncGenerator[str, None]:
+        
+        async with self._gpu_semaphore:
+            time_start = time.perf_counter()
+            
+            # 1. 构造 Prompt
+            instruction = f"<|start_header_id|>user<|end_header_id|>\n\n" \
+                          f"{getattr(self, '_local_attention_suffix', '')}{query}<|eot_id|>" \
+                          f"<|start_header_id|>assistant<|end_header_id|>\n\n"
+            
+            resp_ids = torch.tensor([self._tokenizer.encode(instruction, add_special_tokens=False)], 
+                                    device=self._model.device)
+            
+            curr_len = resp_ids.shape[1]
+
+            if self.prepared_doc_cache:
+                # 合并并旋转 Cache (和 block_generate_server.py 一致)
+                kv_cache = merge_and_rotary_past_key_values(self.prepared_doc_cache, self._emb)
+                # 【关键修复】：拼接block_input_ids和resp_ids（和block_generate_server.py一致）
+                input_ids = torch.cat([self.block_input_ids, resp_ids], dim=-1)
+            else:
+                kv_cache = None
+                input_ids = resp_ids
+
+            logger.info(f'Setup time: {time.perf_counter() - time_start:.4f}s')
+
+            # 【关键修复】：使用同步生成（和 block_generate_server.py 完全一致）
+            # 不使用 AsyncTextIteratorStreamer，直接同步调用 generate
+            input_length = input_ids.size(-1)
+            
+            outputs = self._model.generate(
+                input_ids=input_ids,
+                generation_config=transformers.GenerationConfig(
+                    do_sample=False,
+                    max_new_tokens=128,
+                    eos_token_id=self._tokenizer.eos_token_id,
+                    pad_token_id=self._tokenizer.pad_token_id,
+                    stop_strings=['<|im_end|>', "<|eot_id|>", "</s>"]
+                ),
+                past_key_values=kv_cache,
+                use_cache=True,
+                eos_token_id=[self._tokenizer.eos_token_id],
+                tokenizer=self._tokenizer
+            )
+            
+            # 解码生成的文本（跳过input部分）
+            generated_text = self._tokenizer.decode(outputs[0][input_length:].tolist())
+            yield generated_text
+
+    def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
+        """清理当前请求的缓存状态"""
+        self.prepared_doc_cache = []
+        self.cached_tokens_len = 0
+        self._local_attention_suffix = ""
+    
+    def get_stats_dict(self) -> Dict[str, Any]:
+        """Return statistics dictionary for benchmarking"""
+        return {}
+
+class BlockAttentionRAGvLLM(RAG):
     def __init__(self, lm_name: str) -> None:
         RAG.__init__(self)
         self._docs: Dict[DocumentId, str] = {}
@@ -630,7 +783,7 @@ class BlockAttentionRAG(RAG):
             pretrained_model_name_or_path=lm_name,
             torch_dtype=torch.bfloat16,
             device_map="cuda:0",
-            attn_implementation="flash_attention_2"
+            # attn_implementation="flash_attention_2"
         )
         model.eval()
         config = transformers.AutoConfig.from_pretrained(pretrained_model_name_or_path=lm_name)
@@ -641,6 +794,7 @@ class BlockAttentionRAG(RAG):
         self.prepared_doc_cache = []
         self.doc_length_cache = []
         self.input_ids = None
+        self._local_attention_suffix = ""
 
     def add_cache(self, docs: List[str]) -> List[int]:
         doc_ids = []
@@ -650,20 +804,40 @@ class BlockAttentionRAG(RAG):
             doc_ids.append(doc_id)
         return doc_ids
     
-    async def add_doc_async(self, request_id: str, docs_ids: List[int]) -> None:
-        """For BlockAttention, we need to add documents asynchronously."""
+    async def add_doc_async(self, request_id: str, docs_ids: List[int], num_local_attention_blocks: int = 10000) -> None:
+        """For BlockAttention, we need to add documents asynchronously.
+        
+        Args:
+            request_id: Request identifier
+            docs_ids: List of document IDs to process
+            num_local_attention_blocks: Number of blocks to use block attention for.
+                Blocks beyond this limit will use local attention (concatenated with instruction).
+        """
         # process doc
         self.prepared_doc_cache = []
         self.doc_length_cache = []
-        attention_mask: Optional[torch.Tensor] = None
-        input_ids = None
-        token_list = []
         self._device = self._model.device
-        for b_idx, doc_id in enumerate(docs_ids):
-            doc = self._docs[doc_id]
+        
+        # Get documents
+        blocks = [self._docs[doc_id] for doc_id in docs_ids]
+        
+        # Handle num_local_attention_blocks logic (from block_generate_server.py)
+        # Blocks beyond num_local_attention_blocks will be concatenated to instruction
+        if len(blocks) > num_local_attention_blocks:
+            self._local_attention_suffix = "".join(blocks[num_local_attention_blocks:])
+            blocks = blocks[:num_local_attention_blocks]
+        else:
+            self._local_attention_suffix = ""
+        
+        if num_local_attention_blocks == 0:
+            self._local_attention_suffix = "".join(blocks)
+            blocks = []
+        
+        token_list = []
+        for b_idx, block in enumerate(blocks):
             with torch.no_grad():
                 block_input_ids = torch.tensor(
-                    data=[self._tokenizer.encode(doc, add_special_tokens=False)],
+                    data=[self._tokenizer.encode(block, add_special_tokens=False)],
                     dtype=torch.int64,
                     device=self._model.device
                 )
@@ -674,9 +848,12 @@ class BlockAttentionRAG(RAG):
             self.prepared_doc_cache.append(pkv)
             self.doc_length_cache.append(block_input_ids.shape[1])
             token_list.append(block_input_ids)
-        self.input_ids = torch.cat(token_list, dim=-1)
-        # print('input_ids', self.input_ids.shape)
-        # print('sum of tokens', sum(self.doc_length_cache), self.doc_length_cache)
+        
+        if token_list:
+            self.input_ids = torch.cat(token_list, dim=-1)
+        else:
+            self.input_ids = None
+        
         async def async_iter(data):
             for item in data:
                 yield item
@@ -693,34 +870,28 @@ class BlockAttentionRAG(RAG):
     ) -> AsyncGenerator[str, None]:
         # rotate the cache
         time_start = time.perf_counter()
-        # for i in range(len(self.prepared_doc_cache)):
-        #     self.prepared_doc_cache[i] = apply_pkv_rotary_position_embeddings(self.prepared_doc_cache[i], self._emb)
-        kv_cache = merge_and_rotary_past_key_values(self.prepared_doc_cache, self._emb)
         
-        query = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + query
+        # Prepend local attention suffix (blocks that use local attention instead of block attention)
+        # This matches block_generate_server.py logic
+        instruction = getattr(self, '_local_attention_suffix', '') + query
+        instruction = "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nPlease write a high-quality answer for the given question using only the provided search documents (some of which might be irrelevant)" + instruction
+        
         response_input_ids = torch.tensor(
-            data=[self._tokenizer.encode(query, add_special_tokens=False)],
+            data=[self._tokenizer.encode(instruction, add_special_tokens=False)],
             dtype=torch.int64,
             device=self._model.device
         )
-        input_ids = torch.cat(tensors=[self.input_ids, response_input_ids], dim=-1)
-        # print('input_ids', input_ids.shape)
+        
+        # Handle case when there are no block attention caches
+        if self.prepared_doc_cache:
+            kv_cache = merge_and_rotary_past_key_values(self.prepared_doc_cache, self._emb)
+            input_ids = torch.cat(tensors=[self.input_ids, response_input_ids], dim=-1)
+        else:
+            kv_cache = None
+            input_ids = response_input_ids
+        # print('input_ids', input_ids)
         # print('kv_cache', kv_cache.key_cache[0].shape)
         logger.info(f'rotate time: {time.perf_counter() - time_start}')
-    #     outputs = self._model.generate(
-    #         input_ids=input_ids, generation_config=transformers.GenerationConfig(
-    #     do_sample=False,
-    #     temperature=1.0,
-    #     repetition_penalty=1.0,
-    #     num_beams=1,
-    #     eos_token_id=self._tokenizer.eos_token_id,
-    #     max_new_tokens=32,
-    #     stop_strings=['<|im_end|>', "<|eot_id|>", "<|end_of_text|>", "<|endoftext|>", "</s>", "Question:"]
-    # ), past_key_values=kv_cache,
-    #         use_cache=True, eos_token_id=[self._token_eos], tokenizer=self._tokenizer
-    #     )
-    #     for output in outputs:
-    #         yield self._tokenizer.decode(output)
 
         streamer = AsyncTextIteratorStreamer(self._tokenizer)
         generation_kwargs = {
@@ -735,7 +906,8 @@ class BlockAttentionRAG(RAG):
                 repetition_penalty=1.0,
                 num_beams=1,
                 eos_token_id=self._tokenizer.eos_token_id,
-                stop_strings= ['<|block_end|>'],
+                max_new_tokens=128,
+                stop_strings=['<|im_end|>', "<|eot_id|>", "<|end_of_text|>", "<|endoftext|>", "</s>", "Question:"]
             ),
             "use_cache": True,
             "eos_token_id": [self._token_eos],
@@ -754,6 +926,7 @@ class BlockAttentionRAG(RAG):
 
     def destroy_cache(self, doc_ids: Optional[List[str]] = None) -> None:
         pass
+
 
 
 class TransformerRAG(RAG):
@@ -1199,7 +1372,14 @@ class LazyRAG(RAG):
         else:
             document_seq = document
 
-        query = query
+        # adjust doc seq
+        # preamble = document_seq[0]
+        # docs = document_seq[1:]
+        # # reserve the order of docs
+        # docs = docs[::-1]
+        # document_seq = [preamble] + docs
+        print("document_seq", document_seq)
+        print("query", query)
         async for generate_output in self._llm.generate(
             prompt=query,
             sampling_params=sampling_params,
@@ -1238,16 +1418,18 @@ class BaselineLazyRAG(RAG):
         return doc_ids
 
     async def add_doc_async(self, request_id: str, docs_ids: List[int]) -> None:
-        for idx, doc_id in enumerate(docs_ids):
-            doc = self._docs[doc_id]
-            # 使用 async for 来迭代异步生成器
-            async for _ in self._llm.generate(
-                prompt=doc,
-                sampling_params=SamplingParams(temperature=0.0, max_tokens=1),
-                request_id=f"cache_{request_id}_{idx}_{uuid.uuid4().hex}",
-            ):
-                # 我们只需要等待生成完成，不需要使用生成的内容
-                pass
+        # logger.info(f"BaselineLazyRAG adding {docs_ids} documents to cache asynchronously.")
+        # for idx, doc_id in enumerate(docs_ids):
+        #     doc = self._docs[doc_id]
+        #     # 使用 async for 来迭代异步生成器
+        #     async for _ in self._llm.generate(
+        #         prompt=doc,
+        #         sampling_params=SamplingParams(temperature=0.0, max_tokens=1),
+        #         request_id=f"cache_{request_id}_{idx}_{uuid.uuid4().hex}",
+        #     ):
+        #         # 我们只需要等待生成完成，不需要使用生成的内容
+        #         pass
+        pass
 
     async def iter_generate(
         self,
@@ -1341,7 +1523,8 @@ def prepare_lmcache(async_engine_args: AsyncEngineArgs)-> None:
 
 def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
     torch.cuda.empty_cache()
-    engine_args.max_model_len = 8192 * 8
+    engine_args.max_model_len = 8192 * 8 * 2
+    # engine_args.dtype = "float32"
     # engine_args.compilation_config = None
     if args.rag_type == "parrot":
         return ParrotRAG()

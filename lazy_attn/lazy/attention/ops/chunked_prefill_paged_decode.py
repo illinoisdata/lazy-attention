@@ -470,6 +470,9 @@ def chunked_prefill_paged_decode(
     q_offset=None,
     q_mask=None,
 ):
+    import os 
+    if os.environ.get("NO_LAZY", "0") == "1":
+        is_lazy.fill_(False)
 
     q_dtype_is_f32 = query.dtype is torch.float32
     IN_PRECISION = 'ieee' if IS_TURING and q_dtype_is_f32 else None
@@ -544,6 +547,11 @@ def chunked_prefill_paged_decode(
     if use_custom:
         raise NotImplementedError("Custom paged attention is not implemented")
     else:
+        # print("block table before:", block_table)
+        block_table.bitwise_left_shift_(32)
+        temp_q_offset = q_offset.to(torch.int64) << 16
+        block_table.bitwise_or_(temp_q_offset)
+        block_table.bitwise_or_(q_mask.to(torch.int64))
         kernel_paged_attention_2d_llama[(
             num_seqs,
             num_kv_heads,
@@ -594,3 +602,6 @@ def chunked_prefill_paged_decode(
             q_offset_ptr=q_offset,
             q_mask_ptr=q_mask,
         )
+        
+        block_table.bitwise_right_shift_(32)
+        # print("block table after:", block_table)
