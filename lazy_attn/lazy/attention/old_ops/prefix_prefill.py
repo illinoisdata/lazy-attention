@@ -38,6 +38,8 @@ def _fwd_kernel(Q,
                 K_cache,
                 V_cache,
                 B_Loc,
+                q_mask_ptr,
+                q_offset_ptr,
                 sm_scale,
                 k_scale,
                 v_scale,
@@ -157,6 +159,11 @@ def _fwd_kernel(Q,
     for start_n in tl.range(0, cur_batch_ctx_len, BLOCK_SIZE, \
                             loop_unroll_factor=num_unroll_cache):
         start_n = tl.multiple_of(start_n, BLOCK_SIZE)
+        q_mask_val = tl.load(q_mask_ptr + cur_batch * stride_b_loc_b +
+                             (start_n // BLOCK_SIZE) * stride_b_loc_s)
+        rot_offset_val = tl.load(q_offset_ptr + cur_batch * stride_b_loc_b +
+                                 (start_n // BLOCK_SIZE) * stride_b_loc_s)
+        seq_bound = min(cur_batch_ctx_len, start_n + BLOCK_SIZE - q_mask_val)
         # -- compute qk ----
         bn = tl.load(B_Loc + cur_batch * stride_b_loc_b +
                      (start_n // BLOCK_SIZE) * stride_b_loc_s)
@@ -172,7 +179,10 @@ def _fwd_kernel(Q,
             ((start_n + offs_bs_n[None, :]) % BLOCK_SIZE) * stride_k_cache_bl +
             (offs_d2[:, None] % x) * stride_k_cache_x)
 
-        off_cos = ((start_n + offs_bs_n[None, :]) * rotary_dim +
+        pos_base = start_n
+        if rot_offset_val != 0:
+            pos_base = rot_offset_val - 1
+        off_cos = ((pos_base + offs_bs_n[None, :]) * rotary_dim +
                 offs_d1[:, None])
 
         # [BLOCK_SIZE,D]
@@ -192,20 +202,20 @@ def _fwd_kernel(Q,
             k_load_1 = tl.load(
                 K_cache + off_k_1,
                 mask=dim_mask_half[:, None] &
-                ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
+                ((start_n + offs_bs_n[None, :]) < seq_bound),
                 other=0.0)  # [D,N]
             k_load_2 = tl.load(
                 K_cache + off_k_2,
                 mask=dim_mask_half[:, None] &
-                ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
+                ((start_n + offs_bs_n[None, :]) < seq_bound),
                 other=0.0)  # [D,N]
             cos_val = tl.load(cos_sin_cache + off_cos,
                 mask=dim_mask_half[:, None] &
-                ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
+                ((start_n + offs_bs_n[None, :]) < seq_bound),
                 other=0.0)
             sin_val = tl.load(cos_sin_cache + off_cos + embed_dim, 
                 mask=dim_mask_half[:, None] &
-                ((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len),
+                ((start_n + offs_bs_n[None, :]) < seq_bound),
                 other=0.0)
         else:
             # k_load = tl.load(K_cache + off_k)
@@ -231,7 +241,7 @@ def _fwd_kernel(Q,
         qk_1 = tl.dot(q_1, (k_1 * cos_val - k_2 * sin_val), input_precision=IN_PRECISION)
         qk_2 = tl.dot(q_2, (k_1 * sin_val + k_2 * cos_val), input_precision=IN_PRECISION)
         qk = qk_1 + qk_2
-        qk = tl.where((start_n + offs_bs_n[None, :]) < cur_batch_ctx_len, qk,
+        qk = tl.where((start_n + offs_bs_n[None, :]) < seq_bound, qk,
                         float("-inf"))
 
         # qk = tl.zeros([BLOCK_M, BLOCK_SIZE], dtype=tl.float32)  # [M,N]
@@ -268,7 +278,7 @@ def _fwd_kernel(Q,
             v_load = tl.load(
                 V_cache + off_v,
                 mask=dim_mask[None, :] &
-                ((start_n + offs_bs_n[:, None]) < cur_batch_ctx_len),
+                ((start_n + offs_bs_n[:, None]) < seq_bound),
                 other=0.0)  # [N,D]
         else:
             v_load = tl.load(V_cache + off_v)
@@ -390,7 +400,9 @@ def context_attention_fwd(q,
                           skip_decode=False,
                           cos_sin_cache=None,
                           rotary_dim=None,
-                          is_neox_style=True,):
+                          is_neox_style=True,
+                          q_mask=None,
+                          q_offset=None,):
 
     q_dtype_is_f32 = q.dtype is torch.float32
 
@@ -455,6 +467,8 @@ def context_attention_fwd(q,
         k_cache,
         v_cache,
         b_loc,
+        q_mask,
+        q_offset,
         sm_scale,
         k_scale,
         v_scale,

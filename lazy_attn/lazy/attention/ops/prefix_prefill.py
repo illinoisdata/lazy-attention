@@ -177,18 +177,15 @@ def _fwd_kernel(Q,
             # here we get M tokens in the query
             # NUM_BLOCKS_OVER_Q: tl.constexpr = BLOCK_M // BLOCK_SIZE
             # Q is [M,D//2]
-            abs_rot_pos = 0
-            # rot_sign = -1 # it is always -1 for neox style
             rot_offset_val = tl.load(
                 q_offset_ptr + cur_batch * stride_b_loc_b +
                 (start_n // BLOCK_SIZE) * stride_b_loc_s)
-
+            abs_rot_pos = 0
             if rot_offset_val != 0:
-                abs_rot_pos = rot_offset_val - 1 # non negative now
-
-            positions = tl.full([1], abs_rot_pos, dtype=tl.int32)
-            off_cos = ((positions[None,:]) * rotary_dim +
-                    offs_d1[:,None])
+                abs_rot_pos = rot_offset_val - 1
+            positions = tl.full([BLOCK_SIZE], abs_rot_pos, dtype=tl.int32)
+            off_cos = ((positions[None, :]) * rotary_dim +
+                    offs_d1[:, None])
             cos_val = tl.load(cos_sin_cache + off_cos)
             sin_val = tl.load(cos_sin_cache + off_cos + embed_dim)
             
@@ -352,7 +349,7 @@ def _fwd_kernel(Q,
                         ((start_n + offs_n[None, :]) < cur_batch_query_len),
                         other=0.0)
 
-            qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)     
+            qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
             qk = tl.dot(q_1, k_1, acc=qk, input_precision=IN_PRECISION)
             qk = tl.dot(q_2, k_2, acc=qk, input_precision=IN_PRECISION)
 

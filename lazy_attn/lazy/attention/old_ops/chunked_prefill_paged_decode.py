@@ -26,6 +26,7 @@ def kernel_paged_attention_2d(
         key_cache_ptr,  # [num_blks, num_kv_heads, head_size // x, blk_size, x]
         value_cache_ptr,  # [num_blks, num_kv_heads, head_size, blk_size]
         block_tables_ptr,  # [num_seqs, max_num_blocks_per_seq]
+        q_mask_ptr,  # [num_seqs, max_num_blocks_per_seq]
         seq_lens_ptr,  # [num_seqs]
         alibi_slopes_ptr,  # [num_query_heads]
         scale,  # float32
@@ -135,6 +136,7 @@ def kernel_paged_attention_2d(
     for j in range(0, num_blocks):
 
         physical_block_idx = tl.load(block_tables_ptr + block_table_offset + j)
+        q_mask_val = tl.load(q_mask_ptr + block_table_offset + j)
 
         offs_n = tl.arange(0, BLOCK_SIZE)
         offs_d = tl.arange(0, HEAD_SIZE_PADDED)
@@ -193,6 +195,8 @@ def kernel_paged_attention_2d(
         seq_offset = j * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
         boundary = tl.full([BLOCK_SIZE], seq_len, dtype=tl.int32)
         seq_mask = seq_offset[None, :] < boundary
+        seq_mask = seq_mask & (tl.arange(0, BLOCK_SIZE) <
+                               (BLOCK_SIZE - q_mask_val))
         
         # fuse rotary embedding
         positions = seq_offset
@@ -288,6 +292,8 @@ def chunked_prefill_paged_decode(
     rotary_dim=None,
     cos_sin_cache=None,
     is_neox_style=True,
+    q_offset=None,
+    q_mask=None,
 ):
     q_dtype_is_f32 = query.dtype is torch.float32
     IN_PRECISION = 'ieee' if IS_TURING and q_dtype_is_f32 else None
@@ -298,6 +304,11 @@ def chunked_prefill_paged_decode(
 
     if sliding_window is None or sliding_window <= 0:
         sliding_window = 0
+
+    if q_mask is None:
+        q_mask = torch.zeros_like(block_table, dtype=torch.int32)
+    if q_offset is None:
+        q_offset = torch.zeros_like(block_table, dtype=torch.int32)
 
     if max_query_len > 1:
         context_attention_fwd(
@@ -322,6 +333,8 @@ def chunked_prefill_paged_decode(
             rotary_dim=rotary_dim,
             cos_sin_cache=cos_sin_cache,
             is_neox_style=is_neox_style,
+            q_mask=q_mask,
+            q_offset=q_offset,
         )
 
     block_size = value_cache.shape[3]
@@ -366,6 +379,7 @@ def chunked_prefill_paged_decode(
             key_cache_ptr=key_cache,
             value_cache_ptr=value_cache,
             block_tables_ptr=block_table,
+            q_mask_ptr=q_mask,
             seq_lens_ptr=seq_lens,
             alibi_slopes_ptr=alibi_slopes,
             scale=sm_scale,

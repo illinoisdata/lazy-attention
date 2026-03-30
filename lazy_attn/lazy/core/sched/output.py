@@ -30,6 +30,7 @@ class NewRequestData:
     
     # Lazy attention, if one req has documents, it is lazy
     is_lazy: bool = False  # [num_seqs]
+    lazy_variant: int = 0
     q_offset: Optional[list[int]] = None # [num_seqs, num_blocks]
     q_mask: Optional[list[int]] = None # [num_seqs, num_blocks]
 
@@ -38,6 +39,7 @@ class NewRequestData:
         cls,
         request: Request,
         block_ids: list[int],
+        lazy_variant: int = 0,
         q_offset: Optional[list[int]] = None,
         q_mask: Optional[list[int]] = None,
     ) -> NewRequestData:
@@ -52,6 +54,7 @@ class NewRequestData:
             num_computed_tokens=request.num_computed_tokens,
             lora_request=request.lora_request,
             is_lazy=request.has_documents,
+            lazy_variant=lazy_variant,
             q_offset=q_offset,
             q_mask=q_mask,
         )

@@ -22,18 +22,11 @@
 # (3) Downloaded dataset via scripts/download_dataset.sh
 # (4) Installed vllm in editable mode (pip install -e .) in the conda env vllm
 
-echo "Job ID: $SLURM_JOB_ID"
-echo "Node: $SLURM_NODELIST"
-echo "Start time: $(date)"
-echo ""
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/slurm_common.sh"
 
-# Load necessary modules
-source ~/.bashrc  # for conda path 
-conda activate vllm
-module load cuda/12.4.0
+slurm_print_header
+slurm_activate_runtime
+slurm_enter_repo
 
-cd /projects/bdjx/${USER}/gh/lazy-attention
 export VLLM_LOGGING_LEVEL=INFO
-
-export output=log_${USER}.txt;
-echo "@@@@@@@@@@@@" >> $output; (bash scripts/benchmark/bench_exp1.sh llmrag 2wikimqa) 2>& 1 | tee -a $output; unset output
+slurm_run_logged "log_${USER}.txt" bash scripts/benchmark/bench_exp1.sh llmrag 2wikimqa

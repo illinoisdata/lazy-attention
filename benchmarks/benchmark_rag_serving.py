@@ -1028,11 +1028,15 @@ async def benchmark(
     # EM
     ground_truth = [input_requests[i].ground_truth for i in input_request_ids]
     generated_res = [output.generated_text for output in outputs]
-    acc_em = 0
-    for gen, gt in zip(generated_res, ground_truth):
-        # print(f"Gen: {gen}, GT: {gt}")
-        acc_em += blockbench.qa_em_score(gen, gt)
-    em_score = acc_em / len(generated_res)
+    valid_em_pairs = [(gen, gt) for gen, gt in zip(generated_res, ground_truth)
+                      if gt is not None]
+    if valid_em_pairs:
+        acc_em = 0
+        for gen, gt in valid_em_pairs:
+            acc_em += blockbench.qa_em_score(gen, gt)
+        em_score = acc_em / len(valid_em_pairs)
+    else:
+        em_score = 0.0
     benchmark_result_strs = [
         "",
         "{s:{c}^{n}}".format(s=" Serving Benchmark Result ", n=50, c="="),

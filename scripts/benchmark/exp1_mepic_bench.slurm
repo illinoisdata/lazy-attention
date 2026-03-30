@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name="exp1_bench"
+#SBATCH --job-name="exp1_mepic_bench"
 #SBATCH --account=bdjx-dtai-gh
 #SBATCH --partition=ghx4
 #SBATCH --time=0:30:00
 #SBATCH --gpus-per-node=1
 #SBATCH --mem=110G
 #SBATCH --cpus-per-task=72
-#SBATCH --output=slurm/exp1_bench_%j.out
-#SBATCH --error=slurm/exp1_bench_%j.err
+#SBATCH --output=slurm/exp1_mepic_bench_%j.out
+#SBATCH --error=slurm/exp1_mepic_bench_%j.err
 
 
 # Description of exp 1:
@@ -33,8 +33,6 @@ slurm_activate_runtime
 slurm_enter_repo
 
 export VLLM_LOGGING_LEVEL=DEBUG
-export LAZY_ATTENTION_VARIANT="${LAZY_ATTENTION_VARIANT:-lazy}"
-echo "Using LAZY_ATTENTION_VARIANT=${LAZY_ATTENTION_VARIANT} for exp1_bench"
+export LAZY_ATTENTION_VARIANT="${LAZY_ATTENTION_VARIANT:-mepic}"
+echo "Using LAZY_ATTENTION_VARIANT=${LAZY_ATTENTION_VARIANT} for exp1_mepic_bench"
 slurm_run_logged "log_${USER}.txt" bash scripts/benchmark/bench_exp1.sh lazyrag 2wikimqa
-
-# llmrag,

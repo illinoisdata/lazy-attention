@@ -115,7 +115,8 @@ class LazyKVCacheManager(KVCacheManager):
         return computed_blocks, num_computed_tokens
         
     def get_computed_blocks_docs(
-            self, request: Request, 
+            self, request: Request,
+            drop_first_cached_block: bool = False,
             ) -> tuple[list[list[KVCacheBlock]], list[int]]:
         """Get the computed (cached) blocks for each documents in the request.
         Note that the computed blocks must be full.
@@ -142,6 +143,8 @@ class LazyKVCacheManager(KVCacheManager):
             block_hashes_doc = block_hashes_docs[doc_idx]
             computed_blocks_docs[doc_idx] = (
                 self.specialized_manager.find_longest_cache_hit(block_hashes_doc))
+            if drop_first_cached_block and computed_blocks_docs[doc_idx]:
+                computed_blocks_docs[doc_idx] = computed_blocks_docs[doc_idx][1:]
             num_computed_tokens_docs[doc_idx] = (
                 len(computed_blocks_docs[doc_idx]) * self.block_size)
             logger.debug(f"Document {doc_idx} of request {request.request_id} "

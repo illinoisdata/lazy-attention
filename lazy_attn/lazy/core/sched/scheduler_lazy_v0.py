@@ -572,10 +572,12 @@ class LazyScheduler(Scheduler):
         )
         # Construct the scheduler output.
         new_reqs_data = [
-            NewRequestData.from_request(req,
-                                        req_to_new_block_ids[req.request_id],
-                                        req_to_q_offset.get(req.request_id, None),
-                                        req_to_q_mask.get(req.request_id, None))
+            NewRequestData.from_request(
+                req,
+                req_to_new_block_ids[req.request_id],
+                q_offset=req_to_q_offset.get(req.request_id, None),
+                q_mask=req_to_q_mask.get(req.request_id, None),
+            )
             for req in scheduled_new_reqs
         ]
         resumed_reqs_data = [

@@ -437,6 +437,7 @@ function prepare_sut() {
             then
                 echo "Setting VLLM_USE_LAZY_ATTENTION=1 for lazyrag"
                 export VLLM_USE_LAZY_ATTENTION=1
+                echo "LAZY_ATTENTION_VARIANT=${LAZY_ATTENTION_VARIANT:-lazy}"
             elif [[ $_SUT == "blockattnrag" ]]
             then
                 echo "Setting VLLM_USE_BLOCK_ATTENTION=1 for blockattnrag"

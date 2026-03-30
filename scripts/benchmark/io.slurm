@@ -10,33 +10,24 @@
 #SBATCH --output=slurm/profiler_io.out
 #SBATCH --error=slurm/profiler_io.err
 
-echo "Job ID: $SLURM_JOB_ID"
-echo "Node: $SLURM_NODELIST"
-echo "Start time: $(date)"
-echo ""
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/slurm_common.sh"
 
-# Load necessary modules
-source ~/.bashrc  # for conda path 
-conda activate vllm
-module load cuda/12.4.0
+slurm_print_header
+slurm_activate_runtime
+slurm_enter_repo
 
-cd /projects/bdjx/${USER}/gh/lazy-attention
 export VLLM_LOGGING_LEVEL=INFO
 
 export NO_LAZY=0  # whether disable lazy attention for ablation study
 
-export output=log_${USER}.txt;
-echo "@@@@@@@@@@@@" >> $output; 
-(ncu -o lazyio -f \
+slurm_run_logged "log_${USER}.txt" ncu -o lazyio -f \
     --target-processes all \
     --section MemoryWorkloadAnalysis \
-    bash scripts/benchmark/bench_exp4.sh lazyrag ablation) 2>& 1 | tee -a $output; unset output
+    bash scripts/benchmark/bench_exp4.sh lazyrag ablation
 
 export NO_LAZY=1  # whether disable lazy attention for ablation study
 
-export output=log_${USER}.txt;
-echo "@@@@@@@@@@@@" >> $output; 
-(ncu -o wolazyio -f \
+slurm_run_logged "log_${USER}.txt" ncu -o wolazyio -f \
     --target-processes all \
     --section MemoryWorkloadAnalysis \
-    bash scripts/benchmark/bench_exp4.sh lazyrag ablation) 2>& 1 | tee -a $output; unset output
+    bash scripts/benchmark/bench_exp4.sh lazyrag ablation

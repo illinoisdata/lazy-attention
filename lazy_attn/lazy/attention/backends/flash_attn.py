@@ -101,6 +101,7 @@ class FlashAttentionMetadata:
 
     # NOTE(haocheng): Optional fields, only for lazy attention
     is_lazy: Optional[torch.Tensor] = None # [num_seqs]
+    lazy_variant: Optional[torch.Tensor] = None # [num_seqs]
     q_offset: Optional[torch.Tensor] = None # [num_seqs, num_blocks]
     q_mask: Optional[torch.Tensor] = None # [num_seqs, num_blocks]
 

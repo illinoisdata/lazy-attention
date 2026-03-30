@@ -49,6 +49,8 @@ from lazy.request import RequestStatus
 from lazy.request import LazyRequest as Request
 from lazy.engine import EngineCoreRequest, EngineCoreEventType
 from lazy.core.sched.output import NewRequestData
+from lazy.utils.variants import (get_lazy_attention_variant_code,
+                                 mepic_first_block_recompute_enabled)
 
 # For patch
 from vllm.v1.core.sched.scheduler import Scheduler
@@ -59,6 +61,9 @@ from vllm.v1.core.sched.scheduler import Scheduler
 # Here we abort the constraint of num running request, since our 
 # request can have multiple subrequests, and we need to process all of them
 # in the same time.
+
+LAZY_ATTENTION_VARIANT = get_lazy_attention_variant_code()
+MEPIC_FIRST_BLOCK_RECOMPUTE = mepic_first_block_recompute_enabled()
 
 
 class LazyScheduler(Scheduler):
@@ -430,12 +435,29 @@ class LazyScheduler(Scheduler):
                                  f"documents, total prompt len "
                                  f"{request.num_prompt_tokens}")
 
+                    drop_first_cached_block = (
+                        LAZY_ATTENTION_VARIANT == 2
+                        and MEPIC_FIRST_BLOCK_RECOMPUTE
+                    )
                     computed_blocks_docs, num_computed_tokens_docs = \
-                        self.kv_cache_manager.get_computed_blocks_docs(request)
+                        self.kv_cache_manager.get_computed_blocks_docs(
+                            request,
+                            drop_first_cached_block=drop_first_cached_block,
+                        )
                     computed_blocks = list(chain.from_iterable(
                         computed_blocks_docs)) + computed_blocks
-                    assert sum(num_computed_tokens_docs) == \
-                        sum(request.document_lens_padded), "Cached document lengths do not match"
+                    expected_doc_tokens = sum(request.document_lens_padded)
+                    if not drop_first_cached_block:
+                        assert sum(num_computed_tokens_docs) == expected_doc_tokens, (
+                            "Cached document lengths do not match")
+                    else:
+                        logger.debug(
+                            "MEPIC first-block recompute enabled for request %s: "
+                            "reusing %d/%d cached document tokens.",
+                            request.request_id,
+                            sum(num_computed_tokens_docs),
+                            expected_doc_tokens,
+                        )
                     num_computed_tokens += sum(num_computed_tokens_docs)
                     logger.debug(f"After merging documents, "
                                  f"request {request.request_id} has "
@@ -444,7 +466,7 @@ class LazyScheduler(Scheduler):
                     # Get metadata for lazy attention
                     (req_to_q_offset[request.request_id], 
                      req_to_q_mask[request.request_id]) = \
-                        metadata_for_lazy_attention(request, self.block_size)
+                        metadata_for_variant(request, self.block_size)
                     logger.debug(f"Request {request.request_id} has "
                                  f"query offset {req_to_q_offset[request.request_id]} "
                                  f"and query mask {req_to_q_mask[request.request_id]}")
@@ -571,10 +593,13 @@ class LazyScheduler(Scheduler):
         )
         # Construct the scheduler output.
         new_reqs_data = [
-            NewRequestData.from_request(req,
-                                        req_to_new_block_ids[req.request_id],
-                                        req_to_q_offset.get(req.request_id, None),
-                                        req_to_q_mask.get(req.request_id, None))
+            NewRequestData.from_request(
+                req,
+                req_to_new_block_ids[req.request_id],
+                lazy_variant=(LAZY_ATTENTION_VARIANT if req.has_documents else 0),
+                q_offset=req_to_q_offset.get(req.request_id, None),
+                q_mask=req_to_q_mask.get(req.request_id, None),
+            )
             for req in scheduled_new_reqs
         ]
         resumed_reqs_data = [
@@ -718,30 +743,35 @@ def metadata_for_lazy_attention(request: Request, block_size: int) -> tuple[list
     q_mask = np.zeros(num_blocks, dtype=np.int32)
     q_offset = np.zeros(num_blocks, dtype=np.int32)
     cursor = 0
-    # First doc
     padding_lens = np.array(request.document_lens_padded) - \
                    np.array(request.document_lens)
-    num_blk_doc = request.document_lens_padded[0] // block_size
-    base = -1
-    q_offset[0] = -sum(padding_lens) + base
-    base += -sum(padding_lens)
-    
-    cursor += num_blk_doc
-    q_mask[cursor - 1] = padding_lens[0]
-
-    # Process other docs
-    for doc_idx in range(1, num_docs):
+    # Encode absolute rotation positions with a +1 bias so:
+    # - value 0 remains available as a sentinel
+    # - value 1 explicitly resets back to the original Q orientation
+    abs_rot_pos = int(sum(padding_lens))
+    for doc_idx in range(num_docs):
         num_blk_doc = request.document_lens_padded[doc_idx] // block_size
-        q_offset[cursor] = -request.document_lens[doc_idx-1] + base
-        base += -request.document_lens[doc_idx-1]
+        q_offset[cursor:cursor + num_blk_doc] = abs_rot_pos + 1
         cursor += num_blk_doc
-        q_mask[cursor-1] = padding_lens[doc_idx]
+        q_mask[cursor - 1] = padding_lens[doc_idx]
+        abs_rot_pos += request.document_lens[doc_idx] - padding_lens[doc_idx]
 
-    q_offset[cursor] = sum(request.document_lens_padded) - request.document_lens[-1] + base
-    q_offset = -q_offset
-    # print(q_offset)
-    # breakpoint()
+    # Query / decode block should use the original global query RoPE.
+    q_offset[cursor] = 1
     return list(q_offset), list(q_mask)
+
+
+def metadata_for_mepic(request: Request,
+                       block_size: int) -> tuple[list[int], list[int]]:
+    q_offset, q_mask = metadata_for_lazy_attention(request, block_size)
+    return [0 for _ in q_offset], q_mask
+
+
+def metadata_for_variant(request: Request,
+                         block_size: int) -> tuple[list[int], list[int]]:
+    if LAZY_ATTENTION_VARIANT == 2:
+        return metadata_for_mepic(request, block_size)
+    return metadata_for_lazy_attention(request, block_size)
 
 original_scheduler = None
 

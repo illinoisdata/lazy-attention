@@ -1,0 +1,42 @@
+#!/bin/bash
+source scripts/benchmark/bench_lib.sh
+
+benchmark_setup_pythonpath
+benchmark_install_interrupt_handler
+
+RANDOM_NUM_PROMPTS="${RANDOM_NUM_PROMPTS:-1}"
+SAMPLE_REQUESTS="${SAMPLE_REQUESTS:-1}"
+MAX_CONCURRENCY="${MAX_CONCURRENCY:-1}"
+RANDOM_INPUT_LEN="${RANDOM_INPUT_LEN:-1}"
+RANDOM_OUTPUT_LEN="${RANDOM_OUTPUT_LEN:-128}"
+RANDOM_DOCUMENT_LEN="${RANDOM_DOCUMENT_LEN:-16384}"
+RANDOM_NUM_DOCUMENTS="${RANDOM_NUM_DOCUMENTS:-1}"
+RANDOM_NUM_DOCUMENTS_PER_PROMPT="${RANDOM_NUM_DOCUMENTS_PER_PROMPT:-1}"
+DECODE_PROBE_SUT="${DECODE_PROBE_SUT:-lazyrag}"
+DECODE_PROBE_EXP="${DECODE_PROBE_EXP:-decode_probe}"
+
+echo "Running decode probe with LAZY_ATTENTION_VARIANT=${LAZY_ATTENTION_VARIANT:-lazy}"
+echo "  SUT=${DECODE_PROBE_SUT}"
+echo "  RANDOM_NUM_PROMPTS=${RANDOM_NUM_PROMPTS}"
+echo "  SAMPLE_REQUESTS=${SAMPLE_REQUESTS}"
+echo "  MAX_CONCURRENCY=${MAX_CONCURRENCY}"
+echo "  RANDOM_INPUT_LEN=${RANDOM_INPUT_LEN}"
+echo "  RANDOM_OUTPUT_LEN=${RANDOM_OUTPUT_LEN}"
+echo "  RANDOM_DOCUMENT_LEN=${RANDOM_DOCUMENT_LEN}"
+echo "  RANDOM_NUM_DOCUMENTS=${RANDOM_NUM_DOCUMENTS}"
+echo "  RANDOM_NUM_DOCUMENTS_PER_PROMPT=${RANDOM_NUM_DOCUMENTS_PER_PROMPT}"
+
+BENCH_EXTRA_ARGS=(
+    --dataset-name random
+    --sample-requests "${SAMPLE_REQUESTS}"
+    --max-concurrency "${MAX_CONCURRENCY}"
+    --random-num-prompts "${RANDOM_NUM_PROMPTS}"
+    --random-input-len "${RANDOM_INPUT_LEN}"
+    --random-output-len "${RANDOM_OUTPUT_LEN}"
+    --random-document-len "${RANDOM_DOCUMENT_LEN}"
+    --random-num-documents "${RANDOM_NUM_DOCUMENTS}"
+    --random-num-documents-per-prompt "${RANDOM_NUM_DOCUMENTS_PER_PROMPT}"
+    --disable-tqdm
+)
+
+benchmark_run_case "${DECODE_PROBE_EXP}" "${DECODE_PROBE_SUT}" randtiny

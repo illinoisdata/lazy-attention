@@ -1,40 +1,21 @@
 #!/bin/bash
-export PYTHONPATH=.:./promptcache:./lazy_attn:./block_attn
-int_handler() {
-    echo "Interrupted."
-    kill $PPID
-    exit 1
-}
-trap 'int_handler' INT
-source scripts/benchmark/bench_consts.sh
+source scripts/benchmark/bench_lib.sh
 
-if [ "$#" -lt 2 ]
-then
+benchmark_setup_pythonpath
+benchmark_install_interrupt_handler
+
+if ! benchmark_require_case_args "$@"; then
     echo "Require 2 argument (SUT, DATANAME), $# provided"
-    echo 'Example: bash scripts/benchmark/bench_exp1_single.sh parrot randtiny'
-    echo 'Example: bash scripts/benchmark/bench_exp1_single.sh llmrag sqa'
+    echo 'Example: bash scripts/benchmark/bench_exp4_single.sh parrot randtiny'
+    echo 'Example: bash scripts/benchmark/bench_exp4_single.sh llmrag sqa'
     exit 1
 fi
 
-SUT=$1
-DATANAME=$2
-shift 2
-EXTRA_ARGS="$@"
-make_sut_args ${SUT} sut_args
-make_data_args ${DATANAME} datakey dataargs
-
-echo "Using SUT=${SUT}, DATANAME=${DATANAME}"
-echo "      sut_args=\"${sut_args}\""
-echo "      datakey=${datakey}, dataargs=\"${dataargs}\", EXTRA_ARGS=\"${EXTRA_ARGS}\""
-sleep 2
-
-prepare_sut ${SUT}
-python benchmarks/benchmark_rag_serving.py \
-    --exp exp4_${SUT}_${DATANAME} \
+benchmark_run_case \
+    exp4 \
+    "${BENCH_SELECTED_SUT}" \
+    "${BENCH_SELECTED_DATANAME}" \
     --ablation-reqs 1 \
     --doc-per-request 5 \
     --document-len 10000 \
-    --max-concurrency 1 \
-    ${dataargs} \
-    ${sut_args} \
-    ${EXTRA_ARGS}
+    --max-concurrency 1

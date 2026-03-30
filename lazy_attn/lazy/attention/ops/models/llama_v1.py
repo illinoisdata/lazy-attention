@@ -135,22 +135,23 @@ def kernel_paged_attention_2d_llama(
 
         dim_mask = tl.where(tl.arange(0, HEAD_SIZE_PADDED) < HEAD_SIZE, 1,
                             0).to(tl.int1)
+        embed_dim: tl.constexpr = HEAD_SIZE // 2
+        cols = tl.arange(0, HEAD_SIZE)
+        mask_q1 = cols < embed_dim
         # Q : (num_queries_per_kv, HEAD_SIZE,)
         Q_full = tl.load(
             query_ptr + query_offset + tl.arange(0, HEAD_SIZE_PADDED)[None, :],
             mask=dim_mask[None, :] & head_mask[:, None],
             other=0.0,
         )
-        rev = (tl.arange(0, HEAD_SIZE_PADDED) + 
+        rev = (tl.arange(0, HEAD_SIZE_PADDED) +
                (HEAD_SIZE_PADDED // 2)) % HEAD_SIZE_PADDED
         Q_rev = tl.load(
             query_ptr + query_offset + rev[None, :],
             mask=dim_mask[None, :] & head_mask[:, None],
             other=0.0,
         )
-        # Use the full Q by default
         Q_rotated = Q_full
-        
         block_table_offset = seq_idx * block_table_stride
 
         M = tl.full([num_queries_per_kv_padded], float("-inf"), dtype=tl.float32)
@@ -168,8 +169,8 @@ def kernel_paged_attention_2d_llama(
                                   other=0.0)
 
         num_blocks = cdiv_fn(seq_len, BLOCK_SIZE)
-        
-        # acc_pos = 0
+        prev_rot_offset = tl.full([], -1, dtype=tl.int32)
+
         # iterate through tiles - sparse rotation version
         for j in range(0, num_blocks):
             # physical_block_idx = tl.load(block_tables_ptr + block_table_offset + j)
@@ -177,13 +178,9 @@ def kernel_paged_attention_2d_llama(
             # q_mask_val = 0 #tl.load(q_mask_ptr + block_table_offset + j)
             
             packed_val = tl.load(block_tables_ptr + block_table_offset + j)
-            # fused_info = physical_block_idx
             physical_block_idx = (packed_val >> 32).to(tl.int32)
             rot_offset_val = ((packed_val >> 16) & 0xFFFF).to(tl.int32)
             q_mask_val = (packed_val & 0xFFFF).to(tl.int32)
-            # if ((seq_idx == 0 and kv_head_idx == 0) and j == 0):
-            #     tl.device_print("llama packed info:", packed_val, p_physical_block_idx, p_rot_offset_val, p_q_mask_val)
-            #     tl.device_print("llama info:", physical_block_idx, rot_offset_val, q_mask_val)
 
             offs_n = tl.arange(0, BLOCK_SIZE)
             offs_d = tl.arange(0, HEAD_SIZE_PADDED)
@@ -204,7 +201,7 @@ def kernel_paged_attention_2d_llama(
                                 other=0.0)
 
             if K_load.dtype.is_fp8():
-                K = (K_load.to(tl.float32) * tl.load(k_scale)).to(Q_rotated.dtype)
+                K = (K_load.to(tl.float32) * tl.load(k_scale)).to(Q_full.dtype)
             else:
                 K = K_load
 
@@ -213,7 +210,7 @@ def kernel_paged_attention_2d_llama(
                             other=0.0)
 
             if V_load.dtype.is_fp8():
-                V = (V_load.to(tl.float32) * tl.load(v_scale)).to(Q_rotated.dtype)
+                V = (V_load.to(tl.float32) * tl.load(v_scale)).to(Q_full.dtype)
             else:
                 V = V_load
 
@@ -227,34 +224,35 @@ def kernel_paged_attention_2d_llama(
             # Then we save one subtraction operation here.
             seq_mask = seq_mask & (tl.arange(0, BLOCK_SIZE) < (BLOCK_SIZE - q_mask_val))
 
-            if rot_offset_val != 0:
-                # Only rotate when necessary
-                cos_val, sin_val = llama_cos_sin(rot_offset_val - 1,
-                                                 HEAD_SIZE=HEAD_SIZE,
-                                                 ORIG_MAX_POSITION=8192,
-                                                 LOW_FACTOR=1.0,
-                                                 HIGH_FACTOR=4.0,
-                                                 SCALING_FACTOR=8.0,
-                                                 PI_VALUE=3.141592653589793,
-                                                 BASE=500000.0)
-                cols = tl.arange(0, HEAD_SIZE)
+            if rot_offset_val != prev_rot_offset:
+                if rot_offset_val == 1:
+                    Q_rotated = Q_full
+                elif rot_offset_val != 0:
+                    # q_offset stores the absolute rotation position with a +1 bias.
+                    # Rebuild from Q_full so numerical error does not accumulate.
+                    cos_val, sin_val = llama_cos_sin(rot_offset_val - 1,
+                                                     HEAD_SIZE=HEAD_SIZE,
+                                                     ORIG_MAX_POSITION=8192,
+                                                     LOW_FACTOR=1.0,
+                                                     HIGH_FACTOR=4.0,
+                                                     SCALING_FACTOR=8.0,
+                                                     PI_VALUE=3.141592653589793,
+                                                     BASE=500000.0)
+                    q1 = tl.where(mask_q1[None, :], Q_full, Q_rev)
+                    q2 = tl.where(mask_q1[None, :], Q_rev, Q_full)
 
-                mask_q1 = cols < (HEAD_SIZE // 2)
+                    q1_new = q1 * cos_val + q2 * sin_val
+                    q2_new = -q1 * sin_val + q2 * cos_val
 
-                q1 = tl.where(mask_q1[None, :], Q_full, Q_rev)
-                q2 = tl.where(mask_q1[None, :], Q_rev, Q_full)
+                    Q_rotated = tl.where(mask_q1[None, :],
+                                         q1_new.to(Q_full.dtype),
+                                         q2_new.to(Q_full.dtype))
+                prev_rot_offset = rot_offset_val
+            qk = tl.dot(Q_rotated, K, input_precision=IN_PRECISION)
 
-                q1_new = q1 * cos_val + q2 * sin_val
-                q2_new = -q1 * sin_val + q2 * cos_val
-
-                # Restore the full Q_rotated
-                Q_rotated = tl.where(mask_q1[None, :], 
-                q1_new.to(Q_rotated.dtype), 
-                q2_new.to(Q_rotated.dtype))
-            
             S = tl.where(head_mask[:, None] & seq_mask, 0.0,
                         float("-inf")).to(tl.float32)
-            S += scale * tl.dot(Q_rotated, K)
+            S += scale * qk
 
             context_len = seq_len - 1
 
@@ -359,7 +357,6 @@ def kernel_paged_attention_2d_llama(
         for j in range(0, num_blocks):
             packed_val = tl.load(block_tables_ptr + block_table_offset + j)
             physical_block_idx = (packed_val >> 32).to(tl.int32)
-            # physical_block_idx = tl.load(block_tables_ptr + block_table_offset + j)
 
             offs_n = tl.arange(0, BLOCK_SIZE)
             offs_d = tl.arange(0, HEAD_SIZE_PADDED)

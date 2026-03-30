@@ -82,6 +82,15 @@ class LazyGPUModelRunner(GPUModelRunner):
                                            device="cpu",
                                            pin_memory=self.pin_memory)
         self.is_lazy_req_np = self.is_lazy_req_cpu.numpy()
+
+        self.lazy_variant = torch.zeros(self.max_num_reqs,
+                                        dtype=torch.int32,
+                                        device=self.device)
+        self.lazy_variant_cpu = torch.zeros(self.max_num_reqs,
+                                            dtype=torch.int32,
+                                            device="cpu",
+                                            pin_memory=self.pin_memory)
+        self.lazy_variant_np = self.lazy_variant_cpu.numpy()
         
         self.lazy_offset = torch.zeros((self.max_num_reqs,
                                         self.max_num_blocks_per_req),
@@ -181,6 +190,7 @@ class LazyGPUModelRunner(GPUModelRunner):
 # /////////////////////////////////////////////////////////////////////////////
                 # They are all immutable
                 is_lazy=new_req_data.is_lazy,
+                lazy_variant=new_req_data.lazy_variant,
                 q_offset=new_req_data.q_offset,
                 q_mask=new_req_data.q_mask,
 # /////////////////////////////////////////////////////////////////////////////
@@ -340,18 +350,23 @@ class LazyGPUModelRunner(GPUModelRunner):
         num_reqs = len(req_ids)
         any_is_lazy = any([self.requests[req_id].is_lazy for req_id in req_ids])
         self.is_lazy_req_cpu[:num_reqs].fill_(False)
+        self.lazy_variant_cpu[:num_reqs].fill_(0)
         if any_is_lazy:
             # We need transmit the offest to the GPU
             # Flush the row
             self.lazy_offset_cpu[:num_reqs].fill_(0)
+            self.lazy_mask_cpu[:num_reqs].fill_(0)
             for idx, req_id in enumerate(req_ids):
                 cur_is_lazy = self.requests[req_id].is_lazy
                 if cur_is_lazy:
                     self.is_lazy_req_cpu[idx] = cur_is_lazy
+                    self.lazy_variant_np[idx] = self.requests[req_id].lazy_variant
                     self.lazy_offset_np[idx, 
                         :len(self.requests[req_id].q_offset)] = self.requests[req_id].q_offset
                     self.lazy_mask_np[idx,
                         :len(self.requests[req_id].q_mask)] = self.requests[req_id].q_mask
+            self.lazy_variant[:num_reqs].copy_(self.lazy_variant_cpu[:num_reqs],
+                                          non_blocking=True)
             self.lazy_offset[:num_reqs].copy_(self.lazy_offset_cpu[:num_reqs],
                                           non_blocking=True)
             self.lazy_mask[:num_reqs].copy_(self.lazy_mask_cpu[:num_reqs],
@@ -458,6 +473,7 @@ class LazyGPUModelRunner(GPUModelRunner):
 # ///////////////////////////////////////////////////////////////////////////
         # We insert the lazy_mask and lazy_offset into the attn_metadata
         attn_metadata.is_lazy = self.is_lazy_req[:num_reqs]
+        attn_metadata.lazy_variant = self.lazy_variant[:num_reqs]
         attn_metadata.q_offset = self.lazy_offset[:num_reqs]
         attn_metadata.q_mask = self.lazy_mask[:num_reqs]
 # ////////////////////////////////////////////////////////////////////////////

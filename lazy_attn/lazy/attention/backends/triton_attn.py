@@ -10,6 +10,15 @@ from vllm.attention.ops.paged_attn import PagedAttention
 
 from .flash_attn import FlashAttentionMetadata
 from ..ops.chunked_prefill_paged_decode import chunked_prefill_paged_decode
+from ..old_ops.chunked_prefill_paged_decode import (
+    chunked_prefill_paged_decode as chunked_prefill_paged_decode_old)
+from lazy.utils.variants import (
+    LAZY_VARIANT_MEPIC,
+    get_lazy_attention_variant_code,
+)
+
+
+USE_OLD_MEPIC_KERNEL = (get_lazy_attention_variant_code() == LAZY_VARIANT_MEPIC)
 
 # class TritonAttentionImpl(AttentionImpl):
 def forward(
@@ -63,6 +72,10 @@ def forward(
         layer._k_scale,
         layer._v_scale,
     )
+    is_lazy = None
+    lazy_variant = None
+    q_offset = None
+    q_mask = None
     use_local_attn = \
         (self.use_irope and attn_metadata.local_attn_metadata is not None)
     if use_local_attn:
@@ -81,38 +94,49 @@ def forward(
         block_table = attn_metadata.block_table
         # ////////
         is_lazy = attn_metadata.is_lazy
+        lazy_variant = attn_metadata.lazy_variant
         q_offset = attn_metadata.q_offset
         q_mask = attn_metadata.q_mask
     # Compute attention and update output up to `num_actual_tokens`.
     
     # NOTE(haocheng): we give query a extra budget
-    chunked_prefill_paged_decode(query=query[:num_actual_tokens+1],
-                                 key=key[:num_actual_tokens],
-                                 value=value[:num_actual_tokens],
-                                 output=output[:num_actual_tokens],
-                                 kv_cache_dtype=self.kv_cache_dtype,
-                                 key_cache=key_cache,
-                                 value_cache=value_cache,
-                                 block_table=block_table,
-                                 query_start_loc=cu_seqlens_q,
-                                 seq_lens=sequesd_k,
-                                 max_seq_len=max_seqlen_k,
-                                 max_query_len=max_seqlen_q,
-                                 k_scale=layer._k_scale,
-                                 v_scale=layer._v_scale,
-                                 alibi_slopes=self.alibi_slopes,
-                                 sliding_window=self.sliding_window[0],
-                                 sm_scale=self.scale,
-                                 # //////////////
-                                 freqs=freqs,
-                                 cos_sin_cache=cos_sin_cache,
-                                 rotary_dim=rotary_dim,
-                                 is_neox_style=is_neox_style,
-                                 # in order to rotate the query
-                                 is_lazy=is_lazy,
-                                 q_offset=q_offset,
-                                 q_mask=q_mask,
-                                 )
+    kernel_kwargs = dict(
+        query=query[:num_actual_tokens+1],
+        key=key[:num_actual_tokens],
+        value=value[:num_actual_tokens],
+        output=output[:num_actual_tokens],
+        kv_cache_dtype=self.kv_cache_dtype,
+        key_cache=key_cache,
+        value_cache=value_cache,
+        block_table=block_table,
+        query_start_loc=cu_seqlens_q,
+        seq_lens=sequesd_k,
+        max_seq_len=max_seqlen_k,
+        max_query_len=max_seqlen_q,
+        k_scale=layer._k_scale,
+        v_scale=layer._v_scale,
+        alibi_slopes=self.alibi_slopes,
+        sliding_window=self.sliding_window[0],
+        sm_scale=self.scale,
+        cos_sin_cache=cos_sin_cache,
+        rotary_dim=rotary_dim,
+        is_neox_style=is_neox_style,
+    )
+    if USE_OLD_MEPIC_KERNEL:
+        kernel_kwargs.update(
+            q_offset=q_offset,
+            q_mask=q_mask,
+        )
+        chunked_prefill_paged_decode_old(**kernel_kwargs)
+    else:
+        kernel_kwargs.update(
+            freqs=freqs,
+            is_lazy=is_lazy,
+            lazy_variant=lazy_variant,
+            q_offset=q_offset,
+            q_mask=q_mask,
+        )
+        chunked_prefill_paged_decode(**kernel_kwargs)
     return output
 
 

@@ -36,6 +36,7 @@ class CachedRequestState:
     
     # For q rotation in lazy attention
     is_lazy: bool = False
+    lazy_variant: int = 0
     q_offset: Optional[list[int]] = None
     q_mask: Optional[list[int]] = None
 

@@ -14,6 +14,9 @@ from vllm.attention.ops.chunked_prefill_paged_decode import kernel_paged_attenti
 from lazy.attention.ops.prefix_prefill import context_attention_fwd, IS_TURING
 
 from lazy.attention.ops.models.llama_v1 import kernel_paged_attention_2d_llama
+from lazy.attention.old_ops.chunked_prefill_paged_decode import (
+    kernel_paged_attention_2d as kernel_paged_attention_2d_old,
+)
 
 
 @triton.jit
@@ -252,11 +255,8 @@ def kernel_paged_attention_2d(
                 
                 prev_offset = rot_offset_val
             
-            # 统一路径：都使用完整GEMM
             S = tl.where(head_mask[:, None] & seq_mask, 0.0,
                         float("-inf")).to(tl.float32)
-            
-            # 关键优化：所有blocks都使用高效的完整GEMM
             qk = tl.dot(Q_rotated, K_full, input_precision=IN_PRECISION)
             
             S += scale * qk
@@ -467,8 +467,10 @@ def chunked_prefill_paged_decode(
     is_neox_style=True,
     # To rotate the query
     is_lazy=None,
+    lazy_variant=None,
     q_offset=None,
     q_mask=None,
+    use_old_decode_kernel: bool = False,
 ):
     import os 
     if os.environ.get("NO_LAZY", "0") == "1":
@@ -547,61 +549,103 @@ def chunked_prefill_paged_decode(
     if use_custom:
         raise NotImplementedError("Custom paged attention is not implemented")
     else:
-        # print("block table before:", block_table)
-        block_table.bitwise_left_shift_(32)
-        temp_q_offset = q_offset.to(torch.int64) << 16
-        block_table.bitwise_or_(temp_q_offset)
-        block_table.bitwise_or_(q_mask.to(torch.int64))
-        kernel_paged_attention_2d_llama[(
-            num_seqs,
-            num_kv_heads,
-        )](
-            output_ptr=output,
-            query_ptr=query,
-            key_cache_ptr=key_cache,
-            value_cache_ptr=value_cache,
-            block_tables_ptr=block_table,
-            seq_lens_ptr=seq_lens,
-            alibi_slopes_ptr=alibi_slopes,
-            scale=sm_scale,
-            k_scale=k_scale,
-            v_scale=v_scale,
-            num_query_heads=num_query_heads,
-            num_queries_per_kv=num_queries_per_kv,
-            num_queries_per_kv_padded=num_queries_per_kv_padded,
-            block_table_stride=block_table.stride(0),
-            query_stride_0=query.stride(0),
-            query_stride_1=query.stride(1),
-            output_stride_0=output.stride(0),
-            output_stride_1=output.stride(1),
-            IN_PRECISION=IN_PRECISION,
-            BLOCK_SIZE=block_size,
-            HEAD_SIZE=head_size,
-            HEAD_SIZE_PADDED=triton.next_power_of_2(head_size),
-            USE_ALIBI_SLOPES=use_alibi_slopes,
-            SLIDING_WINDOW=sliding_window,
-            x=key_cache.shape[4],
-            stride_k_cache_0=key_cache.stride(0),
-            stride_k_cache_1=key_cache.stride(1),
-            stride_k_cache_2=key_cache.stride(2),
-            stride_k_cache_3=key_cache.stride(3),
-            stride_k_cache_4=key_cache.stride(4),
-            stride_v_cache_0=value_cache.stride(0),
-            stride_v_cache_1=value_cache.stride(1),
-            stride_v_cache_2=value_cache.stride(2),
-            stride_v_cache_3=value_cache.stride(3),
-            filter_by_query_len=True,
-            query_start_len_ptr=query_start_loc,
-            rotary_dim=rotary_dim,
-            rotary_dim_pow2=triton.next_power_of_2(rotary_dim),  # padded
-            # cos_sin_cache_ptr=cos_sin_cache,
-            # freqs_ptr=new_freqs,
-            is_neox_style=is_neox_style,
-            # To rotate the query
-            is_lazy_ptr=is_lazy,
-            q_offset_ptr=q_offset,
-            q_mask_ptr=q_mask,
-        )
-        
-        block_table.bitwise_right_shift_(32)
-        # print("block table after:", block_table)
+        if use_old_decode_kernel:
+            kernel_paged_attention_2d_old[(
+                num_seqs,
+                num_kv_heads,
+            )](
+                output_ptr=output,
+                query_ptr=query,
+                key_cache_ptr=key_cache,
+                value_cache_ptr=value_cache,
+                block_tables_ptr=block_table,
+                q_mask_ptr=q_mask,
+                seq_lens_ptr=seq_lens,
+                alibi_slopes_ptr=alibi_slopes,
+                scale=sm_scale,
+                k_scale=k_scale,
+                v_scale=v_scale,
+                num_query_heads=num_query_heads,
+                num_queries_per_kv=num_queries_per_kv,
+                num_queries_per_kv_padded=num_queries_per_kv_padded,
+                block_table_stride=block_table.stride(0),
+                query_stride_0=query.stride(0),
+                query_stride_1=query.stride(1),
+                output_stride_0=output.stride(0),
+                output_stride_1=output.stride(1),
+                IN_PRECISION=IN_PRECISION,
+                BLOCK_SIZE=block_size,
+                HEAD_SIZE=head_size,
+                HEAD_SIZE_PADDED=triton.next_power_of_2(head_size),
+                USE_ALIBI_SLOPES=use_alibi_slopes,
+                SLIDING_WINDOW=sliding_window,
+                x=key_cache.shape[4],
+                stride_k_cache_0=key_cache.stride(0),
+                stride_k_cache_1=key_cache.stride(1),
+                stride_k_cache_2=key_cache.stride(2),
+                stride_k_cache_3=key_cache.stride(3),
+                stride_k_cache_4=key_cache.stride(4),
+                stride_v_cache_0=value_cache.stride(0),
+                stride_v_cache_1=value_cache.stride(1),
+                stride_v_cache_2=value_cache.stride(2),
+                stride_v_cache_3=value_cache.stride(3),
+                filter_by_query_len=True,
+                query_start_len_ptr=query_start_loc,
+                rotary_dim=rotary_dim,
+                rotary_dim_pow2=triton.next_power_of_2(rotary_dim),
+                cos_sin_cache_ptr=cos_sin_cache,
+                is_neox_style=is_neox_style,
+            )
+        else:
+            block_table.bitwise_left_shift_(32)
+            temp_q_offset = q_offset.to(torch.int64) << 16
+            block_table.bitwise_or_(temp_q_offset)
+            block_table.bitwise_or_(q_mask.to(torch.int64))
+            kernel_paged_attention_2d_llama[(
+                num_seqs,
+                num_kv_heads,
+            )](
+                output_ptr=output,
+                query_ptr=query,
+                key_cache_ptr=key_cache,
+                value_cache_ptr=value_cache,
+                block_tables_ptr=block_table,
+                seq_lens_ptr=seq_lens,
+                alibi_slopes_ptr=alibi_slopes,
+                scale=sm_scale,
+                k_scale=k_scale,
+                v_scale=v_scale,
+                num_query_heads=num_query_heads,
+                num_queries_per_kv=num_queries_per_kv,
+                num_queries_per_kv_padded=num_queries_per_kv_padded,
+                block_table_stride=block_table.stride(0),
+                query_stride_0=query.stride(0),
+                query_stride_1=query.stride(1),
+                output_stride_0=output.stride(0),
+                output_stride_1=output.stride(1),
+                IN_PRECISION=IN_PRECISION,
+                BLOCK_SIZE=block_size,
+                HEAD_SIZE=head_size,
+                HEAD_SIZE_PADDED=triton.next_power_of_2(head_size),
+                USE_ALIBI_SLOPES=use_alibi_slopes,
+                SLIDING_WINDOW=sliding_window,
+                x=key_cache.shape[4],
+                stride_k_cache_0=key_cache.stride(0),
+                stride_k_cache_1=key_cache.stride(1),
+                stride_k_cache_2=key_cache.stride(2),
+                stride_k_cache_3=key_cache.stride(3),
+                stride_k_cache_4=key_cache.stride(4),
+                stride_v_cache_0=value_cache.stride(0),
+                stride_v_cache_1=value_cache.stride(1),
+                stride_v_cache_2=value_cache.stride(2),
+                stride_v_cache_3=value_cache.stride(3),
+                filter_by_query_len=True,
+                query_start_len_ptr=query_start_loc,
+                rotary_dim=rotary_dim,
+                rotary_dim_pow2=triton.next_power_of_2(rotary_dim),  # padded
+                is_neox_style=is_neox_style,
+                is_lazy_ptr=is_lazy,
+                q_offset_ptr=q_offset,
+                q_mask_ptr=q_mask,
+            )
+            block_table.bitwise_right_shift_(32)
