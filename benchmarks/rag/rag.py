@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 import os
-os.environ["VLLM_ATTENTION_BACKEND"] = "TRITON_ATTN_VLLM_V1" 
-
 if os.environ.get("VLLM_USE_LAZY_ATTENTION", "0") == "1":
+    os.environ["VLLM_ATTENTION_BACKEND"] = "TRITON_ATTN_VLLM_V1"
     import lazy.__vllm__
     
 import uuid
@@ -1522,7 +1521,10 @@ def prepare_lmcache(async_engine_args: AsyncEngineArgs)-> None:
 
 
 def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
-    torch.cuda.empty_cache()
+    # Avoid touching CUDA in the parent process for plain AsyncLLM/vLLM
+    # baselines, since they may start worker processes via fork.
+    if os.environ.get("VLLM_USE_LAZY_ATTENTION", "0") == "1":
+        torch.cuda.empty_cache()
     engine_args.max_model_len = 8192 * 8 * 2
     # engine_args.dtype = "float32"
     # engine_args.compilation_config = None
@@ -1578,4 +1580,3 @@ def make_rag(args: RAGArgs, engine_args: EngineArgs = EngineArgs()) -> RAG:
     logger.error(f"Invalid RAG type {args.rag_type}")
     sys.exit(1)
     
-

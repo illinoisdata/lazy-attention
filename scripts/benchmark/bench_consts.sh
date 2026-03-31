@@ -448,6 +448,11 @@ function prepare_sut() {
                     echo "Unsetting VLLM_USE_LAZY_ATTENTION for $_SUT"
                     unset VLLM_USE_LAZY_ATTENTION
                 fi
+                if [[ ! -z "$VLLM_ATTENTION_BACKEND" ]]
+                then
+                    echo "Unsetting VLLM_ATTENTION_BACKEND for $_SUT"
+                    unset VLLM_ATTENTION_BACKEND
+                fi
                 if [[ ! -z "$VLLM_USE_BLOCK_ATTENTION" ]]
                 then
                     echo "Unsetting VLLM_USE_BLOCK_ATTENTION for $_SUT"

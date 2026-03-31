@@ -63,6 +63,11 @@ logger = init_logger(__name__)
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from lazy.worker.gpu_input_batch import CachedRequestState
 from lazy.attention.backends.flash_attn import FlashAttentionMetadata
+from lazy.utils.variants import (lazy_shared_kv_profile_enabled,
+                                 lazy_shared_kv_profile_min_reqs)
+
+LAZY_SHARED_KV_PROFILE = lazy_shared_kv_profile_enabled()
+LAZY_SHARED_KV_PROFILE_MIN_REQS = lazy_shared_kv_profile_min_reqs()
 
 class LazyGPUModelRunner(GPUModelRunner):
 
@@ -113,6 +118,39 @@ class LazyGPUModelRunner(GPUModelRunner):
                                             device="cpu",
                                             pin_memory=self.pin_memory)
         self.lazy_mask_np = self.lazy_mask_cpu.numpy()
+
+    def _refresh_lazy_metadata_buffers(self) -> None:
+        req_ids = self.input_batch.req_ids
+        num_reqs = len(req_ids)
+
+        self.is_lazy_req_cpu[:num_reqs].fill_(False)
+        self.lazy_variant_cpu[:num_reqs].fill_(0)
+        self.lazy_offset_cpu[:num_reqs].fill_(0)
+        self.lazy_mask_cpu[:num_reqs].fill_(0)
+
+        any_is_lazy = False
+        for idx, req_id in enumerate(req_ids):
+            req_state = self.requests[req_id]
+            if not req_state.is_lazy:
+                continue
+            any_is_lazy = True
+            self.is_lazy_req_cpu[idx] = True
+            self.lazy_variant_np[idx] = req_state.lazy_variant
+            if req_state.q_offset is not None:
+                self.lazy_offset_np[idx, :len(req_state.q_offset)] = (
+                    req_state.q_offset)
+            if req_state.q_mask is not None:
+                self.lazy_mask_np[idx, :len(req_state.q_mask)] = req_state.q_mask
+
+        self.is_lazy_req[:num_reqs].copy_(self.is_lazy_req_cpu[:num_reqs],
+                                          non_blocking=True)
+        self.lazy_variant[:num_reqs].copy_(self.lazy_variant_cpu[:num_reqs],
+                                           non_blocking=True)
+        if any_is_lazy:
+            self.lazy_offset[:num_reqs].copy_(self.lazy_offset_cpu[:num_reqs],
+                                              non_blocking=True)
+            self.lazy_mask[:num_reqs].copy_(self.lazy_mask_cpu[:num_reqs],
+                                            non_blocking=True)
 
     def _update_states(self, scheduler_output: "SchedulerOutput") -> None:
         """Update the cached states and the persistent batch with the scheduler
@@ -322,6 +360,7 @@ class LazyGPUModelRunner(GPUModelRunner):
             self.input_batch, scheduler_output)
 
         if batch_changed or batch_reordered:
+            self._refresh_lazy_metadata_buffers()
             self.input_batch.refresh_sampling_metadata()
 
     def _prepare_inputs(
@@ -329,6 +368,7 @@ class LazyGPUModelRunner(GPUModelRunner):
         scheduler_output: "SchedulerOutput",
     ) -> tuple[FlashAttentionMetadata, torch.Tensor,
                Optional[SpecDecodeMetadata]]:
+        prepare_start = time.perf_counter() if LAZY_SHARED_KV_PROFILE else 0.0
         total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         assert total_num_scheduled_tokens > 0
         num_reqs = self.input_batch.num_reqs
@@ -345,36 +385,20 @@ class LazyGPUModelRunner(GPUModelRunner):
         max_num_scheduled_tokens = max(tokens)
         
 # /////////////////////////////////////////////////////////////////////////////
-        # TODO(haocheng): optimize it
-        # Here we can use req ids to get the lazy_mask and lazy_offset
+        lazy_meta_start = time.perf_counter() if LAZY_SHARED_KV_PROFILE else 0.0
         num_reqs = len(req_ids)
-        any_is_lazy = any([self.requests[req_id].is_lazy for req_id in req_ids])
-        self.is_lazy_req_cpu[:num_reqs].fill_(False)
-        self.lazy_variant_cpu[:num_reqs].fill_(0)
+        any_is_lazy = bool(self.is_lazy_req_cpu[:num_reqs].any())
+        lazy_req_count = int(self.is_lazy_req_cpu[:num_reqs].sum())
+        lazy_offset_blocks = 0
         if any_is_lazy:
-            # We need transmit the offest to the GPU
-            # Flush the row
-            self.lazy_offset_cpu[:num_reqs].fill_(0)
-            self.lazy_mask_cpu[:num_reqs].fill_(0)
-            for idx, req_id in enumerate(req_ids):
-                cur_is_lazy = self.requests[req_id].is_lazy
-                if cur_is_lazy:
-                    self.is_lazy_req_cpu[idx] = cur_is_lazy
-                    self.lazy_variant_np[idx] = self.requests[req_id].lazy_variant
-                    self.lazy_offset_np[idx, 
-                        :len(self.requests[req_id].q_offset)] = self.requests[req_id].q_offset
-                    self.lazy_mask_np[idx,
-                        :len(self.requests[req_id].q_mask)] = self.requests[req_id].q_mask
-            self.lazy_variant[:num_reqs].copy_(self.lazy_variant_cpu[:num_reqs],
-                                          non_blocking=True)
-            self.lazy_offset[:num_reqs].copy_(self.lazy_offset_cpu[:num_reqs],
-                                          non_blocking=True)
-            self.lazy_mask[:num_reqs].copy_(self.lazy_mask_cpu[:num_reqs],
-                                          non_blocking=True)
-        # Copy the lazy_mask and lazy_offset to the GPU
-        self.is_lazy_req[:num_reqs].copy_(self.is_lazy_req_cpu[:num_reqs],
-                                          non_blocking=True)
-# /////////////////////////////////////////////////////////////////////////////
+            for req_id in req_ids:
+                req_state = self.requests[req_id]
+                if req_state.is_lazy and req_state.q_offset is not None:
+                    lazy_offset_blocks += len(req_state.q_offset)
+        lazy_meta_elapsed_ms = (
+            (time.perf_counter() - lazy_meta_start) * 1000.0
+            if LAZY_SHARED_KV_PROFILE else 0.0
+        )
 
         # Get request indices.
         # E.g., [2, 5, 3] -> [0, 0, 1, 1, 1, 1, 1, 2, 2, 2]
@@ -505,5 +529,20 @@ class LazyGPUModelRunner(GPUModelRunner):
         # Hot-Swap lora model
         if self.lora_config:
             self.set_active_loras(self.input_batch, num_scheduled_tokens)
+
+        if LAZY_SHARED_KV_PROFILE and num_reqs >= LAZY_SHARED_KV_PROFILE_MIN_REQS:
+            logger.info(
+                "LazyProfile prepare_inputs: reqs=%d scheduled_tokens=%d "
+                "max_sched=%d any_is_lazy=%s lazy_reqs=%d lazy_blocks=%d "
+                "lazy_meta_ms=%.3f total_ms=%.3f",
+                num_reqs,
+                total_num_scheduled_tokens,
+                max_num_scheduled_tokens,
+                any_is_lazy,
+                lazy_req_count,
+                lazy_offset_blocks,
+                lazy_meta_elapsed_ms,
+                (time.perf_counter() - prepare_start) * 1000.0,
+            )
 
         return attn_metadata, logits_indices, spec_decode_metadata

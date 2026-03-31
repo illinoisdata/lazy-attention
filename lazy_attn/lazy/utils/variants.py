@@ -33,3 +33,27 @@ def mepic_first_block_recompute_enabled() -> bool:
     if value is None:
         return False
     return value.strip().lower() in _TRUTHY_ENV_VALUES
+
+
+def mepic_force_fp32_rotary_enabled() -> bool:
+    value = os.environ.get("MEPIC_FORCE_FP32_ROTARY")
+    if value is None:
+        return False
+    return value.strip().lower() in _TRUTHY_ENV_VALUES
+
+
+def lazy_shared_kv_profile_enabled() -> bool:
+    value = os.environ.get("LAZY_SHARED_KV_PROFILE")
+    if value is None:
+        return False
+    return value.strip().lower() in _TRUTHY_ENV_VALUES
+
+
+def lazy_shared_kv_profile_min_reqs() -> int:
+    value = os.environ.get("LAZY_SHARED_KV_PROFILE_MIN_REQS")
+    if value is None:
+        return 32
+    try:
+        return max(int(value), 1)
+    except ValueError:
+        return 32

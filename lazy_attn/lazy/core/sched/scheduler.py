@@ -50,6 +50,8 @@ from lazy.request import LazyRequest as Request
 from lazy.engine import EngineCoreRequest, EngineCoreEventType
 from lazy.core.sched.output import NewRequestData
 from lazy.utils.variants import (get_lazy_attention_variant_code,
+                                 lazy_shared_kv_profile_enabled,
+                                 lazy_shared_kv_profile_min_reqs,
                                  mepic_first_block_recompute_enabled)
 
 # For patch
@@ -64,6 +66,8 @@ from vllm.v1.core.sched.scheduler import Scheduler
 
 LAZY_ATTENTION_VARIANT = get_lazy_attention_variant_code()
 MEPIC_FIRST_BLOCK_RECOMPUTE = mepic_first_block_recompute_enabled()
+LAZY_SHARED_KV_PROFILE = lazy_shared_kv_profile_enabled()
+LAZY_SHARED_KV_PROFILE_MIN_REQS = lazy_shared_kv_profile_min_reqs()
 
 
 class LazyScheduler(Scheduler):
@@ -177,6 +181,7 @@ class LazyScheduler(Scheduler):
         logger.info(f"LazyScheduler launched")
 
     def schedule(self) -> SchedulerOutput:
+        schedule_start = time.perf_counter() if LAZY_SHARED_KV_PROFILE else 0.0
         logger.debug(f"Scheduler: waiting={dump_dequeue(self.waiting)}, "
                     f"running={[req.request_id for req in self.running]}")
         # NOTE(woosuk) on the scheduling algorithm:
@@ -221,6 +226,9 @@ class LazyScheduler(Scheduler):
         # For lazy attention.
         req_to_q_offset: dict[str, list[int]] = {}
         req_to_q_mask: dict[str, list[int]] = {}
+        lazy_metadata_requests = 0
+        lazy_metadata_blocks = 0
+        lazy_doc_merges = 0
 
         # ///////////////////////////////////////////////////////////////////////
         # First, schedule the RUNNING requests.
@@ -431,6 +439,7 @@ class LazyScheduler(Scheduler):
                 if request.has_documents:
                     # Case 2 -> Case 1.2
                     request.merge_documents()
+                    lazy_doc_merges += 1
                     logger.debug(f"Request {request.request_id} merges "
                                  f"documents, total prompt len "
                                  f"{request.num_prompt_tokens}")
@@ -467,6 +476,9 @@ class LazyScheduler(Scheduler):
                     (req_to_q_offset[request.request_id], 
                      req_to_q_mask[request.request_id]) = \
                         metadata_for_variant(request, self.block_size)
+                    lazy_metadata_requests += 1
+                    lazy_metadata_blocks += len(
+                        req_to_q_offset[request.request_id])
                     logger.debug(f"Request {request.request_id} has "
                                  f"query offset {req_to_q_offset[request.request_id]} "
                                  f"and query mask {req_to_q_mask[request.request_id]}")
@@ -659,6 +671,23 @@ class LazyScheduler(Scheduler):
             self.requests[req_id].num_computed_tokens += num_scheduled_token
 
         self.finished_req_ids = set()
+        if LAZY_SHARED_KV_PROFILE:
+            active_reqs = len(self.running) + len(self.waiting)
+            if active_reqs >= LAZY_SHARED_KV_PROFILE_MIN_REQS:
+                logger.info(
+                    "LazyProfile schedule: active=%d running=%d waiting=%d "
+                    "scheduled=%d tokens=%d docs_merged=%d lazy_meta_reqs=%d "
+                    "lazy_meta_blocks=%d elapsed_ms=%.3f",
+                    active_reqs,
+                    len(self.running),
+                    len(self.waiting),
+                    len(num_scheduled_tokens),
+                    total_num_scheduled_tokens,
+                    lazy_doc_merges,
+                    lazy_metadata_requests,
+                    lazy_metadata_blocks,
+                    (time.perf_counter() - schedule_start) * 1000.0,
+                )
         logger.debug(f"Scheduler output: {scheduler_output}")
         return scheduler_output
 

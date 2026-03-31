@@ -15,10 +15,12 @@ from ..old_ops.chunked_prefill_paged_decode import (
 from lazy.utils.variants import (
     LAZY_VARIANT_MEPIC,
     get_lazy_attention_variant_code,
+    mepic_force_fp32_rotary_enabled,
 )
 
 
 USE_OLD_MEPIC_KERNEL = (get_lazy_attention_variant_code() == LAZY_VARIANT_MEPIC)
+MEPIC_FORCE_FP32_ROTARY = mepic_force_fp32_rotary_enabled()
 
 # class TritonAttentionImpl(AttentionImpl):
 def forward(
@@ -125,8 +127,10 @@ def forward(
     if USE_OLD_MEPIC_KERNEL:
         kernel_kwargs.update(
             q_offset=q_offset,
-            q_mask=q_mask,
-        )
+                q_mask=q_mask,
+                is_mepic=True,
+                force_fp32_rotary=MEPIC_FORCE_FP32_ROTARY,
+            )
         chunked_prefill_paged_decode_old(**kernel_kwargs)
     else:
         kernel_kwargs.update(

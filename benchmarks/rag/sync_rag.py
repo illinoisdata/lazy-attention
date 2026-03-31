@@ -22,9 +22,8 @@ from __future__ import annotations
 # Deal with LazyAttention monkey patch
 # ------------------------------------------------------------
 import os
-os.environ["VLLM_ATTENTION_BACKEND"] = "TRITON_ATTN_VLLM_V1" 
-
 if os.environ.get("VLLM_USE_LAZY_ATTENTION", "0") == "1":
+    os.environ["VLLM_ATTENTION_BACKEND"] = "TRITON_ATTN_VLLM_V1"
     import lazy.__vllm__
 # ------------------------------------------------------------
 

@@ -40,6 +40,7 @@ def _fwd_kernel(Q,
                 B_Loc,
                 q_mask_ptr,
                 q_offset_ptr,
+                is_mepic_ptr,
                 sm_scale,
                 k_scale,
                 v_scale,
@@ -83,6 +84,7 @@ def _fwd_kernel(Q,
                 SKIP_DECODE: tl.constexpr,
                 # /////////////////
                 cos_sin_cache,
+                FORCE_FP32_ROTARY: tl.constexpr,
                 rotary_dim: tl.constexpr,
                 rotary_dim_pow2: tl.constexpr,
                 is_neox_style: tl.constexpr,
@@ -102,6 +104,7 @@ def _fwd_kernel(Q,
     cur_batch_query_len = (cur_batch_in_all_stop_index -
                            cur_batch_in_all_start_index)
     cur_batch_ctx_len = cur_batch_seq_len - cur_batch_query_len
+    is_mepic = tl.load(is_mepic_ptr + cur_batch)
 
     if SKIP_DECODE and cur_batch_query_len == 1:
         return
@@ -161,8 +164,6 @@ def _fwd_kernel(Q,
         start_n = tl.multiple_of(start_n, BLOCK_SIZE)
         q_mask_val = tl.load(q_mask_ptr + cur_batch * stride_b_loc_b +
                              (start_n // BLOCK_SIZE) * stride_b_loc_s)
-        rot_offset_val = tl.load(q_offset_ptr + cur_batch * stride_b_loc_b +
-                                 (start_n // BLOCK_SIZE) * stride_b_loc_s)
         seq_bound = min(cur_batch_ctx_len, start_n + BLOCK_SIZE - q_mask_val)
         # -- compute qk ----
         bn = tl.load(B_Loc + cur_batch * stride_b_loc_b +
@@ -179,10 +180,16 @@ def _fwd_kernel(Q,
             ((start_n + offs_bs_n[None, :]) % BLOCK_SIZE) * stride_k_cache_bl +
             (offs_d2[:, None] % x) * stride_k_cache_x)
 
-        pos_base = start_n
-        if rot_offset_val != 0:
-            pos_base = rot_offset_val - 1
-        off_cos = ((pos_base + offs_bs_n[None, :]) * rotary_dim +
+        if is_mepic:
+            positions = start_n + offs_bs_n
+        else:
+            rot_offset_val = tl.load(q_offset_ptr + cur_batch * stride_b_loc_b +
+                                     (start_n // BLOCK_SIZE) * stride_b_loc_s)
+            pos_base = start_n
+            if rot_offset_val != 0:
+                pos_base = rot_offset_val - 1
+            positions = pos_base + offs_bs_n
+        off_cos = ((positions[None, :]) * rotary_dim +
                 offs_d1[:, None])
 
         # [BLOCK_SIZE,D]
@@ -236,10 +243,21 @@ def _fwd_kernel(Q,
             k_1 = k_load_1
             k_2 = k_load_2
             
-        # fuse rotary embedding
+        q_1_dot = q_1
+        q_2_dot = q_2
+        if FORCE_FP32_ROTARY:
+            k_1_rot = k_1.to(tl.float32)
+            k_2_rot = k_2.to(tl.float32)
+            cos_dot = cos_val.to(tl.float32)
+            sin_dot = sin_val.to(tl.float32)
+            rhs_1 = (k_1_rot * cos_dot - k_2_rot * sin_dot).to(q_1.dtype)
+            rhs_2 = (k_1_rot * sin_dot + k_2_rot * cos_dot).to(q_1.dtype)
+        else:
+            rhs_1 = k_1 * cos_val - k_2 * sin_val
+            rhs_2 = k_1 * sin_val + k_2 * cos_val
         qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)  # [M,N]
-        qk_1 = tl.dot(q_1, (k_1 * cos_val - k_2 * sin_val), input_precision=IN_PRECISION)
-        qk_2 = tl.dot(q_2, (k_1 * sin_val + k_2 * cos_val), input_precision=IN_PRECISION)
+        qk_1 = tl.dot(q_1_dot, rhs_1, input_precision=IN_PRECISION)
+        qk_2 = tl.dot(q_2_dot, rhs_2, input_precision=IN_PRECISION)
         qk = qk_1 + qk_2
         qk = tl.where((start_n + offs_bs_n[None, :]) < seq_bound, qk,
                         float("-inf"))
@@ -332,9 +350,19 @@ def _fwd_kernel(Q,
                           mask=dim_mask_half[:, None] &
                     ((start_n + offs_n[None, :]) < cur_batch_query_len),
                     other=0.0)
-        qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)     
-        qk = tl.dot(q_1, (k_1 * cos_val - k_2 * sin_val), acc=qk, input_precision=IN_PRECISION)
-        qk = tl.dot(q_2, (k_1 * sin_val + k_2 * cos_val), acc=qk, input_precision=IN_PRECISION)
+        if FORCE_FP32_ROTARY:
+            k_1_rot = k_1.to(tl.float32)
+            k_2_rot = k_2.to(tl.float32)
+            cos_dot = cos_val.to(tl.float32)
+            sin_dot = sin_val.to(tl.float32)
+            rhs_1 = (k_1_rot * cos_dot - k_2_rot * sin_dot).to(q_1.dtype)
+            rhs_2 = (k_1_rot * sin_dot + k_2_rot * cos_dot).to(q_1.dtype)
+        else:
+            rhs_1 = k_1 * cos_val - k_2 * sin_val
+            rhs_2 = k_1 * sin_val + k_2 * cos_val
+        qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+        qk = tl.dot(q_1, rhs_1, acc=qk, input_precision=IN_PRECISION)
+        qk = tl.dot(q_2, rhs_2, acc=qk, input_precision=IN_PRECISION)
 
         # qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
         # qk = tl.dot(q, k, acc=qk, input_precision=IN_PRECISION)
@@ -402,7 +430,9 @@ def context_attention_fwd(q,
                           rotary_dim=None,
                           is_neox_style=True,
                           q_mask=None,
-                          q_offset=None,):
+                          q_offset=None,
+                          is_mepic: bool = True,
+                          force_fp32_rotary: bool = False,):
 
     q_dtype_is_f32 = q.dtype is torch.float32
 
@@ -469,6 +499,7 @@ def context_attention_fwd(q,
         b_loc,
         q_mask,
         q_offset,
+        torch.full((batch,), is_mepic, device=q.device, dtype=torch.int32),
         sm_scale,
         k_scale,
         v_scale,
@@ -509,6 +540,7 @@ def context_attention_fwd(q,
         SKIP_DECODE=skip_decode,
         # /////////////////
         cos_sin_cache=cos_sin_cache,  # [max_position, rot_dim]
+        FORCE_FP32_ROTARY=force_fp32_rotary,
         rotary_dim=rotary_dim,
         rotary_dim_pow2=triton.next_power_of_2(rotary_dim),
         is_neox_style=is_neox_style,

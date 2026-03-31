@@ -46,6 +46,7 @@ def kernel_paged_attention_2d(
         HEAD_SIZE_PADDED: tl.constexpr,  # int, must be power of 2
         USE_ALIBI_SLOPES: tl.constexpr,  # bool
         SLIDING_WINDOW: tl.constexpr,  # int
+        FORCE_FP32_ROTARY: tl.constexpr,  # bool
         x: tl.constexpr,  # int
         stride_k_cache_0: tl.int64,  # int
         stride_k_cache_1: tl.int64,  # int
@@ -213,15 +214,22 @@ def kernel_paged_attention_2d(
         # S : (num_queries_per_kv, BLOCK_SIZE,)
         S = tl.where(head_mask[:, None] & seq_mask, 0.0,
                      float("-inf")).to(tl.float32)
+        Q_1_dot = Q_1
+        Q_2_dot = Q_2
+        if FORCE_FP32_ROTARY:
+            K_1_rot = K_1.to(tl.float32)
+            K_2_rot = K_2.to(tl.float32)
+            cos_dot = cos_val.to(tl.float32)
+            sin_dot = sin_val.to(tl.float32)
+            rhs_1 = (K_1_rot * cos_dot - K_2_rot * sin_dot).to(Q_1.dtype)
+            rhs_2 = (K_1_rot * sin_dot + K_2_rot * cos_dot).to(Q_1.dtype)
+        else:
+            rhs_1 = K_1 * cos_val - K_2 * sin_val
+            rhs_2 = K_1 * sin_val + K_2 * cos_val
         qk = tl.zeros([num_queries_per_kv_padded, BLOCK_SIZE],
                       dtype=tl.float32)
-        qk = tl.dot(Q_1, (K_1 * cos_val - K_2 * sin_val), acc=qk, input_precision=IN_PRECISION)
-        qk = tl.dot(Q_2, (K_1 * sin_val + K_2 * cos_val), acc=qk, input_precision=IN_PRECISION)
-        # rotated_k1 = K_1 * cos_val - K_2 * sin_val
-        # rotated_k2 = K_1 * sin_val + K_2 * cos_val
-        # qk1 = tl.dot(Q_1, rotated_k1, input_precision=IN_PRECISION)
-        # qk2 = tl.dot(Q_2, rotated_k2, input_precision=IN_PRECISION)
-        # qk = qk1 + qk2
+        qk = tl.dot(Q_1_dot, rhs_1, acc=qk, input_precision=IN_PRECISION)
+        qk = tl.dot(Q_2_dot, rhs_2, acc=qk, input_precision=IN_PRECISION)
         # S += scale * tl.dot(Q, K)
         S += scale * qk
 
@@ -294,6 +302,8 @@ def chunked_prefill_paged_decode(
     is_neox_style=True,
     q_offset=None,
     q_mask=None,
+    is_mepic: bool = True,
+    force_fp32_rotary: bool = False,
 ):
     q_dtype_is_f32 = query.dtype is torch.float32
     IN_PRECISION = 'ieee' if IS_TURING and q_dtype_is_f32 else None
@@ -335,6 +345,8 @@ def chunked_prefill_paged_decode(
             is_neox_style=is_neox_style,
             q_mask=q_mask,
             q_offset=q_offset,
+            is_mepic=is_mepic,
+            force_fp32_rotary=force_fp32_rotary,
         )
 
     block_size = value_cache.shape[3]
@@ -399,6 +411,7 @@ def chunked_prefill_paged_decode(
             HEAD_SIZE_PADDED=triton.next_power_of_2(head_size),
             USE_ALIBI_SLOPES=use_alibi_slopes,
             SLIDING_WINDOW=sliding_window,
+            FORCE_FP32_ROTARY=force_fp32_rotary,
             x=key_cache.shape[4],
             stride_k_cache_0=key_cache.stride(0),
             stride_k_cache_1=key_cache.stride(1),

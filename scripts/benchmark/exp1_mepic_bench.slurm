@@ -34,5 +34,6 @@ slurm_enter_repo
 
 export VLLM_LOGGING_LEVEL=DEBUG
 export LAZY_ATTENTION_VARIANT="${LAZY_ATTENTION_VARIANT:-mepic}"
+export MEPIC_FORCE_FP32_ROTARY="${MEPIC_FORCE_FP32_ROTARY:-1}"
 echo "Using LAZY_ATTENTION_VARIANT=${LAZY_ATTENTION_VARIANT} for exp1_mepic_bench"
 slurm_run_logged "log_${USER}.txt" bash scripts/benchmark/bench_exp1.sh lazyrag 2wikimqa

@@ -6,8 +6,8 @@ from vllm.v1.engine.async_llm import AsyncLLM
 import argparse
 
 import os
-
-os.environ["VLLM_ATTENTION_BACKEND"] = "TRITON_ATTN_VLLM_V1"
+if os.environ.get("VLLM_USE_LAZY_ATTENTION", "0") == "1":
+    os.environ["VLLM_ATTENTION_BACKEND"] = "TRITON_ATTN_VLLM_V1"
 
 
 async def generate_streaming_pre(prompt, num_docs=5, context_size=64000, model=None):
