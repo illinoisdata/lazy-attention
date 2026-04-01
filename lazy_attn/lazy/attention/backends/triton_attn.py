@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Attention layer with PagedAttention and Triton prefix prefill."""
+import os
+import time
 from typing import Any, Optional
 
 import torch
@@ -21,6 +23,37 @@ from lazy.utils.variants import (
 
 USE_OLD_MEPIC_KERNEL = (get_lazy_attention_variant_code() == LAZY_VARIANT_MEPIC)
 MEPIC_FORCE_FP32_ROTARY = mepic_force_fp32_rotary_enabled()
+PROFILE_ATTN_BACKEND = os.environ.get("LAZY_PROFILE_ATTN_BACKEND",
+                                      "0") == "1"
+
+_ATTN_PROFILE_STATE = {
+    "calls": 0,
+    "write_cache_ms": 0.0,
+    "backend_ms": 0.0,
+    "total_ms": 0.0,
+    "per_layer": {},
+}
+
+
+def reset_attention_backend_profile() -> None:
+    _ATTN_PROFILE_STATE["calls"] = 0
+    _ATTN_PROFILE_STATE["write_cache_ms"] = 0.0
+    _ATTN_PROFILE_STATE["backend_ms"] = 0.0
+    _ATTN_PROFILE_STATE["total_ms"] = 0.0
+    _ATTN_PROFILE_STATE["per_layer"] = {}
+
+
+def get_attention_backend_profile() -> dict[str, float]:
+    return {
+        "calls": _ATTN_PROFILE_STATE["calls"],
+        "write_cache_ms": _ATTN_PROFILE_STATE["write_cache_ms"],
+        "backend_ms": _ATTN_PROFILE_STATE["backend_ms"],
+        "total_ms": _ATTN_PROFILE_STATE["total_ms"],
+        "per_layer": {
+            layer: dict(stats)
+            for layer, stats in _ATTN_PROFILE_STATE["per_layer"].items()
+        },
+    }
 
 # class TritonAttentionImpl(AttentionImpl):
 def forward(
@@ -60,10 +93,12 @@ def forward(
     # Minimize the PyTorch ops in this method as much as possible.
     # Whenever making a change in this method, please benchmark the
     # performance to make sure it does not introduce any overhead.
+    total_start = time.perf_counter() if PROFILE_ATTN_BACKEND else 0.0
     num_actual_tokens = attn_metadata.num_actual_tokens
     key_cache, value_cache = PagedAttention.split_kv_cache(
         kv_cache, self.num_kv_heads, self.head_size)
     # Reshape the input keys and values and store them in the cache.
+    stage_start = time.perf_counter() if PROFILE_ATTN_BACKEND else 0.0
     PagedAttention.write_to_paged_cache(
         key,
         value,
@@ -74,6 +109,13 @@ def forward(
         layer._k_scale,
         layer._v_scale,
     )
+    if PROFILE_ATTN_BACKEND:
+        torch.cuda.synchronize()
+        write_cache_ms = (time.perf_counter() - stage_start) * 1000.0
+        _ATTN_PROFILE_STATE["write_cache_ms"] += (
+            write_cache_ms)
+    else:
+        write_cache_ms = 0.0
     is_lazy = None
     lazy_variant = None
     q_offset = None
@@ -94,6 +136,7 @@ def forward(
         max_seqlen_q = attn_metadata.max_query_len
         max_seqlen_k = attn_metadata.max_seq_len
         block_table = attn_metadata.block_table
+        packed_block_table = getattr(attn_metadata, "packed_block_table", None)
         # ////////
         is_lazy = attn_metadata.is_lazy
         lazy_variant = attn_metadata.lazy_variant
@@ -124,6 +167,7 @@ def forward(
         rotary_dim=rotary_dim,
         is_neox_style=is_neox_style,
     )
+    stage_start = time.perf_counter() if PROFILE_ATTN_BACKEND else 0.0
     if USE_OLD_MEPIC_KERNEL:
         kernel_kwargs.update(
             q_offset=q_offset,
@@ -139,8 +183,30 @@ def forward(
             lazy_variant=lazy_variant,
             q_offset=q_offset,
             q_mask=q_mask,
+            packed_block_table=packed_block_table,
         )
         chunked_prefill_paged_decode(**kernel_kwargs)
+    if PROFILE_ATTN_BACKEND:
+        torch.cuda.synchronize()
+        backend_ms = (time.perf_counter() - stage_start) * 1000.0
+        total_ms = (time.perf_counter() - total_start) * 1000.0
+        _ATTN_PROFILE_STATE["calls"] += 1
+        _ATTN_PROFILE_STATE["backend_ms"] += backend_ms
+        _ATTN_PROFILE_STATE["total_ms"] += total_ms
+        layer_name = getattr(layer, "layer_name", "") or "<unknown>"
+        layer_stats = _ATTN_PROFILE_STATE["per_layer"].setdefault(
+            layer_name,
+            {
+                "calls": 0,
+                "write_cache_ms": 0.0,
+                "backend_ms": 0.0,
+                "total_ms": 0.0,
+            },
+        )
+        layer_stats["calls"] += 1
+        layer_stats["write_cache_ms"] += write_cache_ms
+        layer_stats["backend_ms"] += backend_ms
+        layer_stats["total_ms"] += total_ms
     return output
 
 

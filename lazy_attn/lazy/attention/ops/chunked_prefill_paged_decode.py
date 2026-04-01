@@ -13,10 +13,18 @@ from vllm.attention.ops.chunked_prefill_paged_decode import kernel_paged_attenti
 
 from lazy.attention.ops.prefix_prefill import context_attention_fwd, IS_TURING
 
-from lazy.attention.ops.models.llama_v1 import kernel_paged_attention_2d_llama
+from lazy.attention.ops.models.llama_v1 import (
+    kernel_paged_attention_2d_llama,
+    kernel_paged_attention_2d_llama_lazy_only,
+)
 from lazy.attention.old_ops.chunked_prefill_paged_decode import (
     kernel_paged_attention_2d as kernel_paged_attention_2d_old,
 )
+
+
+def _cuda_elapsed_ms(start_event, end_event):
+    torch.cuda.synchronize()
+    return start_event.elapsed_time(end_event)
 
 
 @triton.jit
@@ -470,6 +478,7 @@ def chunked_prefill_paged_decode(
     lazy_variant=None,
     q_offset=None,
     q_mask=None,
+    packed_block_table=None,
     use_old_decode_kernel: bool = False,
 ):
     import os 
@@ -597,55 +606,80 @@ def chunked_prefill_paged_decode(
                 is_neox_style=is_neox_style,
             )
         else:
-            block_table.bitwise_left_shift_(32)
-            temp_q_offset = q_offset.to(torch.int64) << 16
-            block_table.bitwise_or_(temp_q_offset)
-            block_table.bitwise_or_(q_mask.to(torch.int64))
-            kernel_paged_attention_2d_llama[(
-                num_seqs,
-                num_kv_heads,
-            )](
-                output_ptr=output,
-                query_ptr=query,
-                key_cache_ptr=key_cache,
-                value_cache_ptr=value_cache,
-                block_tables_ptr=block_table,
-                seq_lens_ptr=seq_lens,
-                alibi_slopes_ptr=alibi_slopes,
-                scale=sm_scale,
-                k_scale=k_scale,
-                v_scale=v_scale,
-                num_query_heads=num_query_heads,
-                num_queries_per_kv=num_queries_per_kv,
-                num_queries_per_kv_padded=num_queries_per_kv_padded,
-                block_table_stride=block_table.stride(0),
-                query_stride_0=query.stride(0),
-                query_stride_1=query.stride(1),
-                output_stride_0=output.stride(0),
-                output_stride_1=output.stride(1),
-                IN_PRECISION=IN_PRECISION,
-                BLOCK_SIZE=block_size,
-                HEAD_SIZE=head_size,
-                HEAD_SIZE_PADDED=triton.next_power_of_2(head_size),
-                USE_ALIBI_SLOPES=use_alibi_slopes,
-                SLIDING_WINDOW=sliding_window,
-                x=key_cache.shape[4],
-                stride_k_cache_0=key_cache.stride(0),
-                stride_k_cache_1=key_cache.stride(1),
-                stride_k_cache_2=key_cache.stride(2),
-                stride_k_cache_3=key_cache.stride(3),
-                stride_k_cache_4=key_cache.stride(4),
-                stride_v_cache_0=value_cache.stride(0),
-                stride_v_cache_1=value_cache.stride(1),
-                stride_v_cache_2=value_cache.stride(2),
-                stride_v_cache_3=value_cache.stride(3),
-                filter_by_query_len=True,
-                query_start_len_ptr=query_start_loc,
-                rotary_dim=rotary_dim,
-                rotary_dim_pow2=triton.next_power_of_2(rotary_dim),  # padded
-                is_neox_style=is_neox_style,
-                is_lazy_ptr=is_lazy,
-                q_offset_ptr=q_offset,
-                q_mask_ptr=q_mask,
+            profile_decode = os.environ.get("LAZY_DECODE_WRAPPER_PROFILE", "0") == "1"
+            force_split_decode = os.environ.get("LAZY_FORCE_SPLIT_DECODE", "0") == "1"
+            all_lazy = (is_lazy is not None) and bool(torch.all(is_lazy).item())
+            if profile_decode:
+                total_start = torch.cuda.Event(enable_timing=True)
+                total_end = torch.cuda.Event(enable_timing=True)
+                kernel_start = torch.cuda.Event(enable_timing=True)
+                kernel_end = torch.cuda.Event(enable_timing=True)
+            decode_kernel = (kernel_paged_attention_2d_llama_lazy_only
+                             if force_split_decode and all_lazy
+                             else kernel_paged_attention_2d_llama)
+            decode_block_table = (
+                packed_block_table if packed_block_table is not None else block_table
             )
-            block_table.bitwise_right_shift_(32)
+            if profile_decode:
+                total_start.record()
+                kernel_start.record()
+            decode_kernel[(
+                    num_seqs,
+                    num_kv_heads,
+                )](
+                    output_ptr=output,
+                    query_ptr=query,
+                    key_cache_ptr=key_cache,
+                    value_cache_ptr=value_cache,
+                    block_tables_ptr=decode_block_table,
+                    seq_lens_ptr=seq_lens,
+                    alibi_slopes_ptr=alibi_slopes,
+                    scale=sm_scale,
+                    k_scale=k_scale,
+                    v_scale=v_scale,
+                    num_query_heads=num_query_heads,
+                    num_queries_per_kv=num_queries_per_kv,
+                    num_queries_per_kv_padded=num_queries_per_kv_padded,
+                    block_table_stride=decode_block_table.stride(0),
+                    query_stride_0=query.stride(0),
+                    query_stride_1=query.stride(1),
+                    output_stride_0=output.stride(0),
+                    output_stride_1=output.stride(1),
+                    IN_PRECISION=IN_PRECISION,
+                    BLOCK_SIZE=block_size,
+                    HEAD_SIZE=head_size,
+                    HEAD_SIZE_PADDED=triton.next_power_of_2(head_size),
+                    USE_ALIBI_SLOPES=use_alibi_slopes,
+                    SLIDING_WINDOW=sliding_window,
+                    x=key_cache.shape[4],
+                    stride_k_cache_0=key_cache.stride(0),
+                    stride_k_cache_1=key_cache.stride(1),
+                    stride_k_cache_2=key_cache.stride(2),
+                    stride_k_cache_3=key_cache.stride(3),
+                    stride_k_cache_4=key_cache.stride(4),
+                    stride_v_cache_0=value_cache.stride(0),
+                    stride_v_cache_1=value_cache.stride(1),
+                    stride_v_cache_2=value_cache.stride(2),
+                    stride_v_cache_3=value_cache.stride(3),
+                    filter_by_query_len=True,
+                    query_start_len_ptr=query_start_loc,
+                    rotary_dim=rotary_dim,
+                    rotary_dim_pow2=triton.next_power_of_2(rotary_dim),  # padded
+                    is_neox_style=is_neox_style,
+                    is_lazy_ptr=is_lazy,
+                    q_offset_ptr=q_offset,
+                    q_mask_ptr=q_mask,
+                )
+            if profile_decode:
+                kernel_end.record()
+                total_end.record()
+                kernel_ms = _cuda_elapsed_ms(kernel_start, kernel_end)
+                total_ms = _cuda_elapsed_ms(total_start, total_end)
+                other_ms = max(total_ms - kernel_ms, 0.0)
+                print(
+                    f"LazyDecodeProfile num_seqs={num_seqs} max_seq_len={max_seq_len} "
+                    f"heads={num_query_heads}/{num_kv_heads} split={int(force_split_decode and all_lazy)} "
+                    f"pack_ms={0.0:.3f} kernel_ms={kernel_ms:.3f} "
+                    f"unpack_ms={0.0:.3f} total_ms={total_ms:.3f} other_ms={other_ms:.3f}",
+                    flush=True,
+                )

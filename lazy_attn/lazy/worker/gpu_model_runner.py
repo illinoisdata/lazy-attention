@@ -64,10 +64,12 @@ from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from lazy.worker.gpu_input_batch import CachedRequestState
 from lazy.attention.backends.flash_attn import FlashAttentionMetadata
 from lazy.utils.variants import (lazy_shared_kv_profile_enabled,
-                                 lazy_shared_kv_profile_min_reqs)
+                                 lazy_shared_kv_profile_min_reqs,
+                                 lazy_packed_block_profile_enabled)
 
 LAZY_SHARED_KV_PROFILE = lazy_shared_kv_profile_enabled()
 LAZY_SHARED_KV_PROFILE_MIN_REQS = lazy_shared_kv_profile_min_reqs()
+LAZY_PACKED_BLOCK_PROFILE = lazy_packed_block_profile_enabled()
 
 class LazyGPUModelRunner(GPUModelRunner):
 
@@ -118,6 +120,17 @@ class LazyGPUModelRunner(GPUModelRunner):
                                             device="cpu",
                                             pin_memory=self.pin_memory)
         self.lazy_mask_np = self.lazy_mask_cpu.numpy()
+
+        # Persistent packed block table for decode kernels.
+        # Layout: [physical_block_idx:32 | q_offset:16 | q_mask:16]
+        self.packed_block_table = torch.zeros(
+            (self.max_num_reqs, self.max_num_blocks_per_req),
+            dtype=torch.int64,
+            device=self.device,
+        )
+        self._packed_block_table_full_rebuild = True
+        self._packed_block_table_delta_rows: set[int] = set()
+        self._packed_block_counts = np.zeros(self.max_num_reqs, dtype=np.int64)
 
     def _refresh_lazy_metadata_buffers(self) -> None:
         req_ids = self.input_batch.req_ids
@@ -362,6 +375,19 @@ class LazyGPUModelRunner(GPUModelRunner):
         if batch_changed or batch_reordered:
             self._refresh_lazy_metadata_buffers()
             self.input_batch.refresh_sampling_metadata()
+            self._packed_block_table_full_rebuild = True
+            self._packed_block_table_delta_rows.clear()
+
+        num_reqs = self.input_batch.num_reqs
+        current_block_counts = self.input_batch.block_table.num_blocks_per_row
+        if num_reqs != 0 and not self._packed_block_table_full_rebuild:
+            changed_rows = np.flatnonzero(
+                self._packed_block_counts[:num_reqs] != current_block_counts[:num_reqs]
+            )
+            if changed_rows.size:
+                self._packed_block_table_delta_rows.update(changed_rows.tolist())
+        self._packed_block_counts[:num_reqs] = current_block_counts[:num_reqs]
+        self._packed_block_counts[num_reqs:] = 0
 
     def _prepare_inputs(
         self,
@@ -488,6 +514,45 @@ class LazyGPUModelRunner(GPUModelRunner):
                 scheduler_output.num_common_prefix_blocks,
             )
 
+        if self._packed_block_table_full_rebuild or self._packed_block_table_delta_rows:
+            packed_start = time.perf_counter() if LAZY_PACKED_BLOCK_PROFILE else 0.0
+            block_table_dev = self.input_batch.block_table.get_device_tensor()
+            if self._packed_block_table_full_rebuild:
+                packed_block_table = self.packed_block_table[:num_reqs]
+                packed_block_table.copy_(block_table_dev[:num_reqs], non_blocking=True)
+                packed_block_table.bitwise_left_shift_(32)
+                packed_block_table.bitwise_or_(
+                    self.lazy_offset[:num_reqs].to(torch.int64) << 16)
+                packed_block_table.bitwise_or_(
+                    self.lazy_mask[:num_reqs].to(torch.int64))
+                rebuilt_rows = num_reqs
+                rebuild_mode = "full"
+                self._packed_block_table_full_rebuild = False
+                self._packed_block_table_delta_rows.clear()
+            else:
+                delta_rows = sorted(
+                    row for row in self._packed_block_table_delta_rows if row < num_reqs
+                )
+                for row in delta_rows:
+                    packed_row = self.packed_block_table[row]
+                    packed_row.copy_(block_table_dev[row], non_blocking=True)
+                    packed_row.bitwise_left_shift_(32)
+                    packed_row.bitwise_or_(
+                        self.lazy_offset[row].to(torch.int64) << 16)
+                    packed_row.bitwise_or_(self.lazy_mask[row].to(torch.int64))
+                rebuilt_rows = len(delta_rows)
+                rebuild_mode = "delta"
+                self._packed_block_table_delta_rows.clear()
+            if LAZY_PACKED_BLOCK_PROFILE:
+                torch.cuda.synchronize()
+                logger.info(
+                    "LazyPackedBlockProfile mode=%s reqs=%d rebuilt_rows=%d elapsed_ms=%.3f",
+                    rebuild_mode,
+                    num_reqs,
+                    rebuilt_rows,
+                    (time.perf_counter() - packed_start) * 1000.0,
+                )
+
         attn_metadata = self.attn_metadata_builder.build(
             num_reqs=num_reqs,
             num_actual_tokens=total_num_scheduled_tokens,
@@ -500,6 +565,7 @@ class LazyGPUModelRunner(GPUModelRunner):
         attn_metadata.lazy_variant = self.lazy_variant[:num_reqs]
         attn_metadata.q_offset = self.lazy_offset[:num_reqs]
         attn_metadata.q_mask = self.lazy_mask[:num_reqs]
+        attn_metadata.packed_block_table = self.packed_block_table[:num_reqs]
 # ////////////////////////////////////////////////////////////////////////////
 
         use_spec_decode = len(

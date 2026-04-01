@@ -13,7 +13,7 @@ import sys
 import time
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from typing import Any, AsyncGenerator, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, FrozenSet, List, Optional, Set, Tuple
 
 import numpy as np
 import promptcache
@@ -1333,6 +1333,11 @@ class LazyRAG(RAG):
         self._docs: Dict[DocumentId, str] = {}
         self._last_request_id: int = 0
         self.doc_ids = set()
+        self._prepared_doc_ids: Set[DocumentId] = set()
+        self._prepare_lock = asyncio.Lock()
+        self._log_document_seq = (
+            os.environ.get("LAZY_RAG_LOG_DOCUMENT_SEQ", "0") == "1"
+        )
 
     def add_cache(self, docs: List[str]) -> List[int]:
         doc_ids = []
@@ -1343,16 +1348,26 @@ class LazyRAG(RAG):
         return doc_ids
     
     async def add_doc_async(self, request_id: str, docs_ids: List[int]) -> None:
-        for idx, doc_id in enumerate(docs_ids):
-            doc = self._docs[doc_id]
-            # 使用 async for 来迭代异步生成器
-            async for _ in self._llm.generate(
-                prompt=doc,
-                sampling_params=SamplingParams(temperature=0.0, max_tokens=1),
-                request_id=f"cache_{request_id}_{idx}_{uuid.uuid4().hex}",
-            ):
-                # 我们只需要等待生成完成，不需要使用生成的内容
-                pass
+        if not docs_ids:
+            return
+
+        async with self._prepare_lock:
+            missing_doc_ids = [
+                doc_id for doc_id in docs_ids
+                if doc_id not in self._prepared_doc_ids
+            ]
+            if not missing_doc_ids:
+                return
+
+            for idx, doc_id in enumerate(missing_doc_ids):
+                doc = self._docs[doc_id]
+                async for _ in self._llm.generate(
+                    prompt=doc,
+                    sampling_params=SamplingParams(temperature=0.0, max_tokens=1),
+                    request_id=f"cache_{request_id}_{idx}_{uuid.uuid4().hex}",
+                ):
+                    pass
+                self._prepared_doc_ids.add(doc_id)
 
     async def iter_generate(
         self,
@@ -1377,8 +1392,9 @@ class LazyRAG(RAG):
         # # reserve the order of docs
         # docs = docs[::-1]
         # document_seq = [preamble] + docs
-        print("document_seq", document_seq)
-        print("query", query)
+        if self._log_document_seq:
+            print("document_seq", document_seq)
+            print("query", query)
         async for generate_output in self._llm.generate(
             prompt=query,
             sampling_params=sampling_params,
@@ -1407,6 +1423,11 @@ class BaselineLazyRAG(RAG):
         self._llm = llm
         self._docs: Dict[DocumentId, str] = {}
         self._last_request_id: int = 0
+        self._prepare_prefix_cache = (
+            os.environ.get("BASELINE_PREPARE_PREFIX_CACHE", "0") == "1"
+        )
+        self._prepared_prefixes: Set[Tuple[DocumentId, ...]] = set()
+        self._prepare_lock = asyncio.Lock()
 
     def add_cache(self, docs: List[str]) -> List[int]:
         doc_ids = []
@@ -1417,18 +1438,28 @@ class BaselineLazyRAG(RAG):
         return doc_ids
 
     async def add_doc_async(self, request_id: str, docs_ids: List[int]) -> None:
-        # logger.info(f"BaselineLazyRAG adding {docs_ids} documents to cache asynchronously.")
-        # for idx, doc_id in enumerate(docs_ids):
-        #     doc = self._docs[doc_id]
-        #     # 使用 async for 来迭代异步生成器
-        #     async for _ in self._llm.generate(
-        #         prompt=doc,
-        #         sampling_params=SamplingParams(temperature=0.0, max_tokens=1),
-        #         request_id=f"cache_{request_id}_{idx}_{uuid.uuid4().hex}",
-        #     ):
-        #         # 我们只需要等待生成完成，不需要使用生成的内容
-        #         pass
-        pass
+        if (not self._prepare_prefix_cache) or (not docs_ids):
+            return
+
+        prefix_keys = [tuple(docs_ids[: idx + 1]) for idx in range(len(docs_ids))]
+        async with self._prepare_lock:
+            missing_prefixes = [
+                prefix_key for prefix_key in prefix_keys
+                if prefix_key not in self._prepared_prefixes
+            ]
+            if not missing_prefixes:
+                return
+
+            for prefix_idx, prefix_key in enumerate(missing_prefixes):
+                prompt = "".join(self._docs[doc_id] for doc_id in prefix_key)
+                async for _ in self._llm.generate(
+                    prompt=prompt,
+                    sampling_params=SamplingParams(temperature=0.0, max_tokens=1),
+                    request_id=f"cache_{request_id}_{prefix_idx}_{uuid.uuid4().hex}",
+                    document_seq=None,
+                ):
+                    pass
+                self._prepared_prefixes.add(prefix_key)
 
     async def iter_generate(
         self,

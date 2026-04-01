@@ -1,5 +1,7 @@
 # Adapted from vllm/attention/ops/chunked_prefill_paged_decode.py
 
+import os
+
 import torch
 import triton
 import triton.language as tl
@@ -11,6 +13,11 @@ from vllm.attention.ops.chunked_prefill_paged_decode import kernel_paged_attenti
 
 
 from .prefix_prefill import context_attention_fwd, IS_TURING
+
+
+def _cuda_elapsed_ms(start_event, end_event):
+    torch.cuda.synchronize()
+    return start_event.elapsed_time(end_event)
 
 
 
@@ -382,6 +389,14 @@ def chunked_prefill_paged_decode(
     if use_custom:
         raise NotImplementedError("Custom paged attention is not implemented")
     else:
+        profile_decode = os.environ.get("LAZY_DECODE_WRAPPER_PROFILE", "0") == "1"
+        if profile_decode:
+            total_start = torch.cuda.Event(enable_timing=True)
+            total_end = torch.cuda.Event(enable_timing=True)
+            kernel_start = torch.cuda.Event(enable_timing=True)
+            kernel_end = torch.cuda.Event(enable_timing=True)
+            total_start.record()
+            kernel_start.record()
         kernel_paged_attention_2d[(
             num_seqs,
             num_kv_heads,
@@ -429,3 +444,15 @@ def chunked_prefill_paged_decode(
             cos_sin_cache_ptr=cos_sin_cache,
             is_neox_style=is_neox_style,
         )
+        if profile_decode:
+            kernel_end.record()
+            total_end.record()
+            kernel_ms = _cuda_elapsed_ms(kernel_start, kernel_end)
+            total_ms = _cuda_elapsed_ms(total_start, total_end)
+            other_ms = max(total_ms - kernel_ms, 0.0)
+            print(
+                f"MepicDecodeProfile num_seqs={num_seqs} max_seq_len={max_seq_len} "
+                f"heads={num_query_heads}/{num_kv_heads} kernel_ms={kernel_ms:.3f} "
+                f"total_ms={total_ms:.3f} other_ms={other_ms:.3f}",
+                flush=True,
+            )

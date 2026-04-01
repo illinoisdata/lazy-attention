@@ -2,7 +2,7 @@
 #SBATCH --job-name="exp1_baseline_bench"
 #SBATCH --account=bdjx-dtai-gh
 #SBATCH --partition=ghx4
-#SBATCH --time=12:00:00
+#SBATCH --time=0:30:00
 #SBATCH --gpus-per-node=1
 #SBATCH --mem=110G
 #SBATCH --cpus-per-task=72
@@ -22,13 +22,18 @@
 # (3) Downloaded dataset via scripts/download_dataset.sh
 # (4) Installed vllm in editable mode (pip install -e .) in the conda env vllm
 
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/slurm_common.sh"
+if [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "${SLURM_SUBMIT_DIR}/scripts/slurm_common.sh" ]]; then
+    source "${SLURM_SUBMIT_DIR}/scripts/slurm_common.sh"
+else
+    source "/projects/bdjx/${USER}/gh/lazy-attention/scripts/slurm_common.sh"
+fi
 
 slurm_print_header
 slurm_activate_runtime
 slurm_enter_repo
 
 export VLLM_LOGGING_LEVEL=INFO
-slurm_run_logged "log_${USER}.txt" bash scripts/benchmark/bench_exp1.sh baseline blk_nq,blk_hqa
+echo "Using baseline for exp1_baseline_bench"
+slurm_run_logged "log_${USER}.txt" bash scripts/benchmark/bench_exp1.sh baseline 2wikimqa
 
 # baseline blk_2wiki,blk_tqa

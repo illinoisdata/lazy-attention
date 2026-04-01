@@ -33,6 +33,7 @@ slurm_activate_runtime
 slurm_enter_repo
 
 export VLLM_LOGGING_LEVEL=INFO
-slurm_run_logged "log_${USER}.txt" bash scripts/benchmark/bench_exp1.sh baseline,lazyrag 2wikimqa
+echo "Using lazyrag for exp1_lazy_bench"
+slurm_run_logged "log_${USER}.txt" bash scripts/benchmark/bench_exp1.sh lazyrag 2wikimqa
 
 # baseline blk_2wiki,blk_tqa

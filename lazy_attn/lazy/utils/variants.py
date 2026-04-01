@@ -57,3 +57,10 @@ def lazy_shared_kv_profile_min_reqs() -> int:
         return max(int(value), 1)
     except ValueError:
         return 32
+
+
+def lazy_packed_block_profile_enabled() -> bool:
+    value = os.environ.get("LAZY_PACKED_BLOCK_PROFILE")
+    if value is None:
+        return False
+    return value.strip().lower() in _TRUTHY_ENV_VALUES

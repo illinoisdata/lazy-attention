@@ -18,6 +18,6 @@ echo "LAZY_ATTENTION_VARIANT=${LAZY_ATTENTION_VARIANT:-lazy}"
 for sut in "${BENCH_SELECTED_SUTS[@]}"; do
     for datakey in "${BENCH_SELECTED_DATA_KEYS[@]}"; do
         BENCH_EXTRA_ARGS=()
-        benchmark_run_case exp1 "${sut}" "${datakey}" --sample-requests 10 --max-concurrency 1
+        benchmark_run_case exp1 "${sut}" "${datakey}" --sample-requests 50 --max-concurrency 50
     done
 done

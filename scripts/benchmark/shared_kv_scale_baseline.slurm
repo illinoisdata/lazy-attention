@@ -21,8 +21,10 @@ slurm_enter_repo
 
 export VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-INFO}"
 export LAZY_ATTENTION_VARIANT="${LAZY_ATTENTION_VARIANT:-lazy}"
+export BASELINE_PREPARE_PREFIX_CACHE="${BASELINE_PREPARE_PREFIX_CACHE:-1}"
 echo "Using baseline SUT on lazy-patched stack for shared_kv_scale_baseline"
 echo "LAZY_ATTENTION_VARIANT=${LAZY_ATTENTION_VARIANT}"
+echo "BASELINE_PREPARE_PREFIX_CACHE=${BASELINE_PREPARE_PREFIX_CACHE}"
 
 slurm_run_logged "log_${USER}.txt" \
     env SHARED_KV_SUT=baseline bash scripts/benchmark/bench_shared_kv_scale.sh

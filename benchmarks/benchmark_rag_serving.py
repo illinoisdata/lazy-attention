@@ -705,7 +705,7 @@ def sample_ablation_requests(
     for prompt_doc_ids, document_len in zip(doc_ids_by_prompt, document_len_by_prompt):
         prompt = query
         prompt_len = len(tokenizer.encode(prompt))
-        output_len = 128
+        output_len = args.ablation_output_len
         input_requests.append(
             RAGRequest(
                 prompt=prompt,
@@ -1355,6 +1355,12 @@ if __name__ == "__main__":
         type=int,
         default=1,
         help="Number of documents to retrieve per request (ablation only).",
+    )
+    parser.add_argument(
+        "--ablation-output-len",
+        type=int,
+        default=128,
+        help="Number of output tokens per request (ablation only).",
     )
     parser.add_argument(
         "--request-rate",

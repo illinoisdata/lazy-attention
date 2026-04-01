@@ -17,5 +17,5 @@ benchmark_run_case \
     exp1 \
     "${BENCH_SELECTED_SUT}" \
     "${BENCH_SELECTED_DATANAME}" \
-    --sample-requests 10 \
-    --max-concurrency 2
+    --sample-requests 100 \
+    --max-concurrency 5
