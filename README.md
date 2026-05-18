@@ -1,4 +1,8 @@
-# Lazy-Attention
+
+<div style="text-align: center;">
+  <img src="/docs/assets/logo.svg" alt="la-logo"/>
+</div>
+
 
 It is the full codebase for lazy-attention project. This version is for GH200.
 
