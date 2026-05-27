@@ -7,6 +7,7 @@
 It is the full codebase for lazy-attention project. This version is a local dev branch tested on a desktop equiped with one 5070ti.
 
 > Full attention base model: meta-llama/Llama-3.2-1B or meta-llama/Llama-3.2-1B-Instruct
+
 > Block attention model: hxia7/Llama-3.2-1B-block-FT
 
 Include:
