@@ -17,3 +17,8 @@ ChatRAG-Bench/
 Hotpot-Bench/
 
 block_attn/Block-Attention/datahub/
+
+# for uv venv
+.venv/
+# for conda env
+env/
