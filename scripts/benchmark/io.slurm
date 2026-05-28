@@ -10,7 +10,7 @@
 #SBATCH --output=slurm/profiler_io.out
 #SBATCH --error=slurm/profiler_io.err
 
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/slurm_common.sh"
+source "${SLURM_SUBMIT_DIR:-/projects/bdjx/$USER/gh/lazy-attention}/scripts/slurm_common.sh"
 
 slurm_print_header
 slurm_activate_runtime

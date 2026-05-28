@@ -1215,6 +1215,34 @@ def main(args: argparse.Namespace):
     random.seed(args.seed)
     np.random.seed(args.seed)
 
+    # Compat shim for newer transformers whose tokenizer backend lacks
+    # `all_special_tokens_extended`. Guarded: only adds the attribute when it is
+    # missing, so it is a no-op on environments that already provide it.
+    import vllm.transformers_utils.tokenizer as _vtok
+
+    def _ensure_extended(tok):
+        if tok is not None and not hasattr(tok, "all_special_tokens_extended"):
+            try:
+                tok.all_special_tokens_extended = tok.all_special_tokens
+            except Exception:
+                pass
+        return tok
+
+    for _name in ("get_tokenizer", "get_cached_tokenizer"):
+        _orig = getattr(_vtok, _name, None)
+        if _orig is None or getattr(_orig, "_lazy_shim", False):
+            continue
+
+        def _wrap(*a, __orig=_orig, **k):
+            # get_cached_tokenizer reads input.all_special_tokens_extended, so
+            # patch the input tokenizer BEFORE delegating, then the result.
+            if a:
+                _ensure_extended(a[0])
+            return _ensure_extended(__orig(*a, **k))
+
+        _wrap._lazy_shim = True
+        setattr(_vtok, _name, _wrap)
+
     backend = args.backend
     exp = args.exp
     tokenizer_id = args.tokenizer
