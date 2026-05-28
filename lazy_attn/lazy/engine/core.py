@@ -62,6 +62,16 @@ class LazyEngineCoreProc(EngineCoreProc):
                         **kwargs):
         """Launch EngineCore busy loop in background process."""
 
+        # When vLLM forces the `spawn` start method (e.g. once CUDA is
+        # initialized in the parent), this child process starts fresh and only
+        # imports `lazy.engine.core` to resolve this target function. None of
+        # the other monkey-patches (scheduler, model runner, attention backend,
+        # rotary embedding) are installed because `lazy.__vllm__` is never
+        # imported here. Re-apply them before the engine is constructed so the
+        # worker actually runs lazy attention instead of vanilla vLLM.
+        from lazy.vllm_patch import apply_all_patches
+        apply_all_patches()
+
         # Signal handler used for graceful termination.
         # SystemExit exception is only raised once to allow this and worker
         # processes to terminate without error

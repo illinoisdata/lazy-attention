@@ -12,7 +12,8 @@ It is the full codebase for lazy-attention project. This version is a local dev 
 
 Include:
 
-- LazyAttn ([lazyattn](./lazyattn/))
+- LazyAttention ([lazy_attn](./lazy_attn/))
+- BlockAttention ([block_attn_vllm](./block_attn_vllm/))
 - CacheBlend ([cacheblend](./cacheblend/))
 - PromptCache ([promptcache](./promptcache/))
 - Original vLLM ([vllm_proj](./vllm_proj/))
@@ -21,10 +22,10 @@ Details in each folder.
 
 All experiments in [benchmarks](./benchmarks/).
 
+<!-- 
+**Note**: LazyAttn depends new version of vLLM while CacheBlend uses older version. Two independent envs are needed. -->
 
-**Note**: LazyAttn depends new version of vLLM while CacheBlend uses older version. Two independent envs are needed.
-
-## Benchmark Notes
+<!-- ## Benchmark Notes
 
 - `exp1` convenience scripts:
   - `scripts/benchmark/exp1_lazy_bench.slurm`: runs `lazyrag` on `2wikimqa`
@@ -45,4 +46,25 @@ All experiments in [benchmarks](./benchmarks/).
 - Debug timing:
   - `VLLM_LOG_MODEL_FORWARD_TIME=1` enables per-step model forward timing logs
   - this path uses explicit CUDA synchronization and can perturb benchmark numbers
-  - keep it unset (default) for performance runs
+  - keep it unset (default) for performance runs -->
+
+
+## Citation
+
+If this repo is helpful for you research, please cite our paper.
+
+```
+@inproceedings{
+2026lazyattention,
+title={LazyAttention: Efficient Retrieval-Augmented Generation with Deferred Positional Encoding},
+author={Haocheng Xia and Mihir Pamnani and Hanxi Fang and Supawit Chockchowwat and Yongjoo Park},
+booktitle={Forty-third International Conference on Machine Learning},
+year={2026},
+url={https://openreview.net/forum?id=M9kHwqreN9}
+}
+```
+
+## Contact us
+
+- For technical questions and feature requests, please use GitHub Issues
+- For collaborations, please contact the authors.
