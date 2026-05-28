@@ -22,8 +22,26 @@ Details in each folder.
 
 All experiments in [benchmarks](./benchmarks/).
 
-<!-- 
-**Note**: LazyAttn depends new version of vLLM while CacheBlend uses older version. Two independent envs are needed. -->
+## Environments
+
+The baselines need **independent** envs (do not reuse the root `.venv`, which
+holds the new vLLM that LazyAttention/BlockAttention build on):
+
+- **LazyAttention / BlockAttention** — root `./.venv` (torch 2.7.0+cu128, new vLLM). Runs on this desktop (sm_120 / RTX 5070 Ti).
+- **PromptCache** — `promptcache/.venv`:
+  ```bash
+  cd promptcache && uv venv --python 3.10 .venv
+  VIRTUAL_ENV=.venv uv pip install torch==2.7.0 --index-url https://download.pytorch.org/whl/cu128
+  VIRTUAL_ENV=.venv uv pip install -e .          # deps pinned in requirements.txt
+  .venv/bin/python smoke_test.py                 # end-to-end check (passes on this desktop)
+  ```
+  Uses transformers 4.36.2 (it imports `transformers.file_utils`, removed ~4.40),
+  so it targets Llama-2-architecture models; `smoke_test.py` uses TinyLlama.
+- **CacheBlend** — `cacheblend/.venv` (torch 2.2.1 + cu121, bundled vLLM 0.4.1 in `vllm_blend/`, needs a `vllm._C` source build).
+  **Not runnable on this desktop**: torch 2.2.1 supports only sm_50–sm_90, but the
+  RTX 5070 Ti is sm_120 (Blackwell) — GPU ops fail with "no kernel image is
+  available for execution on the device". Run it on an sm≤9.0 GPU (A100/H100/etc.),
+  or port CacheBlend to a modern vLLM.
 
 <!-- ## Benchmark Notes
 
