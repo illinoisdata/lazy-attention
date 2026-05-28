@@ -39,8 +39,17 @@ class LazyKVCacheManager(KVCacheManager):
         
         self.req_to_block_hashes_docs: defaultdict[
             str, list[list[BlockHashType]]] = defaultdict(list)
-        
+
         self.num_cached_block_docs: dict[str, list[int]] = {}
+
+        # Cumulative VRAM document-KV cache hit accounting (RQ2 / Table 1).
+        # The base get_computed_blocks records prefix_cache_stats, but the lazy
+        # per-document reuse path (get_computed_blocks_docs) did not -- so the
+        # document-KV hit ratio was never measured. Track it here and log the
+        # running ratio so the KV-budget sweep can read it from the job log.
+        self.doc_cache_queries = 0
+        self.doc_cache_hits = 0
+        self._doc_hit_last_log = 0
 
     def get_computed_blocks(
             self, request: Request) -> tuple[list[KVCacheBlock], int]:
@@ -139,16 +148,37 @@ class LazyKVCacheManager(KVCacheManager):
             self.req_to_block_hashes_docs[request.request_id] = block_hashes_docs
 
         # Then find the computed blocks.
+        call_queries = 0
+        call_hits = 0
         for doc_idx in range(num_docs):
             block_hashes_doc = block_hashes_docs[doc_idx]
-            computed_blocks_docs[doc_idx] = (
+            hit_blocks = (
                 self.specialized_manager.find_longest_cache_hit(block_hashes_doc))
+            # VRAM hit ratio: count blocks physically in cache BEFORE the
+            # lazy first-block recompute trim (those blocks are still cached).
+            call_queries += len(block_hashes_doc)
+            call_hits += len(hit_blocks)
+            computed_blocks_docs[doc_idx] = hit_blocks
             if drop_first_cached_block and computed_blocks_docs[doc_idx]:
                 computed_blocks_docs[doc_idx] = computed_blocks_docs[doc_idx][1:]
             num_computed_tokens_docs[doc_idx] = (
                 len(computed_blocks_docs[doc_idx]) * self.block_size)
             logger.debug(f"Document {doc_idx} of request {request.request_id} "
                          f"has {num_computed_tokens_docs[doc_idx]} tokens cached.")
+
+        # Record document-KV cache hit stats (RQ2 / Table 1).
+        self.doc_cache_queries += call_queries
+        self.doc_cache_hits += call_hits
+        if self.log_stats and self.prefix_cache_stats is not None:
+            self.prefix_cache_stats.requests += 1
+            self.prefix_cache_stats.queries += call_queries
+            self.prefix_cache_stats.hits += call_hits
+        if self.doc_cache_queries - self._doc_hit_last_log >= 200:
+            self._doc_hit_last_log = self.doc_cache_queries
+            ratio = self.doc_cache_hits / max(self.doc_cache_queries, 1)
+            logger.info(
+                f"[LAZY_DOC_KV_HIT] hits={self.doc_cache_hits} "
+                f"queries={self.doc_cache_queries} ratio={ratio:.4f}")
         return computed_blocks_docs, num_computed_tokens_docs
 
     def allocate_slots(
