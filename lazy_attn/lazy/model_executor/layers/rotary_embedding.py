@@ -32,19 +32,20 @@ USE_MEPIC_Q_ONLY_ROTARY = (
 def _should_use_q_only_rotary() -> bool:
     if USE_MEPIC_Q_ONLY_ROTARY:
         return True
-    try:
-        forward_context = get_forward_context()
-    except Exception:
-        return False
-    attn_metadata = getattr(forward_context, "attn_metadata", None)
-    if attn_metadata is None:
-        return False
-    is_lazy = getattr(attn_metadata, "is_lazy", None)
-    if is_lazy is None:
-        return False
-    if torch.is_tensor(is_lazy):
-        return bool(torch.any(is_lazy).item())
-    return bool(is_lazy)
+    return False
+    # try:
+    #     forward_context = get_forward_context()
+    # except Exception:
+    #     return False
+    # attn_metadata = getattr(forward_context, "attn_metadata", None)
+    # if attn_metadata is None:
+    #     return False
+    # is_lazy = getattr(attn_metadata, "is_lazy", None)
+    # if is_lazy is None:
+    #     return False
+    # if torch.is_tensor(is_lazy):
+    #     return bool(torch.any(is_lazy).item())
+    # return bool(is_lazy)
 
 class Llama3RotaryEmbedding(RotaryEmbedding):
 
@@ -70,33 +71,33 @@ class Llama3RotaryEmbedding(RotaryEmbedding):
         inv_freq = self._compute_inv_freq(base).to(torch.bfloat16) #  if current_platform().has_bf16() else torch.float32
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
-    def _compute_inv_freq(self, base: Union[int, float]) -> torch.Tensor:
-        inv_freqs = super()._compute_inv_freq(base)
-        low_freq_wavelen = self.orig_max_position / self.low_freq_factor
-        high_freq_wavelen = self.orig_max_position / self.high_freq_factor
+    # def _compute_inv_freq(self, base: Union[int, float]) -> torch.Tensor:
+    #     inv_freqs = super()._compute_inv_freq(base)
+    #     low_freq_wavelen = self.orig_max_position / self.low_freq_factor
+    #     high_freq_wavelen = self.orig_max_position / self.high_freq_factor
 
-        wave_len = 2 * math.pi / inv_freqs
-        if self.low_freq_factor != self.high_freq_factor:
-            smooth = (self.orig_max_position / wave_len - self.low_freq_factor
-                      ) / (self.high_freq_factor - self.low_freq_factor)
-        else:
-            smooth = 0
+    #     wave_len = 2 * math.pi / inv_freqs
+    #     if self.low_freq_factor != self.high_freq_factor:
+    #         smooth = (self.orig_max_position / wave_len - self.low_freq_factor
+    #                   ) / (self.high_freq_factor - self.low_freq_factor)
+    #     else:
+    #         smooth = 0
 
-        # print("wave_len:", wave_len)
-        # print("high_freq_wavelen:", high_freq_wavelen)
-        # print("low_freq_wavelen:", low_freq_wavelen)
+    #     # print("wave_len:", wave_len)
+    #     # print("high_freq_wavelen:", high_freq_wavelen)
+    #     # print("low_freq_wavelen:", low_freq_wavelen)
 
-        new_freqs = torch.where(
-            wave_len < high_freq_wavelen,
-            inv_freqs,
-            torch.where(
-                wave_len > low_freq_wavelen,
-                inv_freqs / self.scaling_factor,
-                (1 - smooth) * inv_freqs / self.scaling_factor +
-                smooth * inv_freqs,
-            ),
-        )
-        return new_freqs
+    #     new_freqs = torch.where(
+    #         wave_len < high_freq_wavelen,
+    #         inv_freqs,
+    #         torch.where(
+    #             wave_len > low_freq_wavelen,
+    #             inv_freqs / self.scaling_factor,
+    #             (1 - smooth) * inv_freqs / self.scaling_factor +
+    #             smooth * inv_freqs,
+    #         ),
+    #     )
+    #     return new_freqs
 
     def forward_native(
         self,

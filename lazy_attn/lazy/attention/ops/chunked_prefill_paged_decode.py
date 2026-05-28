@@ -608,6 +608,7 @@ def chunked_prefill_paged_decode(
         else:
             profile_decode = os.environ.get("LAZY_DECODE_WRAPPER_PROFILE", "0") == "1"
             force_split_decode = os.environ.get("LAZY_FORCE_SPLIT_DECODE", "0") == "1"
+            ignore_q_mask = os.environ.get("LAZY_DECODE_IGNORE_Q_MASK", "0") == "1"
             all_lazy = (is_lazy is not None) and bool(torch.all(is_lazy).item())
             if profile_decode:
                 total_start = torch.cuda.Event(enable_timing=True)
@@ -669,6 +670,8 @@ def chunked_prefill_paged_decode(
                     is_lazy_ptr=is_lazy,
                     q_offset_ptr=q_offset,
                     q_mask_ptr=q_mask,
+                    cos_sin_cache_ptr=cos_sin_cache,
+                    IGNORE_Q_MASK=ignore_q_mask,
                 )
             if profile_decode:
                 kernel_end.record()

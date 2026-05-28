@@ -100,6 +100,8 @@ def kernel_paged_attention_2d_llama(
         is_lazy_ptr,
         q_offset_ptr,
         q_mask_ptr,
+        cos_sin_cache_ptr,
+        IGNORE_Q_MASK: tl.constexpr = False,
 ):
     # TODO(haocheng): Consider the case rot dim != head size in the future.
     # Now we assume rot dim == head size
@@ -173,6 +175,8 @@ def kernel_paged_attention_2d_llama(
             physical_block_idx = (packed_val >> 32).to(tl.int32)
             rot_offset_val = ((packed_val >> 16) & 0xFFFF).to(tl.int32)
             q_mask_val = (packed_val & 0xFFFF).to(tl.int32)
+            if IGNORE_Q_MASK:
+                q_mask_val = 0
 
             offs_n = tl.arange(0, BLOCK_SIZE)
             offs_d = tl.arange(0, HEAD_SIZE_PADDED)
@@ -222,14 +226,11 @@ def kernel_paged_attention_2d_llama(
                 elif rot_offset_val != 0:
                     # q_offset stores the absolute rotation position with a +1 bias.
                     # Rebuild from Q_full so numerical error does not accumulate.
-                    cos_val, sin_val = llama_cos_sin(rot_offset_val - 1,
-                                                     HEAD_SIZE=HEAD_SIZE,
-                                                     ORIG_MAX_POSITION=8192,
-                                                     LOW_FACTOR=1.0,
-                                                     HIGH_FACTOR=4.0,
-                                                     SCALING_FACTOR=8.0,
-                                                     PI_VALUE=3.141592653589793,
-                                                     BASE=500000.0)
+                    cache_cols = tl.arange(0, HEAD_SIZE) % embed_dim
+                    cache_base = (rot_offset_val - 1) * rotary_dim
+                    cos_val = tl.load(cos_sin_cache_ptr + cache_base + cache_cols)
+                    sin_val = tl.load(
+                        cos_sin_cache_ptr + cache_base + embed_dim + cache_cols)
                     rev = (tl.arange(0, HEAD_SIZE_PADDED) +
                            (HEAD_SIZE_PADDED // 2)) % HEAD_SIZE_PADDED
                     Q_rev = tl.load(
@@ -490,6 +491,8 @@ def kernel_paged_attention_2d_llama_lazy_only(
         is_lazy_ptr,
         q_offset_ptr,
         q_mask_ptr,
+        cos_sin_cache_ptr,
+        IGNORE_Q_MASK: tl.constexpr = False,
 ):
     seq_idx = tl.program_id(0)
     kv_head_idx = tl.program_id(1)
@@ -537,6 +540,8 @@ def kernel_paged_attention_2d_llama_lazy_only(
         physical_block_idx = (packed_val >> 32).to(tl.int32)
         rot_offset_val = ((packed_val >> 16) & 0xFFFF).to(tl.int32)
         q_mask_val = (packed_val & 0xFFFF).to(tl.int32)
+        if IGNORE_Q_MASK:
+            q_mask_val = 0
 
         offs_n = tl.arange(0, BLOCK_SIZE)
         offs_d = tl.arange(0, HEAD_SIZE_PADDED)
@@ -572,14 +577,11 @@ def kernel_paged_attention_2d_llama_lazy_only(
             if rot_offset_val == 1:
                 Q_rotated = Q_full
             elif rot_offset_val != 0:
-                cos_val, sin_val = llama_cos_sin(rot_offset_val - 1,
-                                                 HEAD_SIZE=HEAD_SIZE,
-                                                 ORIG_MAX_POSITION=8192,
-                                                 LOW_FACTOR=1.0,
-                                                 HIGH_FACTOR=4.0,
-                                                 SCALING_FACTOR=8.0,
-                                                 PI_VALUE=3.141592653589793,
-                                                 BASE=500000.0)
+                cache_cols = tl.arange(0, HEAD_SIZE) % embed_dim
+                cache_base = (rot_offset_val - 1) * rotary_dim
+                cos_val = tl.load(cos_sin_cache_ptr + cache_base + cache_cols)
+                sin_val = tl.load(
+                    cos_sin_cache_ptr + cache_base + embed_dim + cache_cols)
                 rev = (tl.arange(0, HEAD_SIZE_PADDED) + (HEAD_SIZE_PADDED // 2)) % HEAD_SIZE_PADDED
                 Q_rev = tl.load(
                     query_ptr + query_offset + rev[None, :],

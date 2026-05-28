@@ -783,7 +783,7 @@ def metadata_for_lazy_attention(request: Request, block_size: int) -> tuple[list
         q_offset[cursor:cursor + num_blk_doc] = abs_rot_pos + 1
         cursor += num_blk_doc
         q_mask[cursor - 1] = padding_lens[doc_idx]
-        abs_rot_pos += request.document_lens[doc_idx] - padding_lens[doc_idx]
+        abs_rot_pos += request.document_lens[doc_idx]
 
     # Query / decode block should use the original global query RoPE.
     q_offset[cursor] = 1
