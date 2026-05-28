@@ -28,6 +28,9 @@ HIT_ZIPF="${HIT_ZIPF:-2.1}"
 prepare_sut "${HIT_SUT}"
 make_sut_args "${HIT_SUT}" sut_args
 read -r -a sut_cli_args <<< "${sut_args}"
+# Extra args appended to every run (e.g. HIT_EXTRA_ARGS="--enforce-eager" for
+# local sm_120 where torch.compile fails). Empty by default (server uses compile).
+read -r -a hit_extra_args <<< "${HIT_EXTRA_ARGS:-}"
 
 benchmark_split_csv "${GPU_UTIL_LIST}" GPU_UTILS
 echo "Hit-ratio KV-budget sweep: sut=${HIT_SUT} utils=${GPU_UTIL_LIST}"
@@ -48,6 +51,7 @@ for util in "${GPU_UTILS[@]}"; do
         --document-sampling-method zipf --document-zipf-param "${HIT_ZIPF}" \
         --max-concurrency "${HIT_MAX_CONCURRENCY}" \
         "${sut_cli_args[@]}" \
-        --gpu-memory-utilization "${util}"
+        --gpu-memory-utilization "${util}" \
+        "${hit_extra_args[@]}"
 done
 echo "HIT_RATIO_SWEEP_DONE sut=${HIT_SUT}"
