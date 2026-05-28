@@ -6,48 +6,8 @@ Changed by Haocheng at 2025/09/15
 
 import triton
 import triton.language as tl
-from triton.language.extra import libdevice
 
-@triton.jit
-def llama_cos_sin(
-    position: tl.int32,
-    HEAD_SIZE: tl.constexpr,
-    ORIG_MAX_POSITION: tl.constexpr,
-    LOW_FACTOR: tl.constexpr,
-    HIGH_FACTOR: tl.constexpr,
-    SCALING_FACTOR: tl.constexpr,
-    PI_VALUE: tl.constexpr,
-    BASE: tl.constexpr,
-):
-    """Compute the rotary embedding cos and sin values for Llama 3.1."""
-    
-    low_freq_wavelen: tl.constexpr = ORIG_MAX_POSITION / LOW_FACTOR
-    high_freq_wavelen: tl.constexpr = ORIG_MAX_POSITION / HIGH_FACTOR
-    half_head_size: tl.constexpr = HEAD_SIZE // 2
-
-    inv_freqs = 1.0 / libdevice.pow(BASE, 2 * (tl.arange(0, HEAD_SIZE) % half_head_size) / HEAD_SIZE) # repeat twice
-    wave_len = 2 * PI_VALUE / inv_freqs
-
-    smooth = (ORIG_MAX_POSITION / wave_len - LOW_FACTOR
-                      ) / (HIGH_FACTOR - LOW_FACTOR)
-    # NOTE(haocheng): Llama 3.1 8B needs smooth, so we add it here. (not zero)
-
-    new_freqs = tl.where(
-        wave_len < high_freq_wavelen,
-            inv_freqs,
-            tl.where(
-                wave_len > low_freq_wavelen,
-                inv_freqs / SCALING_FACTOR,
-                (1 - smooth) * inv_freqs / SCALING_FACTOR +
-                smooth * inv_freqs,
-            ),
-        )
-    # tl.device_print("llama new_freqs:", new_freqs * 1000000)
-
-    theta = position * new_freqs
-    cos_val = libdevice.cos(theta)
-    sin_val = libdevice.sin(theta)
-    return cos_val, sin_val
+from lazy.model_executor.rope import rope_cos_sin
 
 
 @triton.jit
@@ -101,7 +61,20 @@ def kernel_paged_attention_2d_llama(
         q_offset_ptr,
         q_mask_ptr,
         cos_sin_cache_ptr,
+        # RoPE scaling constexprs for the optional in-kernel compute path
+        # (COMPUTE_COS_SIN=True). Compiled out / unused in the default load path.
+        ROPE_TYPE: tl.constexpr = 0,
+        BASE: tl.constexpr = 10000.0,
+        SCALING_FACTOR: tl.constexpr = 1.0,
+        LOW_FACTOR: tl.constexpr = 1.0,
+        HIGH_FACTOR: tl.constexpr = 1.0,
+        ORIG_MAX_POSITION: tl.constexpr = 8192,
+        PI_VALUE: tl.constexpr = 3.141592653589793,
         IGNORE_Q_MASK: tl.constexpr = False,
+        # Default: LOAD cos/sin from the cos_sin_cache table (decode is not
+        # bandwidth-bound here and the table is tiny/L2-resident). Set True to
+        # COMPUTE cos/sin in-kernel instead (see debug/bench_rope_io_bound.py).
+        COMPUTE_COS_SIN: tl.constexpr = False,
 ):
     # TODO(haocheng): Consider the case rot dim != head size in the future.
     # Now we assume rot dim == head size
@@ -226,11 +199,18 @@ def kernel_paged_attention_2d_llama(
                 elif rot_offset_val != 0:
                     # q_offset stores the absolute rotation position with a +1 bias.
                     # Rebuild from Q_full so numerical error does not accumulate.
-                    cache_cols = tl.arange(0, HEAD_SIZE) % embed_dim
-                    cache_base = (rot_offset_val - 1) * rotary_dim
-                    cos_val = tl.load(cos_sin_cache_ptr + cache_base + cache_cols)
-                    sin_val = tl.load(
-                        cos_sin_cache_ptr + cache_base + embed_dim + cache_cols)
+                    if COMPUTE_COS_SIN:
+                        cos_val, sin_val = rope_cos_sin(
+                            rot_offset_val - 1, ROPE_TYPE, HEAD_SIZE, BASE,
+                            SCALING_FACTOR, LOW_FACTOR, HIGH_FACTOR,
+                            ORIG_MAX_POSITION, PI_VALUE)
+                    else:
+                        cache_cols = tl.arange(0, HEAD_SIZE) % embed_dim
+                        cache_base = (rot_offset_val - 1) * rotary_dim
+                        cos_val = tl.load(
+                            cos_sin_cache_ptr + cache_base + cache_cols)
+                        sin_val = tl.load(
+                            cos_sin_cache_ptr + cache_base + embed_dim + cache_cols)
                     rev = (tl.arange(0, HEAD_SIZE_PADDED) +
                            (HEAD_SIZE_PADDED // 2)) % HEAD_SIZE_PADDED
                     Q_rev = tl.load(
@@ -492,7 +472,20 @@ def kernel_paged_attention_2d_llama_lazy_only(
         q_offset_ptr,
         q_mask_ptr,
         cos_sin_cache_ptr,
+        # RoPE scaling constexprs for the optional in-kernel compute path
+        # (COMPUTE_COS_SIN=True). Compiled out / unused in the default load path.
+        ROPE_TYPE: tl.constexpr = 0,
+        BASE: tl.constexpr = 10000.0,
+        SCALING_FACTOR: tl.constexpr = 1.0,
+        LOW_FACTOR: tl.constexpr = 1.0,
+        HIGH_FACTOR: tl.constexpr = 1.0,
+        ORIG_MAX_POSITION: tl.constexpr = 8192,
+        PI_VALUE: tl.constexpr = 3.141592653589793,
         IGNORE_Q_MASK: tl.constexpr = False,
+        # Default: LOAD cos/sin from the cos_sin_cache table (decode is not
+        # bandwidth-bound here and the table is tiny/L2-resident). Set True to
+        # COMPUTE cos/sin in-kernel instead (see debug/bench_rope_io_bound.py).
+        COMPUTE_COS_SIN: tl.constexpr = False,
 ):
     seq_idx = tl.program_id(0)
     kv_head_idx = tl.program_id(1)
@@ -577,11 +570,17 @@ def kernel_paged_attention_2d_llama_lazy_only(
             if rot_offset_val == 1:
                 Q_rotated = Q_full
             elif rot_offset_val != 0:
-                cache_cols = tl.arange(0, HEAD_SIZE) % embed_dim
-                cache_base = (rot_offset_val - 1) * rotary_dim
-                cos_val = tl.load(cos_sin_cache_ptr + cache_base + cache_cols)
-                sin_val = tl.load(
-                    cos_sin_cache_ptr + cache_base + embed_dim + cache_cols)
+                if COMPUTE_COS_SIN:
+                    cos_val, sin_val = rope_cos_sin(
+                        rot_offset_val - 1, ROPE_TYPE, HEAD_SIZE, BASE,
+                        SCALING_FACTOR, LOW_FACTOR, HIGH_FACTOR,
+                        ORIG_MAX_POSITION, PI_VALUE)
+                else:
+                    cache_cols = tl.arange(0, HEAD_SIZE) % embed_dim
+                    cache_base = (rot_offset_val - 1) * rotary_dim
+                    cos_val = tl.load(cos_sin_cache_ptr + cache_base + cache_cols)
+                    sin_val = tl.load(
+                        cos_sin_cache_ptr + cache_base + embed_dim + cache_cols)
                 rev = (tl.arange(0, HEAD_SIZE_PADDED) + (HEAD_SIZE_PADDED // 2)) % HEAD_SIZE_PADDED
                 Q_rev = tl.load(
                     query_ptr + query_offset + rev[None, :],

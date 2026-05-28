@@ -179,6 +179,7 @@ def forward(
     else:
         kernel_kwargs.update(
             freqs=freqs,
+            rope_meta=getattr(layer, "rope_meta", None),
             is_lazy=is_lazy,
             lazy_variant=lazy_variant,
             q_offset=q_offset,
