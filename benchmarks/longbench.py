@@ -1,4 +1,6 @@
 import dataclasses
+import json
+import os
 import re
 import string
 from collections import Counter
@@ -59,6 +61,24 @@ class LongBenchDataset:
     name: str = "LongBench"
 
 
+def _iter_longbench_rows(dataset_name: str):
+    """Yield raw LongBench rows. Prefer a local JSONL (LongBench-data/data/<name>.jsonl,
+    extracted from THUDM/LongBench data.zip) since modern `datasets` (>=3) refuses the
+    repo's loading script. Fall back to the Hub if the local file is absent."""
+    for base in (os.environ.get("LONGBENCH_DATA_DIR", "LongBench-data/data"),
+                 os.path.join(os.path.dirname(__file__), "..", "LongBench-data", "data")):
+        path = os.path.join(base, f"{dataset_name}.jsonl")
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        yield json.loads(line)
+            return
+    yield from datasets.load_dataset(
+        "THUDM/LongBench", dataset_name, split="test", trust_remote_code=True)
+
+
 def load_dataset(dataset_name: str) -> LongBenchDataset:
     if dataset_name not in DATASET_NAMES:
         logger.error(f"Invalid LongBench dataset_name {dataset_name}; options are {DATASET_NAMES}")
@@ -76,7 +96,7 @@ def load_dataset(dataset_name: str) -> LongBenchDataset:
                 all_classes=row["all_classes"],
                 _id=row["_id"],
             )
-            for row in datasets.load_dataset("THUDM/LongBench", dataset_name, split="test", trust_remote_code=True)
+            for row in _iter_longbench_rows(dataset_name)
         ]
     )
     

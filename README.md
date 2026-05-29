@@ -4,67 +4,47 @@
 </div>
 
 
-It is the full codebase for lazy-attention project. This version is a local dev branch tested on a desktop equiped with one 5070ti.
+Codebase for the LazyAttention project. It bundles the three components that
+share the **same vLLM backend** (the modern vLLM in [vllm_proj](./vllm_proj/)),
+so they can be compared apples-to-apples on one engine:
 
-> Full attention base model: meta-llama/Llama-3.2-1B or meta-llama/Llama-3.2-1B-Instruct
+- **LazyAttention** ([lazy_attn](./lazy_attn/)) — defers positional encoding and
+  caches one position-agnostic KV copy per document, reused regardless of slot.
+- **BlockAttention** ([block_attn_vllm](./block_attn_vllm/)) — block-diagonal
+  attention over independently-encoded document blocks, integrated into vLLM.
+- **Original vLLM** ([vllm_proj](./vllm_proj/)) — the unmodified backend both
+  build on, and the source of the stock baselines (prefix caching / full recompute).
 
-> Block attention model: hxia7/Llama-3.2-1B-block-FT
+Details in each folder. All experiments in [benchmarks](./benchmarks/).
 
-Include:
+## Demo: Lazy-Attn vs Prefix Caching
 
-- LazyAttention ([lazy_attn](./lazy_attn/))
-- BlockAttention ([block_attn_vllm](./block_attn_vllm/))
-- CacheBlend ([cacheblend](./cacheblend/))
-- PromptCache ([promptcache](./promptcache/))
-- Original vLLM ([vllm_proj](./vllm_proj/))
+<div style="text-align: center;">
+  <img src="/docs/assets/lazy_vs_prefix_demo.gif" alt="lazy-vs-prefix-caching demo"/>
+</div>
 
-Details in each folder.
+Both serve the **same** retrieved documents, but in a **new order** per request.
+Prefix caching can only reuse a contiguous prefix, so a reordering forces it to
+recompute the rest; Lazy-Attn caches one position-agnostic copy per document and
+reuses every block regardless of slot — reaching the first token **3.3× sooner**
+(201 ms vs 655 ms here, 8B `Tulu3-Block-FT`, 2WikiMultihopQA), with an identical
+answer. The gap grows with context length.
 
-All experiments in [benchmarks](./benchmarks/).
+Run it yourself (a tiny FastAPI server wraps each `RAG` SUT; one model per process):
 
-## Environments
+```bash
+# Live side-by-side A/B in tmux (lazy on :8001, prefix caching on :8002, client pane)
+bash scripts/demo/lazy_vs_baseline_demo.sh
 
-The baselines need **independent** envs (do not reuse the root `.venv`, which
-holds the new vLLM that LazyAttention/BlockAttention build on):
+# Record the GIF above. Locally (1B, directional timing):
+bash scripts/demo/record_race_gif.sh
+# On the 8B (coherent answers) via slurm:
+sbatch scripts/demo/record_race_gif.slurm        # --export=ALL,DEMO_RECORD_INDEX=N for other questions
+```
 
-- **LazyAttention / BlockAttention** — root `./.venv` (torch 2.7.0+cu128, new vLLM). Runs on this desktop (sm_120 / RTX 5070 Ti).
-- **PromptCache** — `promptcache/.venv`:
-  ```bash
-  cd promptcache && uv venv --python 3.10 .venv
-  VIRTUAL_ENV=.venv uv pip install torch==2.7.0 --index-url https://download.pytorch.org/whl/cu128
-  VIRTUAL_ENV=.venv uv pip install -e .          # deps pinned in requirements.txt
-  .venv/bin/python smoke_test.py                 # end-to-end check (passes on this desktop)
-  ```
-  Uses transformers 4.36.2 (it imports `transformers.file_utils`, removed ~4.40),
-  so it targets Llama-2-architecture models; `smoke_test.py` uses TinyLlama.
-- **CacheBlend** — `cacheblend/.venv` (torch 2.2.1 + cu121, bundled vLLM 0.4.1 in `vllm_blend/`, needs a `vllm._C` source build).
-  **Not runnable on this desktop**: torch 2.2.1 supports only sm_50–sm_90, but the
-  RTX 5070 Ti is sm_120 (Blackwell) — GPU ops fail with "no kernel image is
-  available for execution on the device". Run it on an sm≤9.0 GPU (A100/H100/etc.),
-  or port CacheBlend to a modern vLLM.
-
-<!-- ## Benchmark Notes
-
-- `exp1` convenience scripts:
-  - `scripts/benchmark/exp1_lazy_bench.slurm`: runs `lazyrag` on `2wikimqa`
-  - `scripts/benchmark/exp1_mepic_bench.slurm`: runs `lazyrag` with `LAZY_ATTENTION_VARIANT=mepic`
-  - `scripts/benchmark/exp1_baseline_bench.slurm`: runs `baseline` on `2wikimqa`
-
-- `mepic` benchmark default:
-  - `scripts/benchmark/exp1_mepic_bench.slurm`
-  - `scripts/benchmark/exp4_mepic_bench.slurm`
-  - both default to `MEPIC_FORCE_FP32_ROTARY=1`
-  - this is the conservative MEPIC baseline used in our comparisons
-
-- Shared-KV fairness setting:
-  - `scripts/benchmark/shared_kv_scale_baseline.slurm` sets `BASELINE_PREPARE_PREFIX_CACHE=1`
-  - this makes baseline warm prefix cache during `add_doc_async()`
-  - the default for `BaselineLazyRAG` remains off, so regular benchmark scripts are unaffected
-
-- Debug timing:
-  - `VLLM_LOG_MODEL_FORWARD_TIME=1` enables per-step model forward timing logs
-  - this path uses explicit CUDA synchronization and can perturb benchmark numbers
-  - keep it unset (default) for performance runs -->
+See [benchmarks/serve_demo.py](./benchmarks/serve_demo.py) (server),
+[benchmarks/demo_race.py](./benchmarks/demo_race.py) (capture + GIF render), and
+[scripts/demo/](./scripts/demo/) (launchers).
 
 
 ## Citation

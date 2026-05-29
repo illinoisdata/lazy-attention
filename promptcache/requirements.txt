@@ -1,9 +1,0 @@
-transformers==4.36.2
-astor
-lxml
-numpy
-termcolor
-tqdm
-accelerate
-sentencepiece
-protobuf

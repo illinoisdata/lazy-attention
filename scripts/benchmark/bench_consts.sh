@@ -177,15 +177,6 @@ function get_data_args() {
     elif [[ $key == "hotpotqa_block" ]]
     then
         data_args="--dataset-name hotpotqa_block"
-    elif [[ $key == "2wikimqa_cacheblend" ]]
-    then
-        data_args="--dataset-name 2wikimqa_cacheblend"
-    elif [[ $key == "samsum_cacheblend" ]]
-    then
-        data_args="--dataset-name samsum_cacheblend"
-    elif [[ $key == "musique_cacheblend" ]]
-    then
-        data_args="--dataset-name musique_cacheblend"
     elif [[ $key == "ablation" ]]
     then
         data_args="--dataset-name ablation"
@@ -265,19 +256,7 @@ function make_data_args() {
 
 SUTS=(
     "parrot"
-    "cachep"
-    "cachepno"
-    "cachepseq"
-    "cachepptree"
     "llmrag"
-    "trragr1"
-    "trragr2"
-    "trragm1"
-    "trragm2"
-    "trragm2v2"
-    "trragm3"
-    "pcrag"
-    "cacheblend"
     "lazyrag"
     "baseline"
     "recllmrag"
@@ -304,45 +283,9 @@ function get_sut_args() {
     if [[ $_SUT == "parrot" ]]
     then
         sut_args="--rag_type=parrot --tokenizer ${SUTS_MODEL}"
-    elif [[ $_SUT == "cachep" ]]
-    then
-        sut_args="--rag_type=cachep --tokenizer ${SUTS_MODEL} --cachep_tokenizer ${SUTS_MODEL} --cachep_type lru"
-    elif [[ $_SUT == "cachepno" ]]
-    then
-        sut_args="--rag_type=cachep --tokenizer ${SUTS_MODEL} --cachep_tokenizer ${SUTS_MODEL} --cachep_type no"
-    elif [[ $_SUT == "cachepseq" ]]
-    then
-        sut_args="--rag_type=cachep --tokenizer ${SUTS_MODEL} --cachep_tokenizer ${SUTS_MODEL} --cachep_type seq"
-    elif [[ $_SUT == "cachepptree" ]]
-    then
-        sut_args="--rag_type=cachep --tokenizer ${SUTS_MODEL} --cachep_tokenizer ${SUTS_MODEL} --cachep_type ptree"
     elif [[ $_SUT == "llmrag" ]]
     then
         sut_args="--rag_type=llmrag --tokenizer ${SUTS_MODEL} --model ${SUTS_MODEL}"
-    elif [[ $_SUT == "trragr1" ]]
-    then
-        sut_args="--rag_type=trrag --tokenizer ${SUTS_MODEL} --trrag_lm_name ${SUTS_MODEL} --trrag_method r1"
-    elif [[ $_SUT == "trragr2" ]]
-    then
-        sut_args="--rag_type=trrag --tokenizer ${SUTS_MODEL} --trrag_lm_name ${SUTS_MODEL} --trrag_method r2"
-    elif [[ $_SUT == "trragm1" ]]
-    then
-        sut_args="--rag_type=trrag --tokenizer ${SUTS_MODEL} --trrag_lm_name ${SUTS_MODEL} --trrag_method m1"
-    elif [[ $_SUT == "trragm2" ]]
-    then
-        sut_args="--rag_type=trrag --tokenizer ${SUTS_MODEL} --trrag_lm_name ${SUTS_MODEL} --trrag_method m2"
-    elif [[ $_SUT == "trragm2v2" ]]
-    then
-        sut_args="--rag_type=trrag --tokenizer ${SUTS_MODEL} --trrag_lm_name ${SUTS_MODEL} --trrag_method m2v2"
-    elif [[ $_SUT == "trragm3" ]]
-    then
-        sut_args="--rag_type=trrag --tokenizer ${SUTS_MODEL} --trrag_lm_name ${SUTS_MODEL} --trrag_method m3"
-    elif [[ $_SUT == "pcrag" ]]
-    then
-        sut_args="--rag_type=pcrag --tokenizer ${SUTS_MODEL} --pc_lm_name ${SUTS_MODEL}"
-    elif [[ $_SUT == "cacheblend" ]]
-    then
-        sut_args="--rag_type=cacheblend --tokenizer ${SUTS_MODEL} --model ${SUTS_MODEL}"
     elif [[ $_SUT == "lazyrag" ]]
     then
         sut_args="--rag_type=lazyrag --tokenizer ${SUTS_MODEL} --model ${SUTS_MODEL} --gpu-memory-utilization 0.9 --enable-prefix-caching"
@@ -376,9 +319,6 @@ function get_sut_augment_args() {
     elif [[ $key == "id" ]]
     then
         sut_args=""  # No-op, used for repetitions
-    elif [[ $key == "cpc" ]]
-    then
-        sut_args="--cachep_capacity ${val}"
     else
         echo "ERROR (get_sut_augment_args): Unknown key= ${key}, with value= ${value}"
         exit 1
