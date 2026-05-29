@@ -472,6 +472,7 @@ def chunked_prefill_paged_decode(
     rotary_dim=None,
     freqs=None,
     cos_sin_cache=None,
+    rope_meta=None,
     is_neox_style=True,
     # To rotate the query
     is_lazy=None,
@@ -608,6 +609,15 @@ def chunked_prefill_paged_decode(
         else:
             profile_decode = os.environ.get("LAZY_DECODE_WRAPPER_PROFILE", "0") == "1"
             force_split_decode = os.environ.get("LAZY_FORCE_SPLIT_DECODE", "0") == "1"
+            ignore_q_mask = os.environ.get("LAZY_DECODE_IGNORE_Q_MASK", "0") == "1"
+            # Default: LOAD cos/sin from cos_sin_cache (validated faster on this
+            # occupancy-bound decode kernel). Opt into in-kernel COMPUTE with
+            # LAZY_DECODE_COMPUTE_COS_SIN=1.
+            compute_cos_sin = os.environ.get("LAZY_DECODE_COMPUTE_COS_SIN", "0") == "1"
+            rope_kw = rope_meta if rope_meta is not None else dict(
+                ROPE_TYPE=0, BASE=10000.0, SCALING_FACTOR=1.0, LOW_FACTOR=1.0,
+                HIGH_FACTOR=1.0, ORIG_MAX_POSITION=8192,
+                PI_VALUE=3.141592653589793)
             all_lazy = (is_lazy is not None) and bool(torch.all(is_lazy).item())
             if profile_decode:
                 total_start = torch.cuda.Event(enable_timing=True)
@@ -669,6 +679,10 @@ def chunked_prefill_paged_decode(
                     is_lazy_ptr=is_lazy,
                     q_offset_ptr=q_offset,
                     q_mask_ptr=q_mask,
+                    cos_sin_cache_ptr=cos_sin_cache,
+                    IGNORE_Q_MASK=ignore_q_mask,
+                    COMPUTE_COS_SIN=compute_cos_sin,
+                    **rope_kw,
                 )
             if profile_decode:
                 kernel_end.record()

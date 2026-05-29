@@ -116,7 +116,7 @@ def grade_chatragbench(
 
     return result_scores
 
-def grade_blockbench_cacheblendbench(
+def grade_blockbench(
     args: longbench.LongBenchArgs,
     result_jsons: Dict[Path, Dict[str, Any]],
 ) -> Dict[Path, float]:
@@ -154,14 +154,13 @@ def grade_blockbench_cacheblendbench(
     return result_scores
 
 block_bench_dataset_names = ["2wikimqa_block", "hotpotqa_block", "nq_block", "triviaqa_block"]
-cache_blendbench_dataset_names = ["2wikimqa_cacheblend", "samsum_cacheblend", "musique_cacheblend"]
 def grade(args: argparse.Namespace, result_jsons: Dict[Path, Dict[str, Any]]):
     if args.dataset_name == "longbench":
         grade_longbench(args.longbench, result_jsons)
     elif args.dataset_name == "chatragbench":
         grade_chatragbench(args.chatragbench, result_jsons)
-    elif args.dataset_name in block_bench_dataset_names or args.dataset_name in cache_blendbench_dataset_names:
-        grade_blockbench_cacheblendbench(args.longbench, result_jsons)
+    elif args.dataset_name in block_bench_dataset_names:
+        grade_blockbench(args.longbench, result_jsons)
     else:
         raise ValueError(f"Unknown dataset for grading: {args.dataset_name}")
 
@@ -173,7 +172,7 @@ if __name__ == "__main__":
         "--dataset-name",
         type=str,
         default="random",
-        choices=["random", "chatragbench", "longbench", "2wikimqa_block", "hotpotqa_block","2wikimqa_cacheblend", "samsum_cacheblend", "musique_cacheblend"],
+        choices=["random", "chatragbench", "longbench", "2wikimqa_block", "hotpotqa_block"],
         help="Name of the dataset to benchmark on.",
     )
     random_group = parser.add_argument_group("random dataset options")

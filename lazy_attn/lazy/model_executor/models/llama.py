@@ -1,5 +1,7 @@
 import torch
 
+from lazy.model_executor.rope import rope_meta_from_layer
+
 
 # class LlamaAttention(nn.Module):
 def forward(
@@ -13,6 +15,13 @@ def forward(
     # customized rotary embedding, only rotate query but keep key unchanged
     # keep the signature of the original rotary embedding
     q, k = self.rotary_emb(positions, q, k)
+
+    # The decode kernel LOADS cos/sin from cos_sin_cache by default. Stash the
+    # model's RoPE scaling (sourced from the rotary layer, not hardcoded) so the
+    # backend can forward it for the optional in-kernel COMPUTE path
+    # (LAZY_DECODE_COMPUTE_COS_SIN=1).
+    if not hasattr(self.attn, "rope_meta"):
+        self.attn.rope_meta = rope_meta_from_layer(self.rotary_emb)
 
     attn_output = self.attn(q, k, v,
                             freqs=self.rotary_emb.inv_freq,

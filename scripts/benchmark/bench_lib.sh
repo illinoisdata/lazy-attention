@@ -4,7 +4,7 @@ BENCH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${BENCH_LIB_DIR}/bench_consts.sh"
 
 benchmark_setup_pythonpath() {
-    export PYTHONPATH=.:./promptcache:./lazy_attn:./block_attn
+    export PYTHONPATH=.:./lazy_attn
 }
 
 benchmark_install_interrupt_handler() {

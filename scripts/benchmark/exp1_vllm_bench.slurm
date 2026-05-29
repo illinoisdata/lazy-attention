@@ -22,7 +22,7 @@
 # (3) Downloaded dataset via scripts/download_dataset.sh
 # (4) Installed vllm in editable mode (pip install -e .) in the conda env vllm
 
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/slurm_common.sh"
+source "${SLURM_SUBMIT_DIR:-/projects/bdjx/$USER/gh/lazy-attention}/scripts/slurm_common.sh"
 
 slurm_print_header
 slurm_activate_runtime

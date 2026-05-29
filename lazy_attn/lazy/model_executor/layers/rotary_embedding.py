@@ -32,19 +32,20 @@ USE_MEPIC_Q_ONLY_ROTARY = (
 def _should_use_q_only_rotary() -> bool:
     if USE_MEPIC_Q_ONLY_ROTARY:
         return True
-    try:
-        forward_context = get_forward_context()
-    except Exception:
-        return False
-    attn_metadata = getattr(forward_context, "attn_metadata", None)
-    if attn_metadata is None:
-        return False
-    is_lazy = getattr(attn_metadata, "is_lazy", None)
-    if is_lazy is None:
-        return False
-    if torch.is_tensor(is_lazy):
-        return bool(torch.any(is_lazy).item())
-    return bool(is_lazy)
+    return False
+    # try:
+    #     forward_context = get_forward_context()
+    # except Exception:
+    #     return False
+    # attn_metadata = getattr(forward_context, "attn_metadata", None)
+    # if attn_metadata is None:
+    #     return False
+    # is_lazy = getattr(attn_metadata, "is_lazy", None)
+    # if is_lazy is None:
+    #     return False
+    # if torch.is_tensor(is_lazy):
+    #     return bool(torch.any(is_lazy).item())
+    # return bool(is_lazy)
 
 class Llama3RotaryEmbedding(RotaryEmbedding):
 
