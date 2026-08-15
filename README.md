@@ -17,6 +17,14 @@ so they can be compared apples-to-apples on one engine:
 
 Details in each folder. All experiments in [benchmarks](./benchmarks/).
 
+## Documentation
+
+- [docs/design.md](./docs/design.md) — why deferred positional encoding works,
+  the request lifecycle, per-document caching and hashing, the rotation
+  metadata, the patch layer, and the limits.
+- [docs/usage.md](./docs/usage.md) — installing, sending `document_seqs`
+  requests offline and async, every environment switch, tests, troubleshooting.
+
 ## Install
 
 ```bash
