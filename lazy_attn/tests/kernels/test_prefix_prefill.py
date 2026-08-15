@@ -21,6 +21,13 @@ from lazy.attention.ops.prefix_prefill import (
     context_attention_fwd as lazy_context_attention_fwd)
 from vllm.platforms import current_platform
 from vllm.utils import STR_DTYPE_TO_TORCH_DTYPE
+# Probes a sibling rather than `tests.kernels.test_prefix_prefill`: this file
+# has the same module name, so it would shadow it and always "succeed".
+pytest.importorskip(
+    "tests.kernels.allclose_default",
+    reason="imports vLLM's own tests.* helpers, which ship only in a "
+           "vLLM source checkout, not in the wheel scripts/install.sh "
+           "installs")
 from tests.kernels.test_prefix_prefill import (HEAD_SIZES, NUM_HEADS,
                                                NUM_QUERIES_PER_KV,
                                                DTYPES, CUDA_DEVICES, KV_CACHE_DTYPES)

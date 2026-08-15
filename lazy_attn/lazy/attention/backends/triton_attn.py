@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 """Attention layer with PagedAttention and Triton prefix prefill."""
-import os
 import time
 from typing import Any, Optional
 
@@ -15,16 +14,15 @@ from ..ops.chunked_prefill_paged_decode import chunked_prefill_paged_decode
 from ..old_ops.chunked_prefill_paged_decode import (
     chunked_prefill_paged_decode as chunked_prefill_paged_decode_old)
 from lazy.utils.variants import (
-    LAZY_VARIANT_MEPIC,
-    get_lazy_attention_variant_code,
+    is_mepic_variant,
+    lazy_profile_attn_backend_enabled,
     mepic_force_fp32_rotary_enabled,
 )
 
 
-USE_OLD_MEPIC_KERNEL = (get_lazy_attention_variant_code() == LAZY_VARIANT_MEPIC)
+USE_OLD_MEPIC_KERNEL = is_mepic_variant()
 MEPIC_FORCE_FP32_ROTARY = mepic_force_fp32_rotary_enabled()
-PROFILE_ATTN_BACKEND = os.environ.get("LAZY_PROFILE_ATTN_BACKEND",
-                                      "0") == "1"
+PROFILE_ATTN_BACKEND = lazy_profile_attn_backend_enabled()
 
 _ATTN_PROFILE_STATE = {
     "calls": 0,

@@ -10,6 +10,7 @@ import torch
 
 from vllm.lora.request import LoRARequest
 from vllm.multimodal.inputs import MultiModalKwargs, PlaceholderRange
+from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import SamplingParams, SamplingType
 from vllm.utils import swap_dict_values
 from vllm.v1.outputs import LogprobsTensors
@@ -27,14 +28,18 @@ class CachedRequestState:
     prompt_token_ids: list[int]
     mm_inputs: list[MultiModalKwargs]
     mm_positions: list[PlaceholderRange]
-    sampling_params: SamplingParams
+    sampling_params: Optional[SamplingParams]
+    pooling_params: Optional[PoolingParams]
     generator: Optional[torch.Generator]
 
-    block_ids: list[int]
+    block_ids: tuple[list[int], ...]
     num_computed_tokens: int
     output_token_ids: list[int]
-    
-    # For q rotation in lazy attention
+
+    # For q rotation in lazy attention.
+    # Defaulted so that vLLM's own construction sites (which know nothing about
+    # lazy metadata) still work once this dataclass is patched in; the model
+    # runner fills them from the scheduler output.
     is_lazy: bool = False
     lazy_variant: int = 0
     q_offset: Optional[list[int]] = None

@@ -22,35 +22,17 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 version = "0.0.0"
+# The `lazy` package is a monkey-patch layer over vLLM: everything it imports
+# (torch, triton, transformers, numpy, msgspec, zmq, xgrammar, ...) already
+# comes with vLLM itself, so pinning them here only risks fighting vLLM's own
+# pins. vLLM is deliberately NOT listed: it must be installed with a matching
+# torch build (see scripts/install.sh), which a plain dependency cannot express.
 dependencies = [
-    # Requirement
-    "huggingface_hub",
-    "loguru",
-    "numpy",
-    "simple_parsing",
-    # "xformers",
-
-    # Baseline requirements
-    "accelerate",
-    "astor",
-    "bitsandbytes",
-    "datasets",
-    "fire",
-    "fuzzywuzzy",
-    "jieba",
-    "lxml",
-    "python-Levenshtein",
-    "Requests",
-    "rouge",
-    "termcolor",
-    "torch",
-    "tqdm",
-    "transformers",
+    "matplotlib",  # lazy/utils/monitoring.py
 ]
 
 [project.optional-dependencies]
 dev = [
-    # Development
     "black",
     "flake8",
     "isort",
@@ -59,6 +41,22 @@ dev = [
     "pytest-xdist",
     "pytest-cov",
     "pytest-rerunfailures",
+]
+# Everything the benchmarks in ../benchmarks need on top of the library.
+bench = [
+    "datasets",
+    "fastapi",
+    "fuzzywuzzy",
+    "jieba",
+    "loguru",
+    "pandas",
+    "pydantic",
+    "python-Levenshtein",
+    "requests",
+    "rouge",
+    "scipy",
+    "simple_parsing",
+    "uvicorn",
 ]
 
 

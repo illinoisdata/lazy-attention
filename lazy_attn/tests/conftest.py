@@ -44,6 +44,17 @@ def mock_sampling_params():
     return SamplingParams(temperature=0, max_tokens=20, min_tokens=20, seed=42)
 
 
+# Default to the 1B block-fine-tuned model so the suite fits on a single
+# consumer GPU. Point LAZY_TEST_MODEL at ldsjmdy/Tulu3-Block-FT (8B) to
+# reproduce the paper's accuracy numbers.
+DEFAULT_TEST_MODEL = "hxia7/Llama-3.2-1B-Block-FT"
+
+
 @pytest.fixture(scope="session")
 def mock_model_name():
-    return "ldsjmdy/Tulu3-Block-FT"
+    return os.environ.get("LAZY_TEST_MODEL", DEFAULT_TEST_MODEL)
+
+
+@pytest.fixture(scope="session")
+def mock_gpu_memory_utilization():
+    return float(os.environ.get("LAZY_TEST_GPU_MEM_UTIL", "0.6"))

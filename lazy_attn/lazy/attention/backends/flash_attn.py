@@ -326,7 +326,7 @@ class FlashAttentionMetadataBuilder:
         seq_lens_cpu = self.runner.seq_lens_cpu[:num_reqs]
         seq_lens = seq_lens_cpu.to(self.runner.device, non_blocking=True)
         block_table = (
-            self.runner.input_batch.block_table.get_device_tensor()[:num_reqs])
+            self.runner.input_batch.block_table[0].get_device_tensor()[:num_reqs])
         slot_mapping = self.runner.slot_mapping_cpu[:num_actual_tokens].to(
             self.runner.device, non_blocking=True).long()
 

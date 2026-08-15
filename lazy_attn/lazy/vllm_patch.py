@@ -16,9 +16,11 @@ from lazy.engine.core import LazyEngineCoreProc
 from lazy.engine.llm_engine import LazyLLMEngine
 from lazy.engine.processor import LazyProcessor
 from lazy.entrypoints.llm import LazyLLM
-from lazy.model_executor.layers.rotary_embedding import Llama3RotaryEmbedding
+from lazy.model_executor.layers.rotary_embedding import (Llama3RotaryEmbedding,
+                                                         LazyRotaryEmbedding)
 from lazy.model_executor.models.llama import forward as llama_attn_forward
 from lazy.request import LazyRequest
+from lazy.utils.triton_compat import apply_triton_launch_hook_shim
 from lazy.worker.gpu_input_batch import CachedRequestState
 from lazy.worker.gpu_model_runner import LazyGPUModelRunner
 
@@ -80,6 +82,14 @@ def attention_targets() -> tuple[PatchTarget, ...]:
             "vllm.model_executor.layers.rotary_embedding",
             "Llama3RotaryEmbedding",
             Llama3RotaryEmbedding,
+        ),
+        # Checkpoints with `rope_scaling: null` (e.g. the block-fine-tuned
+        # models) get the plain RotaryEmbedding, which must also expose
+        # inv_freq for the deferred key rotation.
+        PatchTarget(
+            "vllm.model_executor.layers.rotary_embedding",
+            "RotaryEmbedding",
+            LazyRotaryEmbedding,
         ),
         PatchTarget(
             "vllm.v1.attention.backends.triton_attn",
@@ -143,6 +153,7 @@ def scheduler_targets(scheduler_cls: type[Any]) -> tuple[PatchTarget, ...]:
 
 def apply_attention_patches() -> None:
     _set_attention_backend()
+    apply_triton_launch_hook_shim()
     _apply_targets(attention_targets())
 
 
@@ -154,6 +165,7 @@ def apply_all_patches(
     scheduler_cls: type[Any] = LazyScheduler,
 ) -> None:
     _set_attention_backend()
+    apply_triton_launch_hook_shim()
     _apply_targets(attention_targets())
     _apply_targets(frontend_targets())
     _apply_targets(scheduler_targets(scheduler_cls))

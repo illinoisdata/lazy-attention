@@ -32,7 +32,7 @@ from vllm.entrypoints.chat_utils import (ChatCompletionMessageParam,
 from vllm.entrypoints.score_utils import (_cosine_similarity,
                                           _validate_score_input_lens)
 from vllm.inputs import PromptType, SingletonPrompt, TextPrompt, TokensPrompt
-from vllm.inputs.parse import is_token_prompt, parse_and_batch_prompt
+from vllm.inputs.parse import parse_and_batch_prompt
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.model_executor.guided_decoding.guided_fields import (

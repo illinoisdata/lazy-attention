@@ -10,7 +10,7 @@ from collections.abc import Iterable
 from typing import Callable, Optional
 
 from vllm.logger import init_logger
-from vllm.v1.core.kv_cache_utils import (BlockHashType, FreeKVCacheBlockQueue,
+from vllm.v1.core.kv_cache_utils import (BlockHash, FreeKVCacheBlockQueue,
                                          KVCacheBlock,
                                          generate_block_hash_extra_keys,
                                          hash_block_tokens)
@@ -25,7 +25,7 @@ def cache_full_blocks(
     self,
     request: Request,
     blocks: list[KVCacheBlock],
-    block_hashes: list[BlockHashType],
+    block_hashes: list[BlockHash],
     num_cached_blocks: int,
     num_full_blocks: int,
     block_size: int,

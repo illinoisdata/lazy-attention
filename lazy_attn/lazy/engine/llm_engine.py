@@ -62,18 +62,33 @@ class LazyLLMEngine(LLMEngine):
         # For lazy attention
         document_seq: Optional[Sequence[PromptType]] = None,
     ) -> None:
+        # NOTE: pass by keyword. vLLM has inserted new positional parameters
+        # into Processor.process_inputs across releases (e.g. tokenization_kwargs
+        # in 0.9.x), which silently shifts positional arguments.
         if document_seq is None:
             logger.debug("Using default process_inputs.")
             # Process raw inputs into the request.
             prompt_str, request = self.processor.process_inputs(
-                request_id, prompt, params, arrival_time, lora_request,
-                trace_headers, prompt_adapter_request, priority)
+                request_id,
+                prompt,
+                params,
+                arrival_time=arrival_time,
+                lora_request=lora_request,
+                trace_headers=trace_headers,
+                prompt_adapter_request=prompt_adapter_request,
+                priority=priority)
         else:
             logger.debug("Using customized process_inputs for lazy attention.")
             block_size = self.cache_config.block_size
             prompt_str, request = self.processor.process_inputs(
-                request_id, prompt, params, arrival_time, lora_request,
-                trace_headers, prompt_adapter_request, priority,
+                request_id,
+                prompt,
+                params,
+                arrival_time=arrival_time,
+                lora_request=lora_request,
+                trace_headers=trace_headers,
+                prompt_adapter_request=prompt_adapter_request,
+                priority=priority,
                 # For lazy attention
                 document_seq=document_seq,
                 block_size=block_size)

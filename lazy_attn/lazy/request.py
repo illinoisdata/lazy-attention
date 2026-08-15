@@ -4,10 +4,12 @@ Request class for LazyAttention.
 This class is a wrapper around the original Request class from vllm. 
 """
 
+import copy
 import enum
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 from vllm.multimodal.inputs import MultiModalKwargs, PlaceholderRange
+from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import SamplingParams
 from vllm.utils import is_list_of
 from vllm.v1.engine import (EngineCoreEvent,
@@ -32,11 +34,15 @@ class LazyRequest:
         multi_modal_inputs: Optional[list[MultiModalKwargs]],
         multi_modal_hashes: Optional[list[str]],
         multi_modal_placeholders: Optional[list[PlaceholderRange]],
-        sampling_params: SamplingParams,
+        sampling_params: Optional[SamplingParams],
         eos_token_id: Optional[int],
         arrival_time: float,
+        pooling_params: Optional[PoolingParams] = None,
+        client_index: int = 0,
         lora_request: Optional["LoRARequest"] = None,
         structured_output_request: Optional["StructuredOutputRequest"] = None,
+        cache_salt: Optional[str] = None,
+        priority: int = 0,
         # Extra attributes for DynamicRAG
         documents_token_ids_padded: Optional[list[list[int]]] = None,
         document_lens: Optional[list[int]] = None,
@@ -45,19 +51,35 @@ class LazyRequest:
         is_document_request: bool = False,
     ) -> None:
         self.request_id = request_id
+        self.client_index = client_index
+        self.priority = priority
         self.sampling_params = sampling_params
+        self.pooling_params = pooling_params
         # Because of LoRA, the eos token id can be different for each request.
         self.eos_token_id = eos_token_id
         self.lora_request = lora_request
         self.structured_output_request = structured_output_request
 
-        self.status = (RequestStatus.WAITING_FOR_FSM
-                       if sampling_params.guided_decoding is not None else
-                       RequestStatus.WAITING)
+        self.status = RequestStatus.WAITING
+        if sampling_params and sampling_params.guided_decoding is not None:
+            self.status = RequestStatus.WAITING_FOR_FSM
         self.events: list[EngineCoreEvent] = []
         self.stop_reason: Union[int, str, None] = None
-        assert sampling_params.max_tokens is not None
-        self.max_tokens = sampling_params.max_tokens
+
+        # P/D: Connector-specific KV transfer parameters.
+        self.kv_transfer_params: Optional[dict[str, Any]] = None
+
+        if pooling_params is not None:
+            self.max_tokens = 1
+        elif sampling_params is not None:
+            assert sampling_params.max_tokens is not None
+            self.max_tokens = sampling_params.max_tokens
+            if sampling_params.extra_args is not None:
+                self.kv_transfer_params = \
+                    sampling_params.extra_args.get("kv_transfer_params")
+        else:
+            raise ValueError(
+                "sampling_params and pooling_params can't both be unset")
 
         self.prompt_token_ids = prompt_token_ids
         self.num_prompt_tokens = len(self.prompt_token_ids)
@@ -65,6 +87,7 @@ class LazyRequest:
         self._all_token_ids: list[int] = self.prompt_token_ids.copy()
         self.spec_token_ids: list[int] = []
         self.num_computed_tokens = 0
+        self.cache_salt: Optional[str] = cache_salt
 
         # Multi-modal related
         self.mm_positions = multi_modal_placeholders or []
@@ -83,6 +106,14 @@ class LazyRequest:
         # they should also be updated simultaneously.
         self.output_token_ids = ConstantList(self._output_token_ids)
         self.all_token_ids = ConstantList(self._all_token_ids)
+
+        # State
+        # The number of tokens with prefix cache hits.
+        self.num_cached_tokens = -1
+
+        # The number of NaNs in logits. A value greater than 0
+        # indicates that the output is corrupted
+        self.num_nans_in_logits = 0
 
         # /////////////////////////////////////////
         self.arrival_time = arrival_time
@@ -114,16 +145,21 @@ class LazyRequest:
 
         return cls(
             request_id=request.request_id,
+            client_index=request.client_index,
             prompt_token_ids=request.prompt_token_ids,
             multi_modal_inputs=request.mm_inputs,
             multi_modal_hashes=request.mm_hashes,
             multi_modal_placeholders=request.mm_placeholders,
             sampling_params=request.sampling_params,
+            pooling_params=request.pooling_params,
             eos_token_id=request.eos_token_id,
             arrival_time=request.arrival_time,
             lora_request=request.lora_request,
             structured_output_request=StructuredOutputRequest(
-                sampling_params=request.sampling_params),
+                sampling_params=request.sampling_params)
+            if request.sampling_params else None,
+            cache_salt=request.cache_salt,
+            priority=request.priority,
             # Extra attributes for LazyAttention
             documents_token_ids_padded=request.documents_token_ids_padded,
             document_seq_hash=request.document_seq_hash,
@@ -143,8 +179,42 @@ class LazyRequest:
             self._all_token_ids.extend(token_ids)
             
     @property
+    def is_output_corrupted(self) -> bool:
+        return self.num_nans_in_logits > 0
+
+    @property
     def has_documents(self) -> bool:
         return self.documents_token_ids_padded is not None
+
+    def document_request(self, doc_idx: int) -> "LazyRequest":
+        """The request that populates one document's KV blocks.
+
+        It only ever prefills. The blocks it writes are the ones this request
+        later looks up, so both sides hash the *same object* -- salt, and
+        anything vLLM adds to the block hash later, line up by construction
+        rather than by two code paths agreeing.
+
+        `lora_request` is deliberately not forwarded: upstream folds the LoRA
+        id into every block's extra keys, and the parent's own hashes carry the
+        parent's id, so a LoRA document would populate blocks the parent could
+        never match -- leaving `is_doc_ready` false forever. Documents + LoRA
+        is unsupported.
+        """
+        assert self.has_documents
+        sampling_params = copy.deepcopy(self.sampling_params)
+        sampling_params.max_tokens = 1  # TODO(haocheng): how to avoid
+        return LazyRequest(
+            request_id=f"{self.request_id}_d{doc_idx}",
+            prompt_token_ids=self.documents_token_ids_padded[doc_idx],
+            multi_modal_inputs=self.mm_inputs,
+            multi_modal_hashes=self.mm_hashes,
+            multi_modal_placeholders=self.mm_positions,
+            sampling_params=sampling_params,
+            eos_token_id=self.eos_token_id,
+            arrival_time=self.arrival_time,
+            cache_salt=self.cache_salt,
+            is_document_request=True,
+        )
 
     @property
     def num_tokens(self) -> int:
@@ -171,7 +241,11 @@ class LazyRequest:
 
     @property
     def use_structured_output(self) -> bool:
-        return self.sampling_params.guided_decoding is not None
+        # `sampling_params` is None for pooling requests (embedding /
+        # classification), which the scheduler still asks about -- so the
+        # None guard is load-bearing, not defensive.
+        return (self.sampling_params is not None
+                and self.sampling_params.guided_decoding is not None)
 
     def record_event(
         self,
@@ -204,6 +278,7 @@ class RequestStatus(enum.IntEnum):
     """Status of a request."""
     WAITING = enum.auto()
     WAITING_FOR_FSM = enum.auto()
+    WAITING_FOR_REMOTE_KVS = enum.auto()
     RUNNING = enum.auto()
     PREEMPTED = enum.auto()
     # Note: anything after PREEMPTED will be considered
@@ -214,6 +289,9 @@ class RequestStatus(enum.IntEnum):
     FINISHED_IGNORED = enum.auto()
     # For lazy attention with documents
     DOC_WAITING = enum.auto()
+
+    def __str__(self):
+        return self.name
 
     @staticmethod
     def is_finished(status: "RequestStatus") -> bool:

@@ -1,37 +1,31 @@
-pytest
-pytest-xdist
-pytest-cov
-pytest-rerunfailures
+# Dependencies for the benchmarks in this directory.
+#
+# The library itself (lazy_attn) needs almost nothing beyond vLLM -- see
+# lazy_attn/pyproject.toml. Install the backend first with
+# `bash scripts/install.sh`, which pins vLLM to a matching torch build; do not
+# add torch/transformers/vllm here or pip will fight those pins.
+#
+# Equivalent to: pip install -e lazy_attn[bench,dev]
 
-# Requirement
-huggingface_hub
-loguru
-numpy
-simple_parsing
-
-# Baseline requirements
-accelerate
-astor
-bitsandbytes
+# Benchmark harness
 datasets
-fire
+fastapi
+loguru
+pandas
+pydantic
+requests
+scipy
+simple_parsing
+uvicorn
+
+# Accuracy scoring (LongBench / HotpotQA / ChatRAG metrics)
 fuzzywuzzy
 jieba
-lxml
 python-Levenshtein
-Requests
 rouge
-termcolor
-torch
-tqdm
-transformers
 
-# Development
-black
-flake8
-isort
-mypy
+# Test + lint
 pytest
 pytest-cov
-
-# pip install "datasets<3.0"
+pytest-rerunfailures
+pytest-xdist
