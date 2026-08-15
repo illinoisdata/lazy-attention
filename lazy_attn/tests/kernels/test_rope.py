@@ -5,6 +5,11 @@ import pytest
 import torch
 
 from vllm.platforms import current_platform
+pytest.importorskip(
+    "tests.kernels.allclose_default",
+    reason="imports vLLM's own tests.* helpers, which ship only in a "
+           "vLLM source checkout, not in the wheel scripts/install.sh "
+           "installs")
 from tests.kernels.allclose_default import get_default_atol, get_default_rtol
 from tests.kernels.test_pos_encoding import IS_NEOX_STYLE, DTYPES, HEAD_SIZES,\
     ROTARY_DIMS, NUM_HEADS, BATCH_SIZES, SEQ_LENS, SEEDS, CUDA_DEVICES, TENSORS_SHAPES_FN

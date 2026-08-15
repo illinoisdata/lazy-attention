@@ -65,9 +65,11 @@ class AsyncLazyLLM(AsyncLLM):
         params: Union[SamplingParams, PoolingParams],
         arrival_time: Optional[float] = None,
         lora_request: Optional[LoRARequest] = None,
+        tokenization_kwargs: Optional[dict[str, Any]] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
+        data_parallel_rank: Optional[int] = None,
         # LazyAttention args
         document_seq: Optional[Union[Sequence[PromptType], Sequence[np.ndarray]]] = None,
     ) -> RequestOutputCollector:
@@ -86,12 +88,23 @@ class AsyncLazyLLM(AsyncLLM):
         block_size = (self.vllm_config.cache_config.block_size
                       if self.vllm_config.cache_config else None)
         assert block_size is not None, "block_size must be set for LazyAttention"
+        # NOTE: pass by keyword -- vLLM has inserted new positional parameters
+        # into Processor.process_inputs across releases (tokenization_kwargs in
+        # 0.9.x), which silently shifts positional arguments.
         prompt_str, request = self.processor.process_inputs(
-            request_id, prompt, params, arrival_time, lora_request,
-            trace_headers, prompt_adapter_request, priority,
+            request_id,
+            prompt,
+            params,
+            arrival_time=arrival_time,
+            lora_request=lora_request,
+            tokenization_kwargs=tokenization_kwargs,
+            trace_headers=trace_headers,
+            prompt_adapter_request=prompt_adapter_request,
+            priority=priority,
+            data_parallel_rank=data_parallel_rank,
             # For lazy attention
             block_size=block_size,
-            document_seq=document_seq
+            document_seq=document_seq,
             )
 
         if params.n == 1:
@@ -138,6 +151,7 @@ class AsyncLazyLLM(AsyncLLM):
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
+        data_parallel_rank: Optional[int] = None,
         # For lazy attention
         document_seq: Optional[Sequence[PromptType]] = None,
     ) -> AsyncGenerator[RequestOutput, None]:
@@ -170,6 +184,7 @@ class AsyncLazyLLM(AsyncLLM):
                 trace_headers=trace_headers,
                 prompt_adapter_request=prompt_adapter_request,
                 priority=priority,
+                data_parallel_rank=data_parallel_rank,
                 document_seq=document_seq,
             )
 

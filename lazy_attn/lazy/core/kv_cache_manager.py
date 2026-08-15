@@ -2,43 +2,42 @@
 A KV cache manager with lazy attention support.
 
 Changed by Haocheng at 2024-09-07
+Ported to vLLM 0.9.2 (KVCacheCoordinator API) at 2026-08-15
 """
 
 from collections import defaultdict
-from collections.abc import Iterable
 from typing import Optional
 
 from vllm.logger import init_logger
-from vllm.utils import cdiv, sha256
-from vllm.v1.core.block_pool import BlockPool
-from vllm.v1.core.kv_cache_utils import (BlockHashType, KVCacheBlock,
-                                         hash_request_tokens)
-from vllm.v1.core.specialized_manager import get_specialized_manager
-from vllm.v1.kv_cache_interface import KVCacheConfig
-from vllm.v1.metrics.stats import PrefixCacheStats
-from vllm.v1.request import RequestStatus
+from vllm.v1.core.kv_cache_utils import BlockHash
 
 # Import the original manager
-from vllm.v1.core.kv_cache_manager import KVCacheManager
+from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
+from vllm.v1.core.kv_cache_utils import hash_request_tokens
 
 # Extra imports for lazy attention
-from itertools import chain
 from lazy.request import LazyRequest as Request
-from lazy.core.kv_cache_utils import hash_request_tokens_with_doc_hash, hash_request_tokens_docs
+from lazy.core.kv_cache_utils import (hash_request_tokens_with_doc_hash,
+                                      hash_request_tokens_docs)
 
 
 logger = init_logger(__name__)
 
+
 class LazyKVCacheManager(KVCacheManager):
+    """KVCacheManager that can resolve prefix-cache hits per *document*.
+
+    Since vLLM 0.9.0 the manager no longer owns a `specialized_manager`; block
+    bookkeeping lives behind `self.coordinator`, which is also what exposes
+    `find_longest_cache_hit`. The lazy behaviour is unchanged -- only the calls
+    that reach into vLLM internals were rewritten.
+    """
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-        # self.req_to_blocks_docs: defaultdict[
-        #     str, list[list[KVCacheBlock]]] = defaultdict(list)
-        
         self.req_to_block_hashes_docs: defaultdict[
-            str, list[list[BlockHashType]]] = defaultdict(list)
+            str, list[list[BlockHash]]] = defaultdict(list)
 
         self.num_cached_block_docs: dict[str, list[int]] = {}
 
@@ -51,8 +50,8 @@ class LazyKVCacheManager(KVCacheManager):
         self.doc_cache_hits = 0
         self._doc_hit_last_log = 0
 
-    def get_computed_blocks(
-            self, request: Request) -> tuple[list[KVCacheBlock], int]:
+    def get_computed_blocks(self,
+                            request: Request) -> tuple[KVCacheBlocks, int]:
         """Get the computed (cached) blocks for the request.
         Note that the computed blocks must be full.
 
@@ -61,17 +60,21 @@ class LazyKVCacheManager(KVCacheManager):
 
         Returns:
             A tuple containing:
-                - A list of blocks that are computed for the request.
+                - The blocks that are computed for the request.
                 - The number of computed tokens.
         """
-        if not self.enable_caching:
-            # Prefix caching is disabled.
-            return [], 0
+        # Prefix caching is disabled or
+        # When the request requires prompt logprobs, we skip prefix caching.
+        if (not self.enable_caching
+                or (request.sampling_params is not None
+                    and request.sampling_params.prompt_logprobs is not None)):
+            return self.create_empty_block_list(), 0
 
         # The block hashes for the request may already be computed
         # if the scheduler has tried to schedule the request before.
         block_hashes = self.req_to_block_hashes[request.request_id]
         if not block_hashes:
+            assert self.block_size is not None
             if request.has_documents:
                 # The first block is the document sequence hash.
                 block_hashes = hash_request_tokens_with_doc_hash(
@@ -84,67 +87,60 @@ class LazyKVCacheManager(KVCacheManager):
         if self.log_stats:
             assert self.prefix_cache_stats is not None
             self.prefix_cache_stats.requests += 1
-        # When the request requires prompt logprobs, we skip prefix caching.
-        if request.sampling_params.prompt_logprobs is not None:
-            return [], 0
 
-        if (len(block_hashes) * self.block_size == request.num_tokens and
-            not request.is_document_request):
-            # The request is fully cached and need generated tokens,
-            # then we not to recompute the last block.
-            last_block_hash = block_hashes.pop()
+        # NOTE: When all tokens hit the cache, the base manager must recompute
+        # the last token to obtain logits, so it caps the hit length at
+        # num_tokens - 1. A *document* request never samples a token -- it only
+        # populates the KV cache -- so it may be served entirely from cache.
+        #
+        # The EAGLE trim (drop the last matched block so the drafting head can
+        # recompute its hidden state) is not applied here: since 0.9.0 it lives
+        # inside `find_longest_cache_hit`, which reads `use_eagle` off the
+        # coordinator we delegate to below.
+        if request.is_document_request:
+            max_cache_hit_length = request.num_tokens
         else:
-            last_block_hash = None
+            max_cache_hit_length = request.num_tokens - 1
 
-        computed_blocks = (
-            self.specialized_manager.find_longest_cache_hit(block_hashes))
-
-        if self.use_eagle and len(computed_blocks) > 0:
-            # Drop the last matched block if (1) eagle is enabled and
-            # (2) there is a cache hit.
-            # This is to recompute the last block to get the required
-            # hidden states for eagle drafting head.
-            computed_blocks.pop()
+        computed_blocks, num_new_computed_tokens = (
+            self.coordinator.find_longest_cache_hit(block_hashes,
+                                                    max_cache_hit_length))
 
         if self.log_stats:
             assert self.prefix_cache_stats is not None
-            self.prefix_cache_stats.queries += len(block_hashes)
-            self.prefix_cache_stats.hits += len(computed_blocks)
+            self.prefix_cache_stats.queries += request.num_tokens
+            self.prefix_cache_stats.hits += num_new_computed_tokens
 
-        if last_block_hash is not None:
-            # Add back the last block hash if it was removed.
-            # NOTE: Because block_hashes is cached in req_to_block_hashes,
-            # we shouldn't modify it directly.
-            block_hashes.append(last_block_hash)
+        return KVCacheBlocks(computed_blocks), num_new_computed_tokens
 
-        # NOTE(woosuk): Since incomplete blocks are not eligible for
-        # sharing, `num_computed_tokens` is always a multiple of
-        # `block_size`.
-        num_computed_tokens = len(computed_blocks) * self.block_size
-        return computed_blocks, num_computed_tokens
-        
     def get_computed_blocks_docs(
-            self, request: Request,
-            drop_first_cached_block: bool = False,
-            ) -> tuple[list[list[KVCacheBlock]], list[int]]:
-        """Get the computed (cached) blocks for each documents in the request.
+        self,
+        request: Request,
+        drop_first_cached_block: bool = False,
+    ) -> tuple[list[KVCacheBlocks], list[int]]:
+        """Get the computed (cached) blocks for each document in the request.
         Note that the computed blocks must be full.
-        
-        Is processing the documents, make sure to retrieve the
-           computed blocks for each document independently with prefix caching.
+
+        When processing the documents, we retrieve the computed blocks for each
+        document independently with prefix caching -- this is what lets a
+        document be reused regardless of the slot it occupies.
         """
         assert request.has_documents, "Request does not have documents"
         num_docs = len(request.documents_token_ids_padded)
-        computed_blocks_docs = [[] for _ in range(num_docs)]
+        computed_blocks_docs: list[KVCacheBlocks] = [
+            self.create_empty_block_list() for _ in range(num_docs)
+        ]
         num_computed_tokens_docs = [0 for _ in range(num_docs)]
         if not self.enable_caching:
             return computed_blocks_docs, num_computed_tokens_docs
 
+        assert self.block_size is not None
         block_hashes_docs = self.req_to_block_hashes_docs[request.request_id]
-        
+
         if not block_hashes_docs:
             block_hashes_docs = hash_request_tokens_docs(self.caching_hash_fn,
-                                                         self.block_size, request)
+                                                         self.block_size,
+                                                         request)
             self.req_to_block_hashes_docs[request.request_id] = block_hashes_docs
 
         # Then find the computed blocks.
@@ -152,17 +148,24 @@ class LazyKVCacheManager(KVCacheManager):
         call_hits = 0
         for doc_idx in range(num_docs):
             block_hashes_doc = block_hashes_docs[doc_idx]
-            hit_blocks = (
-                self.specialized_manager.find_longest_cache_hit(block_hashes_doc))
+            # A document is position-agnostic and never sampled from, so the
+            # full document length is eligible for a cache hit.
+            hit_blocks, num_hit_tokens = (
+                self.coordinator.find_longest_cache_hit(
+                    block_hashes_doc,
+                    len(block_hashes_doc) * self.block_size))
             # VRAM hit ratio: count blocks physically in cache BEFORE the
             # lazy first-block recompute trim (those blocks are still cached).
             call_queries += len(block_hashes_doc)
-            call_hits += len(hit_blocks)
-            computed_blocks_docs[doc_idx] = hit_blocks
-            if drop_first_cached_block and computed_blocks_docs[doc_idx]:
-                computed_blocks_docs[doc_idx] = computed_blocks_docs[doc_idx][1:]
-            num_computed_tokens_docs[doc_idx] = (
-                len(computed_blocks_docs[doc_idx]) * self.block_size)
+            call_hits += num_hit_tokens // self.block_size
+
+            if drop_first_cached_block and any(hit_blocks):
+                # Drop the first block of every group so it is recomputed.
+                hit_blocks = tuple(group[1:] for group in hit_blocks)
+                num_hit_tokens = max(num_hit_tokens - self.block_size, 0)
+
+            computed_blocks_docs[doc_idx] = KVCacheBlocks(hit_blocks)
+            num_computed_tokens_docs[doc_idx] = num_hit_tokens
             logger.debug(f"Document {doc_idx} of request {request.request_id} "
                          f"has {num_computed_tokens_docs[doc_idx]} tokens cached.")
 
@@ -170,9 +173,14 @@ class LazyKVCacheManager(KVCacheManager):
         self.doc_cache_queries += call_queries
         self.doc_cache_hits += call_hits
         if self.log_stats and self.prefix_cache_stats is not None:
+            # PrefixCacheStats counts *tokens* -- get_computed_blocks adds
+            # request.num_tokens / num_new_computed_tokens -- so convert the
+            # per-document block counts before mixing them into the same
+            # aggregate, or every document contribution is understated by a
+            # factor of block_size.
             self.prefix_cache_stats.requests += 1
-            self.prefix_cache_stats.queries += call_queries
-            self.prefix_cache_stats.hits += call_hits
+            self.prefix_cache_stats.queries += call_queries * self.block_size
+            self.prefix_cache_stats.hits += call_hits * self.block_size
         if self.doc_cache_queries - self._doc_hit_last_log >= 200:
             self._doc_hit_last_log = self.doc_cache_queries
             ratio = self.doc_cache_hits / max(self.doc_cache_queries, 1)
@@ -184,157 +192,31 @@ class LazyKVCacheManager(KVCacheManager):
     def allocate_slots(
         self,
         request: Request,
-        num_tokens: int,
-        new_computed_blocks: Optional[list[KVCacheBlock]] = None,
+        num_new_tokens: int,
+        num_new_computed_tokens: int = 0,
+        new_computed_blocks: Optional[KVCacheBlocks] = None,
+        num_draft_tokens: int = 0,
         num_lookahead_tokens: int = 0,
-    ) -> Optional[list[KVCacheBlock]]:
+        delay_cache_blocks: bool = False,
+    ) -> Optional[KVCacheBlocks]:
         """Add slots for a request with new tokens to append.
 
-        Args:
-            request: The request to allocate slots.
-            num_tokens: The number of tokens to allocate, including external
-                tokens. Note that this does not include tokens that have
-                already been computed locally (i.e. new_computed_blocks).
-            new_computed_blocks: A list of new computed blocks just hitting the
-                prefix caching.
-            num_lookahead_tokens: The number of speculative tokens to allocate.
-                This is used by spec decode proposers with kv-cache such 
-                as eagle.
-
-        Blocks layout:
-        -----------------------------------------------------------------------
-        | < computed > | < new computed > |    < new >    | < pre-allocated > |
-        -----------------------------------------------------------------------
-        |                  < required >                   |
-        --------------------------------------------------
-        |                    < full >                  |
-        ------------------------------------------------
-                                          | <new full> |
-                                          --------------
-        The following *_blocks are illustrated in this layout.
-
-        Returns:
-            A list of new allocated blocks.
+        Identical to the base implementation except that a document request is
+        never decoded from, so it must not reserve lookahead slots.
         """
-        if num_tokens == 0:
-            raise ValueError("num_tokens must be greater than 0")
-
-        new_computed_blocks = new_computed_blocks or []
-
-        req_blocks = self.req_to_blocks[request.request_id]
-
         if request.is_document_request:
             # Document request no decoding, no need to allocate new blocks.
             num_lookahead_tokens = 0
-        # Free the blocks that are skipped during the attention computation
-        # (e.g., tokens outside the sliding window).
-        # We can do this even if we cannot schedule this request due to
-        # insufficient free blocks.
-        # Should call this function before allocating new blocks to reduce
-        # the number of evicted blocks.
-        removed_blocks = self.specialized_manager.remove_skipped_blocks(
-            req_blocks, request.num_computed_tokens)
-        self.block_pool.free_blocks(removed_blocks)
 
-        # The number of computed tokens is the number of computed tokens plus
-        # the new prefix caching hits
-        num_computed_tokens = (request.num_computed_tokens +
-                               len(new_computed_blocks) * self.block_size)
-        num_required_blocks = cdiv(
-            num_computed_tokens + num_tokens + num_lookahead_tokens,
-            self.block_size)
-        # logger.info(f"Request {request.request_id} has "
-        #              f"{num_computed_tokens} computed tokens, "
-        #              f"{num_tokens} new tokens, "
-        #              f"{len(new_computed_blocks)} new computed blocks, "
-        #              f"{num_lookahead_tokens} lookahead tokens, "
-        #              f"and requires {num_required_blocks} blocks.")
-        
-        num_new_blocks = (num_required_blocks - len(req_blocks) -
-                          len(new_computed_blocks))
-
-        # If a computed block of a request is an eviction candidate (in the
-        # free queue and ref_cnt == 0), it cannot be counted as a free block
-        # when allocating this request.
-        num_evictable_computed_blocks = sum(1 for blk in new_computed_blocks
-                                            if blk.ref_cnt == 0)
-        if (num_new_blocks > self.block_pool.get_num_free_blocks() -
-                num_evictable_computed_blocks):
-            # Cannot allocate new blocks
-            return None
-
-        # Touch the computed blocks to make sure they won't be evicted.
-        if self.enable_caching:
-            self.block_pool.touch(new_computed_blocks)
-        else:
-            assert not new_computed_blocks, (
-                "Computed blocks should be empty when "
-                "prefix caching is disabled")
-
-        # Append the new computed blocks to the request blocks until now to
-        # avoid the case where the new blocks cannot be allocated.
-        req_blocks.extend(new_computed_blocks)
-
-        # Start to handle new blocks
-
-        if num_new_blocks <= 0:
-            # No new block is needed.
-            new_blocks = []
-        else:
-            # Get new blocks from the free block pool considering
-            # preallocated blocks.
-            block_table_limit = self.max_num_blocks_per_req - len(req_blocks)
-
-            # logger.info(f"!!! {self.block_pool.get_num_free_blocks()} free blocks")
-            num_new_blocks = min(
-                num_new_blocks,
-                self.block_pool.get_num_free_blocks(),
-                # Should not exceed the maximum number of blocks per request.
-                # This is especially because the block table has the shape
-                # [..., max_num_blocks_per_req].
-                block_table_limit,
-            )
-            assert num_new_blocks > 0
-
-            # Concatenate the computed block IDs and the new block IDs.
-            new_blocks = self.block_pool.get_new_blocks(num_new_blocks)
-            req_blocks.extend(new_blocks)
-
-        if not self.enable_caching:
-            return new_blocks
-
-        # Use `new_computed_blocks` for a new request, and `num_cached_block`
-        # for a running request.
-        num_cached_blocks = self.num_cached_block.get(request.request_id,
-                                                      len(new_computed_blocks))
-        # Speculated tokens might be rejected in the future, so we does
-        # not cache any speculated tokens. We only cache blocks with
-        # generated (accepted) tokens.
-        num_full_blocks_after_append = (num_computed_tokens + num_tokens - len(
-            request.spec_token_ids)) // self.block_size
-
-        
-        # logger.info(f"Request {request.request_id} has "
-        #             f"{num_cached_blocks} cached blocks, "
-        #             f"{len(new_computed_blocks)} new computed blocks, "
-        #             f"and {len(new_blocks)} new blocks allocated, "
-        #             f"and will have {num_full_blocks_after_append} full blocks after appending "
-        #             f"the new tokens (excluding {len(request.spec_token_ids)} "
-        #             f"speculated tokens).")
-        self.block_pool.cache_full_blocks(
-            request=request,
-            blocks=req_blocks,
-            block_hashes=self.req_to_block_hashes[request.request_id],
-            num_cached_blocks=num_cached_blocks,
-            num_full_blocks=num_full_blocks_after_append,
-            block_size=self.block_size,
-            hash_fn=self.caching_hash_fn,
+        return super().allocate_slots(
+            request,
+            num_new_tokens,
+            num_new_computed_tokens=num_new_computed_tokens,
+            new_computed_blocks=new_computed_blocks,
+            num_draft_tokens=num_draft_tokens,
+            num_lookahead_tokens=num_lookahead_tokens,
+            delay_cache_blocks=delay_cache_blocks,
         )
-
-        self.num_cached_block[
-            request.request_id] = num_full_blocks_after_append
-        return new_blocks
-
 
     def free_block_hashes(self, request: Request) -> None:
         """Discard the block hashes for the request.

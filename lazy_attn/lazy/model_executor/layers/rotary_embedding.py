@@ -1,103 +1,41 @@
-"""
-Rotary Positional Embeddings.
+"""Rotary Positional Embeddings for LazyAttention.
 
 Changed by Haocheng at 2025/09/14
 """
-import math
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Optional, Tuple
 
 import torch
-import torch.nn as nn
-from transformers import PretrainedConfig
 
-from vllm.forward_context import get_forward_context
-from vllm.model_executor.custom_op import CustomOp
-from vllm.platforms import current_platform
+from vllm.model_executor.layers import rotary_embedding as vllm_rope
+from vllm.model_executor.layers.rotary_embedding import _apply_rotary_emb_torch
 
-from vllm.model_executor.layers.rotary_embedding import (
-    RotaryEmbedding,
-    _apply_rotary_emb_torch,
-)
-from lazy.utils.variants import (
-    LAZY_VARIANT_MEPIC,
-    get_lazy_attention_variant_code,
-)
+from lazy.utils.variants import is_mepic_variant
+
+# The variant is fixed for the process, so resolve it once at import.
+USE_MEPIC_Q_ONLY_ROTARY = is_mepic_variant()
 
 
-USE_MEPIC_Q_ONLY_ROTARY = (
-    get_lazy_attention_variant_code() == LAZY_VARIANT_MEPIC
-)
+class _LazyRotaryMixin:
+    """Shared behaviour for every RoPE class LazyAttention substitutes in.
 
+    1. `inv_freq` is materialised as a buffer, because the model forward hands
+       `self.rotary_emb.inv_freq` to the attention kernel while vLLM's base
+       class keeps only the derived `cos_sin_cache`.
+    2. Under the MEPIC variant the forward rotates the query only -- that
+       kernel rotates the cached keys itself, so rotating them here as well
+       would double-rotate them.
 
-def _should_use_q_only_rotary() -> bool:
-    if USE_MEPIC_Q_ONLY_ROTARY:
-        return True
-    return False
-    # try:
-    #     forward_context = get_forward_context()
-    # except Exception:
-    #     return False
-    # attn_metadata = getattr(forward_context, "attn_metadata", None)
-    # if attn_metadata is None:
-    #     return False
-    # is_lazy = getattr(attn_metadata, "is_lazy", None)
-    # if is_lazy is None:
-    #     return False
-    # if torch.is_tensor(is_lazy):
-    #     return bool(torch.any(is_lazy).item())
-    # return bool(is_lazy)
+    Both hold whichever concrete RoPE class the checkpoint selects, hence the
+    mixin: `rope_scaling: null` (the block-fine-tuned models) builds the plain
+    `RotaryEmbedding`, not `Llama3RotaryEmbedding`.
+    """
 
-class Llama3RotaryEmbedding(RotaryEmbedding):
-
-    def __init__(
-        self,
-        head_size: int,
-        rotary_dim: int,
-        max_position_embeddings: int,
-        base: int,
-        is_neox_style: bool,
-        dtype: torch.dtype,
-        scaling_factor: float,
-        low_freq_factor: float,
-        high_freq_factor: float,
-        orig_max_position: int,
-    ) -> None:
-        self.scaling_factor = scaling_factor
-        self.low_freq_factor = low_freq_factor
-        self.high_freq_factor = high_freq_factor
-        self.orig_max_position = orig_max_position
-        super().__init__(head_size, rotary_dim, max_position_embeddings, base,
-                         is_neox_style, dtype)
-        inv_freq = self._compute_inv_freq(base).to(torch.bfloat16) #  if current_platform().has_bf16() else torch.float32
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
-
-    def _compute_inv_freq(self, base: Union[int, float]) -> torch.Tensor:
-        inv_freqs = super()._compute_inv_freq(base)
-        low_freq_wavelen = self.orig_max_position / self.low_freq_factor
-        high_freq_wavelen = self.orig_max_position / self.high_freq_factor
-
-        wave_len = 2 * math.pi / inv_freqs
-        if self.low_freq_factor != self.high_freq_factor:
-            smooth = (self.orig_max_position / wave_len - self.low_freq_factor
-                      ) / (self.high_freq_factor - self.low_freq_factor)
-        else:
-            smooth = 0
-
-        # print("wave_len:", wave_len)
-        # print("high_freq_wavelen:", high_freq_wavelen)
-        # print("low_freq_wavelen:", low_freq_wavelen)
-
-        new_freqs = torch.where(
-            wave_len < high_freq_wavelen,
-            inv_freqs,
-            torch.where(
-                wave_len > low_freq_wavelen,
-                inv_freqs / self.scaling_factor,
-                (1 - smooth) * inv_freqs / self.scaling_factor +
-                smooth * inv_freqs,
-            ),
-        )
-        return new_freqs
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.register_buffer(
+            "inv_freq",
+            self._compute_inv_freq(self.base).to(torch.bfloat16),
+            persistent=False)
 
     def forward_native(
         self,
@@ -106,7 +44,7 @@ class Llama3RotaryEmbedding(RotaryEmbedding):
         key: torch.Tensor,
         offsets: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if not _should_use_q_only_rotary():
+        if not USE_MEPIC_Q_ONLY_ROTARY:
             return super().forward_native(positions, query, key, offsets)
 
         if offsets is not None:
@@ -132,7 +70,7 @@ class Llama3RotaryEmbedding(RotaryEmbedding):
         key: torch.Tensor,
         offsets: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if not _should_use_q_only_rotary():
+        if not USE_MEPIC_Q_ONLY_ROTARY:
             return super().forward_cuda(positions, query, key, offsets)
 
         from vllm import _custom_ops as ops
@@ -142,16 +80,29 @@ class Llama3RotaryEmbedding(RotaryEmbedding):
             self.cos_sin_cache = self.cos_sin_cache.to(query.device,
                                                        dtype=query.dtype)
 
-        key_scratch = key.clone()
+        # The op rotates in place and takes an *optional* key: passing None
+        # skips the key half entirely, so the key reaches the attention kernel
+        # unrotated without paying for a scratch copy of it every layer.
         if offsets is not None:
-            ops.batched_rotary_embedding(positions, query, key_scratch,
-                                         self.head_size,
-                                         self.cos_sin_cache,
-                                         self.is_neox_style,
-                                         self.rotary_dim, offsets)
+            ops.batched_rotary_embedding(positions, query, None,
+                                         self.head_size, self.cos_sin_cache,
+                                         self.is_neox_style, self.rotary_dim,
+                                         offsets)
         else:
-            ops.rotary_embedding(positions, query, key_scratch,
-                                 self.head_size,
-                                 self.cos_sin_cache,
-                                 self.is_neox_style)
+            ops.rotary_embedding(positions, query, None, self.head_size,
+                                 self.cos_sin_cache, self.is_neox_style)
         return query, key
+
+
+class LazyRotaryEmbedding(_LazyRotaryMixin, vllm_rope.RotaryEmbedding):
+    """Plain RoPE, for checkpoints with `rope_scaling: null`."""
+
+
+class Llama3RotaryEmbedding(_LazyRotaryMixin, vllm_rope.Llama3RotaryEmbedding):
+    """Llama-3 scaled RoPE.
+
+    The frequency math stays upstream's; only `inv_freq` and the MEPIC forward
+    come from the mixin. This subclasses the class object captured at import
+    time, which is the original -- `vllm_patch` rebinds the module attribute
+    afterwards.
+    """

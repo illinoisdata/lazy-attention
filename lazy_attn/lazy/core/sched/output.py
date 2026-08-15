@@ -2,57 +2,43 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Optional
 
+from vllm.v1.core.sched.output import NewRequestData as BaseNewRequestData
+
 if TYPE_CHECKING:
-    import numpy as np
-    import numpy.typing as npt
+    from lazy.request import LazyRequest as Request  # Replaces the V1 Request
 
-    from vllm.lora.request import LoRARequest
-    from vllm.multimodal.inputs import MultiModalKwargs, PlaceholderRange
-    from vllm.sampling_params import SamplingParams
-
-    from lazy.request import LazyRequest as Request # Replace the original V1 Request
 
 @dataclass
-class NewRequestData:
+class NewRequestData(BaseNewRequestData):
+    """vLLM's NewRequestData plus the per-request lazy rotation metadata.
 
-    req_id: str
-    prompt_token_ids: list[int]
-    mm_inputs: list[MultiModalKwargs]
-    mm_hashes: list[str]
-    mm_positions: list[PlaceholderRange]
-    sampling_params: SamplingParams
-    block_ids: list[int]
-    num_computed_tokens: int
-    lora_request: Optional[LoRARequest]
-    
+    Subclassing (rather than forking the dataclass) means fields added upstream
+    -- pooling_params and the tuple-of-groups block_ids both landed in 0.9.x --
+    are inherited instead of needing to be re-copied on every vLLM bump.
+    """
+
     # Lazy attention, if one req has documents, it is lazy
     is_lazy: bool = False  # [num_seqs]
     lazy_variant: int = 0
-    q_offset: Optional[list[int]] = None # [num_seqs, num_blocks]
-    q_mask: Optional[list[int]] = None # [num_seqs, num_blocks]
+    q_offset: Optional[list[int]] = None  # [num_seqs, num_blocks]
+    q_mask: Optional[list[int]] = None  # [num_seqs, num_blocks]
 
     @classmethod
     def from_request(
         cls,
         request: Request,
-        block_ids: list[int],
+        block_ids: tuple[list[int], ...],
         lazy_variant: int = 0,
         q_offset: Optional[list[int]] = None,
         q_mask: Optional[list[int]] = None,
     ) -> NewRequestData:
+        base = BaseNewRequestData.from_request(request, block_ids)
+        base_kwargs = {f.name: getattr(base, f.name) for f in fields(base)}
         return cls(
-            req_id=request.request_id,
-            prompt_token_ids=request.prompt_token_ids,
-            mm_inputs=request.mm_inputs,
-            mm_hashes=request.mm_hashes,
-            mm_positions=request.mm_positions,
-            sampling_params=request.sampling_params,
-            block_ids=block_ids,
-            num_computed_tokens=request.num_computed_tokens,
-            lora_request=request.lora_request,
+            **base_kwargs,
             is_lazy=request.has_documents,
             lazy_variant=lazy_variant,
             q_offset=q_offset,

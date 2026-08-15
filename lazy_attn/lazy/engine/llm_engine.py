@@ -56,6 +56,7 @@ class LazyLLMEngine(LLMEngine):
         params: Union[SamplingParams, PoolingParams],
         arrival_time: Optional[float] = None,
         lora_request: Optional[LoRARequest] = None,
+        tokenization_kwargs: Optional[dict[str, Any]] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
@@ -63,45 +64,52 @@ class LazyLLMEngine(LLMEngine):
         document_seq: Optional[Sequence[PromptType]] = None,
     ) -> None:
         if document_seq is None:
-            logger.debug("Using default process_inputs.")
-            # Process raw inputs into the request.
-            prompt_str, request = self.processor.process_inputs(
-                request_id, prompt, params, arrival_time, lora_request,
-                trace_headers, prompt_adapter_request, priority)
-        else:
-            logger.debug("Using customized process_inputs for lazy attention.")
-            block_size = self.cache_config.block_size
-            prompt_str, request = self.processor.process_inputs(
-                request_id, prompt, params, arrival_time, lora_request,
-                trace_headers, prompt_adapter_request, priority,
-                # For lazy attention
-                document_seq=document_seq,
-                block_size=block_size)
+            # Nothing lazy about this request. Delegating keeps upstream
+            # behaviour exactly -- including parallel sampling, which the
+            # document path below cannot do and used to disable for every
+            # request the patched engine saw.
+            return super().add_request(
+                request_id,
+                prompt,
+                params,
+                arrival_time=arrival_time,
+                lora_request=lora_request,
+                tokenization_kwargs=tokenization_kwargs,
+                trace_headers=trace_headers,
+                prompt_adapter_request=prompt_adapter_request,
+                priority=priority)
 
         n = params.n if isinstance(params, SamplingParams) else 1
-        assert n == 1, "n > 1 is not supported in customized engine for lazy attention now."
+        if n != 1:
+            # Not an assert: this is a user-facing input error, and asserts
+            # vanish under `python -O`.
+            raise ValueError(
+                f"LazyAttention does not support n > 1 with documents (got "
+                f"n={n}). The document path spawns one prefill request per "
+                "document, which the parallel-sampling fan-out does not model.")
 
-        if n == 1:
-            # Make a new RequestState and queue.
-            self.output_processor.add_request(request, prompt_str, None, 0)
-            # Add the request to EngineCore.
-            self.engine_core.add_request(request)
-            return
+        logger.debug("Using customized process_inputs for lazy attention.")
+        # NOTE: pass by keyword. vLLM has inserted new positional parameters
+        # into Processor.process_inputs across releases (e.g. tokenization_kwargs
+        # in 0.9.x), which silently shifts positional arguments.
+        prompt_str, request = self.processor.process_inputs(
+            request_id,
+            prompt,
+            params,
+            arrival_time=arrival_time,
+            lora_request=lora_request,
+            tokenization_kwargs=tokenization_kwargs,
+            trace_headers=trace_headers,
+            prompt_adapter_request=prompt_adapter_request,
+            priority=priority,
+            # For lazy attention
+            document_seq=document_seq,
+            block_size=self.cache_config.block_size)
 
-        # TODO(haocheng): support child requests.
-        # Fan out child requests (for n>1).
-        parent_req = ParentRequest(request_id, params)
-        for idx in range(n):
-            request_id, params = parent_req.get_child_info(idx)
-            child_request = request if idx == n - 1 else copy(request)
-            child_request.request_id = request_id
-            child_request.sampling_params = params
-
-            # Make a new RequestState and queue.
-            self.output_processor.add_request(child_request, prompt_str,
-                                              parent_req, idx)
-            # Add the request to EngineCore.
-            self.engine_core.add_request(child_request)
+        # Make a new RequestState and queue.
+        self.output_processor.add_request(request, prompt_str, None, 0)
+        # Add the request to EngineCore.
+        self.engine_core.add_request(request)
 
 
 def apply_patch():

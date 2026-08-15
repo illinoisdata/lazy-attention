@@ -1,6 +1,11 @@
 import pytest
-from vllm.v1.core.kv_cache_utils import BlockHashType
+from vllm.v1.core.kv_cache_utils import BlockHash
 from vllm.utils import sha256
+pytest.importorskip(
+    "tests.v1.core.test_kv_cache_utils",
+    reason="imports vLLM's own tests.* helpers, which ship only in a "
+           "vLLM source checkout, not in the wheel scripts/install.sh "
+           "installs")
 from tests.v1.core.test_kv_cache_utils import make_request
 
 
@@ -25,13 +30,13 @@ class TestBlockHash:
         from vllm.v1.core.kv_cache_utils import hash_request_tokens
         block_hashes_1 = hash_request_tokens(hash_fn, block_size, request1)
         assert len(block_hashes_1) == 2
-        assert isinstance(block_hashes_1[0], BlockHashType)
-        assert isinstance(block_hashes_1[1], BlockHashType)
+        assert isinstance(block_hashes_1[0], BlockHash)
+        assert isinstance(block_hashes_1[1], BlockHash)
 
         block_hashes_2 = hash_request_tokens(hash_fn, block_size, request2)
         assert len(block_hashes_2) == 2
-        assert isinstance(block_hashes_2[0], BlockHashType)
-        assert isinstance(block_hashes_2[1], BlockHashType)
+        assert isinstance(block_hashes_2[0], BlockHash)
+        assert isinstance(block_hashes_2[1], BlockHash)
 
         # assert the hash values are the same
         assert block_hashes_1[0].hash_value == block_hashes_2[1].hash_value

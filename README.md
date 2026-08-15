@@ -17,6 +17,68 @@ so they can be compared apples-to-apples on one engine:
 
 Details in each folder. All experiments in [benchmarks](./benchmarks/).
 
+## Documentation
+
+- [docs/design.md](./docs/design.md) — why deferred positional encoding works,
+  the request lifecycle, per-document caching and hashing, the rotation
+  metadata, the patch layer, and the limits.
+- [docs/usage.md](./docs/usage.md) — installing, sending `document_seqs`
+  requests offline and async, every environment switch, tests, troubleshooting.
+
+## Install
+
+```bash
+bash scripts/install.sh --venv .venv   # ~2 minutes
+source .venv/bin/activate
+python scripts/validate_lazy.py        # end-to-end check
+```
+
+That is the whole install. LazyAttention and BlockAttention add no C++/CUDA of
+their own — they are Python monkey patches over vLLM plus Triton kernels that
+are JIT-compiled at runtime — so the prebuilt vLLM wheel already contains every
+compiled kernel they need. The installer pins the combination that works:
+
+| component    | version        | why |
+|--------------|----------------|-----|
+| vLLM         | 0.9.2          | oldest release whose wheels ship `sm_120` kernels while still exposing the internals we patch |
+| torch        | 2.7.0+**cu128**| the default PyPI torch 2.7.0 is a cu126 build with no `sm_120` kernels |
+| transformers | 4.53.2         | vLLM 0.9.2 predates the transformers 5.x config registry |
+| Triton       | ≥ 3.4 on `sm_120` | Triton 3.3 cannot compile `tl.dot` for Blackwell |
+
+Useful flags: `--bench` also installs the benchmark dependencies, `--check`
+reports on the environment without installing, and `--source` builds vLLM from
+source (see [vllm_proj/install.sh](./vllm_proj/install.sh) — only needed if you
+are modifying vLLM's own C++/CUDA).
+
+### Hardware
+
+Anything from Ampere through Blackwell: `sm_80` (A100), `sm_89` (L40S),
+`sm_90` (H100/GH200) and `sm_120` (RTX 50-series). On consumer Blackwell the
+installer additionally upgrades Triton, which `scripts/install.sh --check`
+will tell you about up front.
+
+### Tests
+
+```bash
+pytest lazy_attn/tests -c lazy_attn/tests/pytest.ini
+```
+
+Tests default to the 1B `hxia7/Llama-3.2-1B-Block-FT` so they fit on a single
+consumer GPU. Set `LAZY_TEST_MODEL=ldsjmdy/Tulu3-Block-FT` to reproduce the
+paper's 8B accuracy numbers.
+
+Three kernel/utility modules import helpers from vLLM's own `tests.*` package,
+which the wheel does not ship. They report as skipped, with the reason, unless
+you are running against a vLLM source checkout.
+
+### Variants
+
+`LAZY_ATTENTION_VARIANT=lazy|mepic` selects the attention implementation
+(default `lazy`). That one variable picks the kernel set, the RoPE behaviour
+and the scheduler's rotation metadata together;
+[lazy/utils/variants.py](./lazy_attn/lazy/utils/variants.py) documents it and
+every tuning/profiling switch in one place.
+
 ## Demo: Lazy-Attn vs Prefix Caching
 
 <div style="text-align: center;">

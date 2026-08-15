@@ -1,18 +1,12 @@
 # Adapted from vllm/attention/ops/chunked_prefill_paged_decode.py
 
-import os
-
 import torch
 import triton
 import triton.language as tl
 
-from vllm import _custom_ops as ops
 from vllm.platforms.rocm import use_rocm_custom_paged_attention
-from vllm.attention.ops.chunked_prefill_paged_decode import context_attention_fwd as context_attention_fwd_orig
-from vllm.attention.ops.chunked_prefill_paged_decode import kernel_paged_attention_2d as kernel_paged_attention_2d_orig
-
-
 from .prefix_prefill import context_attention_fwd, IS_TURING
+from lazy.utils.variants import lazy_decode_wrapper_profile_enabled
 
 
 def _cuda_elapsed_ms(start_event, end_event):
@@ -382,14 +376,16 @@ def chunked_prefill_paged_decode(
     num_queries_per_kv_padded = max(triton.next_power_of_2(num_queries_per_kv),
                                     16)
 
+    # vLLM 0.9.x added kv_cache_dtype to this predicate.
     use_custom = use_rocm_custom_paged_attention(query.dtype, head_size,
                                                  block_size,
                                                  num_queries_per_kv,
-                                                 max_seq_len, sliding_window)
+                                                 max_seq_len, sliding_window,
+                                                 kv_cache_dtype)
     if use_custom:
         raise NotImplementedError("Custom paged attention is not implemented")
     else:
-        profile_decode = os.environ.get("LAZY_DECODE_WRAPPER_PROFILE", "0") == "1"
+        profile_decode = lazy_decode_wrapper_profile_enabled()
         if profile_decode:
             total_start = torch.cuda.Event(enable_timing=True)
             total_end = torch.cuda.Event(enable_timing=True)

@@ -48,8 +48,9 @@ class Testlazy:
 
     @pytest.mark.gpu
     @pytest.mark.integration
-    def test_e2e_simple_async(self, 
-                        mock_model_name,):
+    def test_e2e_simple_async(self,
+                        mock_model_name,
+                        mock_gpu_memory_utilization,):
         torch.cuda.empty_cache()
         model = None
         try:    
@@ -58,9 +59,11 @@ class Testlazy:
             from vllm import AsyncEngineArgs, SamplingParams
             from vllm.v1.engine.async_llm import AsyncLLM
 
-            engine_args = AsyncEngineArgs(model=mock_model_name, 
-                                          enforce_eager=False, 
-                                          max_model_len=2048,)
+            engine_args = AsyncEngineArgs(
+                model=mock_model_name,
+                enforce_eager=False,
+                max_model_len=2048,
+                gpu_memory_utilization=mock_gpu_memory_utilization,)
             model = AsyncLLM.from_engine_args(engine_args)
 
             async def generate_streaming(prompt):

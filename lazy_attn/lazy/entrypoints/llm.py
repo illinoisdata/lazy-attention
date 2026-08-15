@@ -32,7 +32,7 @@ from vllm.entrypoints.chat_utils import (ChatCompletionMessageParam,
 from vllm.entrypoints.score_utils import (_cosine_similarity,
                                           _validate_score_input_lens)
 from vllm.inputs import PromptType, SingletonPrompt, TextPrompt, TokensPrompt
-from vllm.inputs.parse import is_token_prompt, parse_and_batch_prompt
+from vllm.inputs.parse import parse_and_batch_prompt
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.model_executor.guided_decoding.guided_fields import (
@@ -129,6 +129,13 @@ class LazyLLM(LLM):
 
             raise ValueError(" ".join(messages))
 
+        # The documents do not depend on how the prompt itself was passed, so
+        # they are bound outside the branch: leaving this inside the `else`
+        # left the legacy prompt_token_ids path either unbound (before) or
+        # silently document-free (if defaulted to None).
+        parsed_document_seqs = cast(
+            Union[Sequence[PromptType], Sequence[Sequence[PromptType]]],
+            document_seqs)
         if prompt_token_ids is not None:
             parsed_prompts = self._convert_v1_inputs(
                 prompts=cast(Optional[Union[str, list[str]]], prompts),
@@ -137,8 +144,6 @@ class LazyLLM(LLM):
         else:
             parsed_prompts = cast(Union[PromptType, Sequence[PromptType]],
                                   prompts)
-            parsed_document_seqs = cast(Union[Sequence[PromptType], Sequence[Sequence[PromptType]]], 
-                                        document_seqs)
 
         if isinstance(guided_options_request, dict):
             if len(guided_options_request) > 1:
@@ -155,6 +160,7 @@ class LazyLLM(LLM):
         self._validate_and_add_requests(
             prompts=parsed_prompts,
             params=sampling_params,
+            use_tqdm=use_tqdm,
             lora_request=lora_request,
             prompt_adapter_request=prompt_adapter_request,
             guided_options=guided_options_request,
@@ -172,8 +178,15 @@ class LazyLLM(LLM):
         prompts: Union[PromptType, Sequence[PromptType]],
         params: Union[SamplingParams, Sequence[SamplingParams], PoolingParams,
                       Sequence[PoolingParams]],
+        *,
+        # NOTE: the signature up to `priority` mirrors vLLM 0.9.2's exactly.
+        # `LLM.embed/encode/score/classify` are not overridden here, so they
+        # reach this method with upstream's keywords -- `use_tqdm` and
+        # `tokenization_kwargs` included -- and used to die on TypeError.
+        use_tqdm: Union[bool, Callable[..., tqdm]] = True,
         lora_request: Optional[Union[Sequence[LoRARequest], LoRARequest]],
         prompt_adapter_request: Optional[PromptAdapterRequest],
+        tokenization_kwargs: Optional[dict[str, Any]] = None,
         guided_options: Optional[GuidedDecodingRequest] = None,
         priority: Optional[list[int]] = None,
         # For lazy attention
@@ -199,15 +212,15 @@ class LazyLLM(LLM):
                 f" {len(prompts)} != {len(document_seqs)}"
                 
         num_requests = len(prompts)
-        if isinstance(params, list) and len(params) != num_requests:
+        if isinstance(params, Sequence) and len(params) != num_requests:
             raise ValueError("The lengths of prompts and params "
                              "must be the same.")
         if isinstance(lora_request,
-                      list) and len(lora_request) != num_requests:
+                      Sequence) and len(lora_request) != num_requests:
             raise ValueError("The lengths of prompts and lora_request "
                              "must be the same.")
 
-        for sp in params if isinstance(params, list) else (params, ):
+        for sp in params if isinstance(params, Sequence) else (params, ):
             if isinstance(sp, SamplingParams):
                 self._add_guided_params(sp, guided_options)
 
@@ -215,10 +228,16 @@ class LazyLLM(LLM):
                 sp.output_kind = RequestOutputKind.FINAL_ONLY
 
         # Add requests to the engine.
-        for i, prompt in enumerate(prompts):
+        it = prompts
+        if use_tqdm:
+            tqdm_func = use_tqdm if callable(use_tqdm) else tqdm
+            it = tqdm_func(it, desc="Adding requests")
+
+        for i, prompt in enumerate(it):
             self._add_request(
                 prompt,
                 params[i] if isinstance(params, Sequence) else params,
+                tokenization_kwargs=tokenization_kwargs,
                 lora_request=lora_request[i] if isinstance(
                     lora_request, Sequence) else lora_request,
                 prompt_adapter_request=prompt_adapter_request,
@@ -231,6 +250,7 @@ class LazyLLM(LLM):
         self,
         prompt: PromptType,
         params: Union[SamplingParams, PoolingParams],
+        tokenization_kwargs: Optional[dict[str, Any]] = None,
         lora_request: Optional[LoRARequest] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
@@ -242,6 +262,7 @@ class LazyLLM(LLM):
             request_id,
             prompt,
             params,
+            tokenization_kwargs=tokenization_kwargs,
             lora_request=lora_request,
             prompt_adapter_request=prompt_adapter_request,
             priority=priority,

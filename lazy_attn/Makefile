@@ -1,7 +1,7 @@
 .ONESHELL:
 ENV_PREFIX=$(shell python3 -c "if __import__('pathlib').Path('.venv/bin/pip').exists(): print('.venv/bin/')")
 USING_POETRY=$(shell grep "tool.poetry" pyproject.toml && echo "yes")
-SOURCE_DIRS=drag/ benchmarks/ tests/
+SOURCE_DIRS=lazy/ tests/
 MAX_LINE_LENGTH=127
 
 .PHONY: help
@@ -27,27 +27,14 @@ virtualenv:       ## Create a virtual environment.
 	@rm -rf .venv
 	@python3 -m venv .venv
 	@./.venv/bin/pip install -U pip
-	@echo "creating virtualenv for cacheblend ..."
-	@rm -rf .venv-cacheblend
-	@python3 -m venv .venv-cacheblend
-	@./.venv-cacheblend/bin/pip install -U pip
 	@echo
 	@echo "!!! Please run 'source .venv/bin/activate' to enable the environment !!!"
-	@echo "!!! Please run 'source .venv-cacheblend/bin/activate' to enable the environment (for cacheblend) !!!"
 
 .PHONY: install
 install:          ## Install the project in dev mode.
-	@if [ "$(USING_POETRY)" ]; then poetry install && exit; fi
-	$(ENV_PREFIX)pip install wheel setuptools  # Need before installing xformers
-	$(ENV_PREFIX)pip install torch torchvision torchaudio  # Need before installing xformers
-	$(ENV_PREFIX)pip install xformers --no-dependencies
+	@echo "Use ../scripts/install.sh: it pins vLLM to a matching torch build,"
+	@echo "which this target cannot express. Then, for dev extras:"
 	$(ENV_PREFIX)pip install -e .[dev]
-	(cd promptcache/ && pip install -e .)
-
-.PHONY: installcacheblend
-installcacheblend: install          ## Install cacheblend baseline.
-	(cd CacheBlend/vllm_blend/ && pip install -e .)
-	(cd CacheBlend/ && pip install -r requirements.txt)
 
 .PHONY: fmt
 fmt:              ## Format code using black & isort.
@@ -63,7 +50,7 @@ lint:             ## Run pep8, black, mypy linters.
 
 .PHONY: test
 test: lint        ## Run tests and generate coverage report.
-	$(ENV_PREFIX)pytest -vv --cov-config .coveragerc --cov=drag -l --tb=short --maxfail=1 tests
+	$(ENV_PREFIX)pytest -vv -c tests/pytest.ini -l --tb=short tests
 	$(ENV_PREFIX)coverage xml
 	$(ENV_PREFIX)coverage html
 
