@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
+import inspect
 
 import pytest
 
@@ -51,6 +52,47 @@ def test_all_patch_targets_resolve():
             owner = getattr(owner, part)
     assert not missing, "patch targets no longer present in vLLM:\n  " + \
         "\n  ".join(missing)
+
+
+# Methods the lazy classes override, and therefore have to keep accepting
+# everything upstream's callers pass. vLLM adds request-routing parameters to
+# these between releases -- `tokenization_kwargs` and `data_parallel_rank` both
+# landed in 0.9.x -- and a missing one is a TypeError raised from inside vLLM's
+# own frontend, on a path the lazy tests do not otherwise reach.
+OVERRIDDEN_METHODS = [
+    ("vllm.entrypoints.llm.LLM", "lazy.entrypoints.llm", "LazyLLM",
+     ["generate", "_validate_and_add_requests", "_add_request"]),
+    ("vllm.v1.engine.llm_engine.LLMEngine", "lazy.engine.llm_engine",
+     "LazyLLMEngine", ["add_request"]),
+    ("vllm.v1.engine.async_llm.AsyncLLM", "lazy.engine.async_llm",
+     "AsyncLazyLLM", ["add_request", "generate"]),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("origin_key,module_name,cls_name,method_names",
+                         OVERRIDDEN_METHODS,
+                         ids=[m[2] for m in OVERRIDDEN_METHODS])
+def test_overrides_accept_every_upstream_parameter(origin_key, module_name,
+                                                   cls_name, method_names):
+    """Every parameter upstream accepts must survive the override."""
+    original_cls = _original(origin_key)
+    lazy_cls = getattr(importlib.import_module(module_name), cls_name)
+
+    missing = []
+    for method_name in method_names:
+        original = getattr(original_cls, method_name, None)
+        if original is None:
+            continue  # upstream dropped it; nothing to keep parity with
+        expected = set(inspect.signature(original).parameters)
+        actual = set(
+            inspect.signature(getattr(lazy_cls, method_name)).parameters)
+        for param in sorted(expected - actual):
+            missing.append(f"{cls_name}.{method_name}(): {param}")
+
+    assert not missing, (
+        "lazy overrides dropped parameters vLLM's own callers pass:\n  " +
+        "\n  ".join(missing))
 
 
 @pytest.mark.unit

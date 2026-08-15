@@ -40,11 +40,65 @@ from vllm.utils import cdiv, sha256  # to distinguish document_seq
 from vllm.v1.engine.processor import Processor
 
 from lazy.engine import EngineCoreRequest
-from itertools import chain
 import logging
 import os
 
 logger = logging.getLogger(__name__)
+
+
+def _hash_document_seq(
+    documents_token_ids_padded: Optional[list[list[int]]], ) -> Optional[str]:
+    """The seed for the query blocks' hash chain: the documents *and* the split.
+
+    The boundaries are part of the identity. Two document sets that flatten to
+    the same token sequence -- one 32-token document, or two 16-token ones --
+    are encoded block-diagonally into different KV, so seeding the same chain
+    would let a query block computed against one be reused for the other.
+
+    Hashing a tuple of tuples encodes that explicitly. The previous
+    `chain.from_iterable(...)` did distinguish them in practice, but only
+    because `sha256` pickles the unconsumed iterator and the pickle happens to
+    embed the nesting -- not a property to leave a correctness claim resting on.
+    """
+    if not documents_token_ids_padded:
+        return None
+    return hex(sha256(tuple(tuple(doc)
+                            for doc in documents_token_ids_padded)))[2:]
+
+
+def _validate_document_request(
+    params: Union[SamplingParams, PoolingParams],
+    lora_request: Optional[LoRARequest],
+) -> None:
+    """Reject the request shapes the document path cannot serve correctly.
+
+    Both are rejected here, at the one point every entry -- sync, async, and
+    whatever calls `add_request` directly -- passes through.
+
+    Pooling: a document request is spawned by deep-copying the parent's
+    `sampling_params` and setting `max_tokens = 1`. A pooling parent has none,
+    so the copy is `None` and the spawn raises `AttributeError` from inside the
+    scheduler, long after the request was accepted.
+
+    LoRA: the failure is silent, which is worse. Documents are hashed and
+    populated through `LazyRequest.document_request`, which does not forward
+    `lora_request` -- so the two sides agree and the parent *does* see its
+    documents as ready. But those blocks were computed by the base model, while
+    the parent's query and decoding run with the adapter, mixing incompatible
+    layer states into one attention. Nothing errors; the answer is just wrong.
+    """
+    if not isinstance(params, SamplingParams):
+        raise ValueError(
+            "LazyAttention does not support documents with pooling requests: "
+            "a document request is a prefill that needs sampling_params. Send "
+            "the documents inline in the prompt instead.")
+    if lora_request is not None:
+        raise ValueError(
+            "LazyAttention does not support documents with LoRA: document KV "
+            "is computed by the base model, so reusing it under an adapter "
+            "would silently mix base and adapter states. Send the documents "
+            "inline in the prompt, or drop the LoRA request.")
+
 
 class LazyProcessor(Processor):
 
@@ -83,13 +137,14 @@ class LazyProcessor(Processor):
         if arrival_time is None:
             arrival_time = time.time()
 
-        # NOTE(haocheng): 
-        # for lazy attention, we pad the document sequence to be a 
+        # NOTE(haocheng):
+        # for lazy attention, we pad the document sequence to be a
         # multiple of the block size, and hash the document sequence.
         documents_token_ids_padded = None
         document_lens = None # the original lengths of each document sequence before padding
         document_lens_padded = None
         if document_seq is not None:
+            _validate_document_request(params, lora_request)
             documents_token_ids_padded = []
             document_lens = []
             document_lens_padded = []
@@ -254,7 +309,7 @@ class LazyProcessor(Processor):
             documents_token_ids_padded=documents_token_ids_padded, # (num_documents, seq_len)
             document_lens=document_lens, # (num_documents,)
             document_lens_padded=document_lens_padded, # (num_documents,)
-            document_seq_hash=hex(sha256(chain.from_iterable(documents_token_ids_padded)))[2:] if documents_token_ids_padded else None, # TODO(haocheng): tuple needed?
+            document_seq_hash=_hash_document_seq(documents_token_ids_padded),
         )
 
 

@@ -127,19 +127,67 @@ class LazyGPUModelRunner(GPUModelRunner):
                                             pin_memory=self.pin_memory)
         self.lazy_mask_np = self.lazy_mask_cpu.numpy()
 
-        # Persistent packed block table for decode kernels.
-        # Layout: [physical_block_idx:32 | q_offset:16 | q_mask:16]
-        self.packed_block_table = torch.zeros(
-            (self.max_num_reqs, self.max_num_blocks_per_req),
-            dtype=torch.int64,
-            device=self.device,
-        )
+        # Persistent packed block tables for the decode kernels, one per KV
+        # cache group. Layout: [physical_block_idx:32 | q_offset:16 | q_mask:16]
+        #
+        # One table is not enough: block ids are only meaningful within the
+        # group that allocated them, so a layer in group 1 handed group 0's
+        # ids would read another group's cache. The real table set is built in
+        # `initialize_kv_cache`, once the groups are known; this single-group
+        # default covers anything that touches the buffers before then.
+        self.packed_block_tables = [
+            torch.zeros(
+                (self.max_num_reqs, self.max_num_blocks_per_req),
+                dtype=torch.int64,
+                device=self.device,
+            )
+        ]
+        self._layer_to_kv_group: dict[str, int] = {}
         self._packed_block_table_full_rebuild = True
         self._packed_block_table_delta_rows: set[int] = set()
-        self._packed_block_counts = np.zeros(self.max_num_reqs, dtype=np.int64)
+        self._packed_block_counts = np.zeros((1, self.max_num_reqs),
+                                             dtype=np.int64)
         # Snapshot of the batch composition, used to detect batch changes and
         # attention-backend reordering without relying on vLLM internals.
         self._last_req_ids: tuple = ()
+
+    def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
+        super().initialize_kv_cache(kv_cache_config)
+
+        groups = kv_cache_config.kv_cache_groups
+        # The rotation metadata is indexed by block, at the block size the
+        # scheduler used to build it. A group on a different block size would
+        # silently mis-map q_offset/q_mask onto its blocks, so refuse rather
+        # than compute the wrong attention.
+        odd = sorted({
+            group.kv_cache_spec.block_size
+            for group in groups
+            if group.kv_cache_spec.block_size != self.block_size
+        })
+        if odd:
+            raise NotImplementedError(
+                "LazyAttention requires every KV cache group to use the "
+                f"scheduler's block size ({self.block_size}); found "
+                f"{odd}. The per-block rotation metadata is built at one "
+                "block size and cannot address groups that differ.")
+
+        block_tables = self.input_batch.block_table
+        self.packed_block_tables = [
+            torch.zeros(
+                (self.max_num_reqs, block_tables[i].max_num_blocks_per_req),
+                dtype=torch.int64,
+                device=self.device,
+            ) for i in range(len(groups))
+        ]
+        self._layer_to_kv_group = {
+            layer_name: group_idx
+            for group_idx, group in enumerate(groups)
+            for layer_name in group.layer_names
+        }
+        self._packed_block_counts = np.zeros((len(groups), self.max_num_reqs),
+                                             dtype=np.int64)
+        self._packed_block_table_full_rebuild = True
+        self._packed_block_table_delta_rows.clear()
 
     def _refresh_lazy_metadata_buffers(self) -> None:
         req_ids = self.input_batch.req_ids
@@ -213,18 +261,21 @@ class LazyGPUModelRunner(GPUModelRunner):
             self._packed_block_table_full_rebuild = True
             self._packed_block_table_delta_rows.clear()
 
+        # A row's packed entry is stale if *any* group grew it.
         num_reqs = self.input_batch.num_reqs
-        block_table = self.input_batch.block_table[0]
-        current_block_counts = block_table.num_blocks_per_row
-        if num_reqs != 0 and not self._packed_block_table_full_rebuild:
-            changed_rows = np.flatnonzero(
-                self._packed_block_counts[:num_reqs] !=
+        block_tables = self.input_batch.block_table
+        for group_idx in range(len(self.packed_block_tables)):
+            current_block_counts = block_tables[group_idx].num_blocks_per_row
+            if num_reqs != 0 and not self._packed_block_table_full_rebuild:
+                changed_rows = np.flatnonzero(
+                    self._packed_block_counts[group_idx, :num_reqs] !=
+                    current_block_counts[:num_reqs])
+                if changed_rows.size:
+                    self._packed_block_table_delta_rows.update(
+                        changed_rows.tolist())
+            self._packed_block_counts[group_idx, :num_reqs] = (
                 current_block_counts[:num_reqs])
-            if changed_rows.size:
-                self._packed_block_table_delta_rows.update(
-                    changed_rows.tolist())
-        self._packed_block_counts[:num_reqs] = current_block_counts[:num_reqs]
-        self._packed_block_counts[num_reqs:] = 0
+            self._packed_block_counts[group_idx, num_reqs:] = 0
 
     def _rebuild_packed_block_table(self, num_reqs: int) -> None:
         """Refresh the packed block table consumed by the lazy decode kernels.
@@ -236,42 +287,52 @@ class LazyGPUModelRunner(GPUModelRunner):
             return
 
         packed_start = time.perf_counter() if LAZY_PACKED_BLOCK_PROFILE else 0.0
-        block_table_dev = self.input_batch.block_table[0].get_device_tensor()
+        full_rebuild = self._packed_block_table_full_rebuild
+        delta_rows = () if full_rebuild else sorted(
+            row for row in self._packed_block_table_delta_rows
+            if row < num_reqs)
 
-        if self._packed_block_table_full_rebuild:
-            packed_block_table = self.packed_block_table[:num_reqs]
-            packed_block_table.copy_(block_table_dev[:num_reqs],
-                                     non_blocking=True)
-            packed_block_table.bitwise_left_shift_(32)
-            packed_block_table.bitwise_or_(
-                self.lazy_offset[:num_reqs].to(torch.int64) << 16)
-            packed_block_table.bitwise_or_(
-                self.lazy_mask[:num_reqs].to(torch.int64))
-            rebuilt_rows = num_reqs
-            rebuild_mode = "full"
-            self._packed_block_table_full_rebuild = False
-            self._packed_block_table_delta_rows.clear()
-        else:
-            delta_rows = sorted(row
-                                for row in self._packed_block_table_delta_rows
-                                if row < num_reqs)
-            for row in delta_rows:
-                packed_row = self.packed_block_table[row]
-                packed_row.copy_(block_table_dev[row], non_blocking=True)
-                packed_row.bitwise_left_shift_(32)
-                packed_row.bitwise_or_(
-                    self.lazy_offset[row].to(torch.int64) << 16)
-                packed_row.bitwise_or_(self.lazy_mask[row].to(torch.int64))
-            rebuilt_rows = len(delta_rows)
-            rebuild_mode = "delta"
-            self._packed_block_table_delta_rows.clear()
+        rebuilt_rows = 0
+        for group_idx, packed_table in enumerate(self.packed_block_tables):
+            block_table_dev = (
+                self.input_batch.block_table[group_idx].get_device_tensor())
+            # q_offset/q_mask are per block and identical across groups (all
+            # groups share the scheduler's block size, enforced in
+            # initialize_kv_cache); only the block ids are group-specific.
+            num_blocks = packed_table.shape[1]
+            lazy_offset = self.lazy_offset[:, :num_blocks]
+            lazy_mask = self.lazy_mask[:, :num_blocks]
+
+            if full_rebuild:
+                packed_block_table = packed_table[:num_reqs]
+                packed_block_table.copy_(block_table_dev[:num_reqs],
+                                         non_blocking=True)
+                packed_block_table.bitwise_left_shift_(32)
+                packed_block_table.bitwise_or_(
+                    lazy_offset[:num_reqs].to(torch.int64) << 16)
+                packed_block_table.bitwise_or_(
+                    lazy_mask[:num_reqs].to(torch.int64))
+                rebuilt_rows = num_reqs
+            else:
+                for row in delta_rows:
+                    packed_row = packed_table[row]
+                    packed_row.copy_(block_table_dev[row], non_blocking=True)
+                    packed_row.bitwise_left_shift_(32)
+                    packed_row.bitwise_or_(
+                        lazy_offset[row].to(torch.int64) << 16)
+                    packed_row.bitwise_or_(lazy_mask[row].to(torch.int64))
+                rebuilt_rows = len(delta_rows)
+
+        self._packed_block_table_full_rebuild = False
+        self._packed_block_table_delta_rows.clear()
 
         if LAZY_PACKED_BLOCK_PROFILE:
             torch.cuda.synchronize()
             logger.info(
-                "LazyPackedBlockProfile mode=%s reqs=%d rebuilt_rows=%d "
-                "elapsed_ms=%.3f",
-                rebuild_mode,
+                "LazyPackedBlockProfile mode=%s groups=%d reqs=%d "
+                "rebuilt_rows=%d elapsed_ms=%.3f",
+                "full" if full_rebuild else "delta",
+                len(self.packed_block_tables),
                 num_reqs,
                 rebuilt_rows,
                 (time.perf_counter() - packed_start) * 1000.0,
@@ -282,21 +343,26 @@ class LazyGPUModelRunner(GPUModelRunner):
 
         Since vLLM 0.9.x `_prepare_inputs` returns a layer-name -> metadata
         mapping (one entry per attention layer, often sharing one object per KV
-        cache group), so attach to each distinct object exactly once.
+        cache group). The rotation tensors are the same for every layer, but
+        the packed block table is not: each layer must get the one built from
+        *its* group's block ids.
         """
-        metadatas = (attn_metadata.values() if isinstance(attn_metadata, dict)
-                     else [attn_metadata])
-        seen: set[int] = set()
-        for metadata in metadatas:
-            if metadata is None or id(metadata) in seen:
+        if isinstance(attn_metadata, dict):
+            entries = attn_metadata.items()
+        else:
+            entries = ((None, attn_metadata), )
+
+        for layer_name, metadata in entries:
+            if metadata is None:
                 continue
-            seen.add(id(metadata))
             # We insert the lazy_mask and lazy_offset into the attn_metadata
             metadata.is_lazy = self.is_lazy_req[:num_reqs]
             metadata.lazy_variant = self.lazy_variant[:num_reqs]
             metadata.q_offset = self.lazy_offset[:num_reqs]
             metadata.q_mask = self.lazy_mask[:num_reqs]
-            metadata.packed_block_table = self.packed_block_table[:num_reqs]
+            group_idx = self._layer_to_kv_group.get(layer_name, 0)
+            metadata.packed_block_table = (
+                self.packed_block_tables[group_idx][:num_reqs])
 
     def _prepare_inputs(
         self,

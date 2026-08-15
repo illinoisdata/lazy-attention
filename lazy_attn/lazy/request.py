@@ -194,11 +194,12 @@ class LazyRequest:
         anything vLLM adds to the block hash later, line up by construction
         rather than by two code paths agreeing.
 
-        `lora_request` is deliberately not forwarded: upstream folds the LoRA
-        id into every block's extra keys, and the parent's own hashes carry the
-        parent's id, so a LoRA document would populate blocks the parent could
-        never match -- leaving `is_doc_ready` false forever. Documents + LoRA
-        is unsupported.
+        `lora_request` is deliberately not forwarded, and because both the
+        lookup and the write go through this method, the two sides still agree
+        -- the parent would see its documents as ready and proceed on document
+        KV computed by the base model while its own query ran under the
+        adapter. That silent mix is why documents + LoRA is rejected up front
+        in `LazyProcessor` rather than handled here.
         """
         assert self.has_documents
         sampling_params = copy.deepcopy(self.sampling_params)

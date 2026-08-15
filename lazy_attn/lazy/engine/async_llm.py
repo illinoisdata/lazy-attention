@@ -65,9 +65,11 @@ class AsyncLazyLLM(AsyncLLM):
         params: Union[SamplingParams, PoolingParams],
         arrival_time: Optional[float] = None,
         lora_request: Optional[LoRARequest] = None,
+        tokenization_kwargs: Optional[dict[str, Any]] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
+        data_parallel_rank: Optional[int] = None,
         # LazyAttention args
         document_seq: Optional[Union[Sequence[PromptType], Sequence[np.ndarray]]] = None,
     ) -> RequestOutputCollector:
@@ -95,9 +97,11 @@ class AsyncLazyLLM(AsyncLLM):
             params,
             arrival_time=arrival_time,
             lora_request=lora_request,
+            tokenization_kwargs=tokenization_kwargs,
             trace_headers=trace_headers,
             prompt_adapter_request=prompt_adapter_request,
             priority=priority,
+            data_parallel_rank=data_parallel_rank,
             # For lazy attention
             block_size=block_size,
             document_seq=document_seq,
@@ -147,6 +151,7 @@ class AsyncLazyLLM(AsyncLLM):
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
+        data_parallel_rank: Optional[int] = None,
         # For lazy attention
         document_seq: Optional[Sequence[PromptType]] = None,
     ) -> AsyncGenerator[RequestOutput, None]:
@@ -179,6 +184,7 @@ class AsyncLazyLLM(AsyncLLM):
                 trace_headers=trace_headers,
                 prompt_adapter_request=prompt_adapter_request,
                 priority=priority,
+                data_parallel_rank=data_parallel_rank,
                 document_seq=document_seq,
             )
 

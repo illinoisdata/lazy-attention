@@ -13,6 +13,7 @@ from vllm.v1.core.kv_cache_utils import hash_request_tokens
 from conftest import make_lazy_request
 from lazy.core.kv_cache_utils import (hash_request_tokens_docs,
                                       hash_request_tokens_with_doc_hash)
+from lazy.engine.processor import _hash_document_seq
 
 BLOCK_SIZE = 4
 DOCUMENTS = [[1, 2, 3, 4, 5, 6, 7, 8], [9, 10, 11, 12]]
@@ -79,6 +80,31 @@ def test_salt_isolates_query_hashes(hash_fn):
 
     assert unsalted and salted
     assert salted != unsalted
+
+
+@pytest.mark.unit
+def test_document_seq_hash_encodes_the_split():
+    """The seed must distinguish document sets that flatten to the same tokens.
+
+    One 8-token document and two 4-token ones hold the same tokens but are
+    encoded into different block-diagonal KV, so sharing a seed would let a
+    query block computed against one be reused for the other.
+    """
+    one_document = _hash_document_seq([[1, 2, 3, 4, 5, 6, 7, 8]])
+    two_documents = _hash_document_seq([[1, 2, 3, 4], [5, 6, 7, 8]])
+    three_documents = _hash_document_seq([[1, 2], [3, 4], [5, 6, 7, 8]])
+
+    assert len({one_document, two_documents, three_documents}) == 3
+
+
+@pytest.mark.unit
+def test_document_seq_hash_is_stable():
+    """...and identical document sets must agree, or nothing is ever reused."""
+    documents = [[1, 2, 3, 4], [5, 6, 7, 8]]
+    assert _hash_document_seq(documents) == _hash_document_seq(
+        [list(doc) for doc in documents])
+    assert _hash_document_seq(None) is None
+    assert _hash_document_seq([]) is None
 
 
 @pytest.mark.unit
