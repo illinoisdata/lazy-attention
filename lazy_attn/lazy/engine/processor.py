@@ -40,6 +40,8 @@ from vllm.utils import cdiv, sha256  # to distinguish document_seq
 from vllm.v1.engine.processor import Processor
 
 from lazy.engine import EngineCoreRequest
+from lazy.utils.rotation import (MAX_PACKED_Q_OFFSET,
+                                 max_rotation_offset)
 import logging
 import os
 
@@ -98,6 +100,29 @@ def _validate_document_request(
             "is computed by the base model, so reusing it under an adapter "
             "would silently mix base and adapter states. Send the documents "
             "inline in the prompt, or drop the LoRA request.")
+
+
+def _validate_rotation_offsets(document_lens: list[int],
+                               document_lens_padded: list[int]) -> None:
+    """Reject document sets whose rotation offsets the packed table cannot hold.
+
+    The packed block table gives q_offset 16 bits; past that the shifted value
+    carries into the physical-block field and the request is answered against
+    the wrong blocks, silently. The model runner keeps the same check as a last
+    line of defence, but by then the engine is committed -- raising there takes
+    down every concurrent request, so the decision belongs here, where it is
+    one request's error.
+    """
+    needed = max_rotation_offset(document_lens, document_lens_padded)
+    if needed > MAX_PACKED_Q_OFFSET:
+        raise ValueError(
+            f"LazyAttention cannot serve these documents: they need a rotation "
+            f"offset of {needed}, past the {MAX_PACKED_Q_OFFSET} the packed "
+            f"block table's 16-bit field holds. The bound is the total padding "
+            f"plus the lengths of every document but the last "
+            f"(a single document is always offset 1, however long it is), so "
+            f"send fewer or shorter leading documents, or inline them in the "
+            f"prompt.")
 
 
 class LazyProcessor(Processor):
@@ -187,6 +212,8 @@ class LazyProcessor(Processor):
                 assert len(doc_token_ids) % block_size == 0, "The length of the document sequence is not a multiple of the block size."
 
                 documents_token_ids_padded.append(doc_token_ids)
+
+            _validate_rotation_offsets(document_lens, document_lens_padded)
         
         # Process inputs, which includes:
         # 1. Tokenize text prompt, with LoRA request if one exists.

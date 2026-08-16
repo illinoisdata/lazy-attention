@@ -399,6 +399,24 @@ inside the group that allocated it — with all three packed:
 Each layer is handed the table for its own group (`layer_name → group`); the
 rotation tensors beside it are group-independent and shared.
 
+Sixteen bits caps `q_offset` at **65535**. What that bounds is not the size of a
+request's document region, and reading it that way gets the constraint wrong in
+both directions. From §4.2, the largest offset a request emits is
+
+```
+    total padding + (every document's true length except the last) + 1
+```
+
+so a *single* block-aligned document is offset 1 however long it is, while many
+small documents accumulate — 65 documents of 1024 tokens do not fit, one document
+of 260k does. Requests past the bound are refused at admission
+(`LazyProcessor.process_inputs`), where it costs that one request rather than the
+engine; the model runner restates the check where the packing happens, for
+anything that reached it another way. The alternative is not a smaller error: the
+overflow lands in the physical block index, so the kernel reads a different block,
+de-rotates by a wrapped position, and answers the request wrongly with nothing
+raised anywhere.
+
 It is rebuilt in full when the batch composition changes (additions, removals, or
 attention-backend reordering — detected by comparing the `req_ids` tuple, plus a
 forced rebuild whenever a new request arrives, which covers an id being reused),
@@ -527,6 +545,10 @@ out of every score by `q_mask`.
 * **KV cache groups** must all use the scheduler's block size — the rotation
   metadata is per block at one block size. Each group gets its own packed block
   table; a group on a different block size is refused.
+* **Rotation offset ≤ 65535 per request**, the packed block table's 16-bit
+  `q_offset` field (§4.4) — that is `total padding + every document's length but
+  the last + 1`, so it bounds the documents *ahead of* the last one, not document
+  size. Refused at admission, not clamped.
 * **Prompt shape**: documents are always merged **in front of** the prompt, in the
   given order. A preamble that must precede the documents has to be the first
   element of `document_seqs`.
