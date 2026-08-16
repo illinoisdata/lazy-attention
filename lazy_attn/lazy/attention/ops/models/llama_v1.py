@@ -7,7 +7,7 @@ Changed by Haocheng at 2025/09/15
 import triton
 import triton.language as tl
 
-from lazy.model_executor.rope import rope_cos_sin
+from lazy.model_executor.rope import rope_cos_sin_from_freqs, rope_freqs
 
 
 @triton.jit
@@ -71,9 +71,11 @@ def kernel_paged_attention_2d_llama(
         ORIG_MAX_POSITION: tl.constexpr = 8192,
         PI_VALUE: tl.constexpr = 3.141592653589793,
         IGNORE_Q_MASK: tl.constexpr = False,
-        # Default: LOAD cos/sin from the cos_sin_cache table (decode is not
-        # bandwidth-bound here and the table is tiny/L2-resident). Set True to
-        # COMPUTE cos/sin in-kernel instead (see debug/bench_rope_io_bound.py).
+        # Default: LOAD cos/sin from the cos_sin_cache table. Set True to
+        # COMPUTE them in-kernel instead: that trades the table loads for
+        # registers, and only pays off in one regime (large-batch decode at
+        # head_size=128). See docs/design.md 4.3 and
+        # benchmarks/bench_rope_cos_sin.py.
         COMPUTE_COS_SIN: tl.constexpr = False,
 ):
     # TODO(haocheng): Consider the case rot dim != head size in the future.
@@ -121,6 +123,14 @@ def kernel_paged_attention_2d_llama(
         )
         Q_rotated = Q_full
         block_table_offset = seq_idx * block_table_stride
+
+        if COMPUTE_COS_SIN:
+            # Position-independent: hoisted out of the block loop so the pow()
+            # and the Llama-3 smoothing are paid once per program instead of
+            # once per rotation change.
+            rope_freq = rope_freqs(ROPE_TYPE, HEAD_SIZE, BASE, SCALING_FACTOR,
+                                   LOW_FACTOR, HIGH_FACTOR, ORIG_MAX_POSITION,
+                                   PI_VALUE)
 
         M = tl.full([num_queries_per_kv_padded], float("-inf"), dtype=tl.float32)
         L = tl.full([num_queries_per_kv_padded], 1.0, dtype=tl.float32)
@@ -200,10 +210,8 @@ def kernel_paged_attention_2d_llama(
                     # q_offset stores the absolute rotation position with a +1 bias.
                     # Rebuild from Q_full so numerical error does not accumulate.
                     if COMPUTE_COS_SIN:
-                        cos_val, sin_val = rope_cos_sin(
-                            rot_offset_val - 1, ROPE_TYPE, HEAD_SIZE, BASE,
-                            SCALING_FACTOR, LOW_FACTOR, HIGH_FACTOR,
-                            ORIG_MAX_POSITION, PI_VALUE)
+                        cos_val, sin_val = rope_cos_sin_from_freqs(
+                            rot_offset_val - 1, rope_freq)
                     else:
                         cache_cols = tl.arange(0, HEAD_SIZE) % embed_dim
                         cache_base = (rot_offset_val - 1) * rotary_dim
@@ -482,9 +490,11 @@ def kernel_paged_attention_2d_llama_lazy_only(
         ORIG_MAX_POSITION: tl.constexpr = 8192,
         PI_VALUE: tl.constexpr = 3.141592653589793,
         IGNORE_Q_MASK: tl.constexpr = False,
-        # Default: LOAD cos/sin from the cos_sin_cache table (decode is not
-        # bandwidth-bound here and the table is tiny/L2-resident). Set True to
-        # COMPUTE cos/sin in-kernel instead (see debug/bench_rope_io_bound.py).
+        # Default: LOAD cos/sin from the cos_sin_cache table. Set True to
+        # COMPUTE them in-kernel instead: that trades the table loads for
+        # registers, and only pays off in one regime (large-batch decode at
+        # head_size=128). See docs/design.md 4.3 and
+        # benchmarks/bench_rope_cos_sin.py.
         COMPUTE_COS_SIN: tl.constexpr = False,
 ):
     seq_idx = tl.program_id(0)
@@ -517,6 +527,12 @@ def kernel_paged_attention_2d_llama_lazy_only(
     )
     Q_rotated = Q_full
     block_table_offset = seq_idx * block_table_stride
+
+    if COMPUTE_COS_SIN:
+        # Position-independent -- hoisted out of the block loop, as above.
+        rope_freq = rope_freqs(ROPE_TYPE, HEAD_SIZE, BASE, SCALING_FACTOR,
+                               LOW_FACTOR, HIGH_FACTOR, ORIG_MAX_POSITION,
+                               PI_VALUE)
 
     M = tl.full([num_queries_per_kv_padded], float("-inf"), dtype=tl.float32)
     L = tl.full([num_queries_per_kv_padded], 1.0, dtype=tl.float32)
@@ -571,10 +587,8 @@ def kernel_paged_attention_2d_llama_lazy_only(
                 Q_rotated = Q_full
             elif rot_offset_val != 0:
                 if COMPUTE_COS_SIN:
-                    cos_val, sin_val = rope_cos_sin(
-                        rot_offset_val - 1, ROPE_TYPE, HEAD_SIZE, BASE,
-                        SCALING_FACTOR, LOW_FACTOR, HIGH_FACTOR,
-                        ORIG_MAX_POSITION, PI_VALUE)
+                    cos_val, sin_val = rope_cos_sin_from_freqs(
+                        rot_offset_val - 1, rope_freq)
                 else:
                     cache_cols = tl.arange(0, HEAD_SIZE) % embed_dim
                     cache_base = (rot_offset_val - 1) * rotary_dim

@@ -40,7 +40,9 @@ runs. Each becomes a Triton constexpr, so a new value compiles a new kernel:
                                   request in the batch is lazy
     LAZY_DECODE_IGNORE_Q_MASK     drop the document padding mask
     LAZY_DECODE_COMPUTE_COS_SIN   compute cos/sin in-kernel instead of loading
-                                  them from cos_sin_cache
+                                  them from cos_sin_cache; off by default,
+                                  measured a win only for large-batch decode at
+                                  head_size=128 (docs/design.md 4.3)
     LAZY_DECODE_WRAPPER_PROFILE   log decode wrapper timings
 """
 import os

@@ -126,6 +126,15 @@ prefix happens to be fully cached. The per-document hits are prepended, in
 document order, to the request's computed-block list, and their block hashes are
 prepended to `req_to_block_hashes` so subsequent caching lines up.
 
+This happens **once per request**, and `merge_documents()` enforces that itself.
+Being scheduled out of the waiting queue is not a once-per-request event:
+preemption puts a running request back on that queue, and it arrives with its
+prompt already merged and its document hashes already in `req_to_block_hashes`,
+so the ordinary `get_computed_blocks` covers the documents on its own. Redoing
+any of it would count those tokens twice. The `is_doc_ready` gate does still run
+on every pass, so documents evicted while a request was preempted are respawned
+before it is scheduled again.
+
 ### 3.3 Why one lookup per document is the whole trick
 
 `get_computed_blocks_docs` runs `find_longest_cache_hit` **per document**, not
@@ -220,11 +229,170 @@ original `Q_full` rather than applied incrementally, so error cannot accumulate
 across a long document list, and it is the inverse rotation
 (`q1·cos + q2·sin`, `−q1·sin + q2·cos`).
 
-cos/sin are **loaded** from the model's `cos_sin_cache` by default; this decode
-kernel is occupancy-bound, and loading measured faster than computing. The
-in-kernel compute path exists behind `LAZY_DECODE_COMPUTE_COS_SIN=1`, with the
-model's RoPE parameters (base, Llama-3 scaling factors) forwarded as constexpr via
-`rope_meta_from_layer` so the computed values equal the table's.
+cos/sin are **loaded** from the model's `cos_sin_cache` by default. An in-kernel
+compute path exists behind `LAZY_DECODE_COMPUTE_COS_SIN=1`, with the model's RoPE
+parameters (base, Llama-3 scaling factors) forwarded as constexpr via
+`rope_meta_from_layer`, so the computed values are the same function of position
+as the table.
+
+### 4.3.1 Load vs compute: what was measured
+
+Computing cos/sin in-kernel looks like a free win — it removes a scattered table
+read from a memory-bound kernel — and it is not. `benchmarks/bench_rope_cos_sin.py`
+A/Bs the two paths with `COMPUTE_COS_SIN` as the *only* difference (same tensors,
+same launch), interleaved and order-alternated across repetitions, reporting
+medians with ranges so a claim is made only when the ranges separate. The
+rotation metadata is built by calling the scheduler's own
+`metadata_for_lazy_attention`, so the timed layout is one the engine can
+actually emit: the trailing `q_offset = 1` query/decode block is walked like it
+is in production, and sequences differ by *where* their document padding sits
+rather than how much of it there is — a fixed budget, rotated — so every
+sequence in a batch has the same true context length and the same number of
+rotations while their offsets differ. Both decode kernels and both RoPE
+specializations are swept, since each is a separate compilation with its own
+register budget. Numbers below are on an RTX 5070 Ti (sm_120), torch
+2.7.0+cu128 / triton 3.4.0, bf16, block size 16.
+
+**Compute loses almost everywhere.** Across 144 cases (1–32 seqs × 1k/4k/16k
+context × 128/1024-token documents × two head sizes × {mixed, lazy-only} kernel
+× {Llama-3, plain} RoPE), 75 separated; compute lost all 75, median 1.13× the
+load time, worst 1.23×. The other 69 are reported as inconclusive rather than
+assigned to whichever median came out lower. Per configuration:
+
+| kernel | RoPE | decided | median | worst |
+|---|---|---|---|---|
+| mixed     | Llama-3 | 21/36 | 1.13× | 1.23× |
+| mixed     | plain   | 21/36 | 1.13× | 1.22× |
+| lazy-only | Llama-3 | 17/36 | 1.13× | 1.22× |
+| lazy-only | plain   | 16/36 | 1.13× | 1.21× |
+
+Neither the RoPE type nor the kernel changes the answer, which is worth stating
+because they change the *code*: plain RoPE compiles the Llama-3 smoothing (a
+wavelength comparison and two selects per element) out of the compute path
+entirely, and the lazy-only kernel drops the non-lazy branch, freeing ~28
+registers on the 8B shape. Both still lose.
+
+**Rotation density barely matters either.** At a fixed 16384-token context,
+splitting it into 1024-token documents (16 rotations) or 128-token ones (128
+rotations) moves the ratio by ~3 points — 1.11× vs 1.18× on 1B, 1.04× vs 1.06×
+on 8B, both at one sequence — for 8× the rotations. The cost is not the
+per-rotation arithmetic; it is the register pressure the compute path carries
+whether it rotates 16 times or 128, since the frequency table is evaluated
+unconditionally.
+
+Sequences within a batch get *distinct* padding permutations of that fixed
+budget (a factorial-base index, not a cyclic rotation), so they read distinct
+`cos_sin_cache` rows: a batch of 256 has 256 distinct rotation traces wherever
+there are at least 8 documents to permute. Below that the count is capped by
+`num_docs!` — a single-document case has one trace no matter the batch — and the
+benchmark prints which cases those are rather than leaving the load path
+quietly favoured by a warm table.
+
+**Compute wins once the batch is large and the load path is register-bound.**
+At context 4096, mixed kernel, Llama-3 RoPE:
+
+| shape | 32 seqs | 64 seqs | 128 seqs | 256 seqs |
+|---|---|---|---|---|
+| `head_size=64` (1B)  | 1.12× | 1.07× | 1.06× | 1.06× |
+| `head_size=128` (8B) | 1.23× | 0.99× (overlapping) | **0.89×** | **0.93×** |
+
+(`<1` means compute is faster. Ranges separate except at 64 seqs. The crossover
+reproduces in all four kernel/RoPE configurations, within a point.)
+
+The reason is registers, not memory traffic. Reading `n_regs`/`n_spills` off the
+compiled kernels and computing occupancy:
+
+| shape | path | regs | spills | blocks/SM | active warps |
+|---|---|---|---|---|---|
+| 1B | load    | 128 | 0  | 4 | 16/48 (33%) |
+| 1B | compute | 128 | 8  | 4 | 16/48 (33%) |
+| 8B | load    | 208 | 0  | 2 | 8/48 (17%)  |
+| 8B | compute | 168 | 18 | 3 | 12/48 (25%) |
+
+At `head_size=64` the load path already fits in 128 registers and gets 4 blocks/SM;
+compute cannot buy occupancy that is already there, and pays ~2.7× the PTX
+instruction count (1248 → 3410) plus 48 `ld.local` / 32 `st.local` spill ops. At
+`head_size=128` the load path is the register-hungry one (208 regs, 2 blocks/SM),
+so trading table loads for arithmetic *raises* occupancy 17% → 25% — which is why
+the sign flips there, and only once the batch is large enough to have the warps to
+schedule.
+
+**It does not keep getting better on bigger models.** The natural reading of the
+table above is "compute wins as the model grows", and that is not what happens.
+The kernel is launched per (sequence, KV head) with a
+`[max(next_pow2(query_heads / kv_heads), 16), head_size]` tile, so its register
+pressure is set by `head_size` and by the GQA group *once the group exceeds 16* —
+not by parameter count. Llama-3 8B, 70B and 405B all have `head_size=128` and
+groups of 4/8/16, so they land on the **same tile and the same register budget**;
+Triton still compiles a specialization per group, but nothing that moves this
+trade-off differs between them. A bigger model just calls the kernel more times.
+Measured at 4096 context (`--shapes` in the benchmark):
+
+| shape | regs load → compute | 32 seqs | 64 seqs | 128 seqs | 256 seqs |
+|---|---|---|---|---|---|
+| 8B (hs 128, group 4)   | 208 → 168 | 1.23× | 0.99×\* | 0.89× | 0.93× |
+| 70B (hs 128, group 8)  | 208 → 165 | 1.18× | 0.97×\* | 0.89× | 0.95×\* |
+| hs 256 (group 4)       | 253 → 255 | 0.99×\* | 0.99×\* | 0.99×\* | 0.99×\* |
+| MQA (hs 128, group 32) | 255 → 234 | 0.93× | 0.93× | 0.93× | 0.91× |
+
+(\* ranges overlap.) 70B tracks 8B to within a percent at every batch size,
+which is the point. Doubling `head_size` to 256 does *not* continue the trend:
+it flattens to ~1%, because there both paths sit at 2 blocks/SM and compute can
+no longer buy occupancy, only pay instructions. The large win at `head_size=128`
+exists because that is where the load path sits just above an occupancy cliff
+that compute drops it below.
+
+The MQA row is the exception the occupancy model does not explain — on the mixed
+kernel compute wins ~8% at *every* batch size, blocks/SM unchanged. With one KV
+head the grid is only `num_seqs` programs across 70 SMs, so that kernel is
+latency-bound rather than occupancy-bound. It is also the one row that does not
+survive changing the specialization: on the **lazy-only** kernel the same shape
+is a wash under Llama-3 RoPE (1.00×, overlapping at every batch) and a clear
+*loss* under plain RoPE (1.12–1.22×), where the compute path's register saving
+is larger (250 → 168) but the win is gone. That has not been investigated
+further; it is the concrete reason the recommendation below is "measure your own
+shape" rather than a rule.
+
+Two things came out of this analysis and are now in the code:
+
+* **The frequency table is hoisted out of the block loop.** `rope_freqs` (the
+  `pow`, plus the Llama-3 smoothing on top of it) is position-independent, so it
+  is evaluated once per program and only `cos/sin(position × freqs)`
+  (`rope_cos_sin_from_freqs`) stays in the loop. On the 1B shape this cut 168 → 128
+  registers and restored compute's occupancy from 25% back to load's 33%, taking
+  the worst case from 1.83× to 1.29× (measured on the harness as it stood before
+  the corrections above; the register drop is the part that reproduces directly).
+  It is unconditional — a program evaluates the frequencies even if every offset
+  turns out to be a sentinel and no cos/sin is ever needed — and that is still
+  the faster arrangement, which is what the flat rotation-density result above
+  says: one rotation costs about as much as 128, so the fixed register cost
+  dominates the per-rotation arithmetic either way.
+* **The default stays LOAD**, since the shapes where it loses are the common ones.
+
+**None of this was resolvable end to end**, which is the number that would
+actually justify flipping the flag in production. On Llama-3.2-1B (the shape that
+loses at kernel level) the two are a wash after the hoist: 7480 vs 7384 tok/s,
+overlapping ranges. On Llama-3.2-3B — `head_size=128`, i.e. the shape that wins
+7–12% at kernel level — at 256 prompts and `max_num_seqs=256`, two runs of the
+identical configuration gave **+2.5% and −6.3%**, both with overlapping ranges.
+Decode attention is a slice of the step, and here the slice is smaller than the
+run-to-run noise. Treat the kernel result as a reason to *measure* on a
+deployment, not as a reason to turn the flag on.
+
+(The `--e2e` harness gives every measurement its own query set. Reusing one meant
+the second variant of each round ran against a prefix cache the first had just
+filled, which was worth more than 2× in throughput and swamped everything. The
+sets are numbered rather than named after the variant, and their tokenized
+lengths are checked against each other before the run — a counter that tokenizes
+to two tokens where its predecessor took one lands entirely on whichever variant
+drew it, with the same sign and size as the effect being measured.)
+
+On numerics, the compute path is not a fallback but arguably the more accurate
+one at ordinary context lengths: `cos_sin_cache` is bf16 (and 33.5 MB for
+Llama-3's 131072 positions, so it is not "small enough to stay in L2" either),
+giving a flat ~2.0e-3 error against an fp64 reference, while the in-kernel fp32
+formula is at 1.2e-4 for positions ≤ 4096 and degrades with position, crossing
+the table's error only near the 131k limit.
 
 ### 4.4 The packed block table
 
@@ -239,6 +407,24 @@ inside the group that allocated it — with all three packed:
 
 Each layer is handed the table for its own group (`layer_name → group`); the
 rotation tensors beside it are group-independent and shared.
+
+Sixteen bits caps `q_offset` at **65535**. What that bounds is not the size of a
+request's document region, and reading it that way gets the constraint wrong in
+both directions. From §4.2, the largest offset a request emits is
+
+```
+    total padding + (every document's true length except the last) + 1
+```
+
+so a *single* block-aligned document is offset 1 however long it is, while many
+small documents accumulate — 65 documents of 1024 tokens do not fit, one document
+of 260k does. Requests past the bound are refused at admission
+(`LazyProcessor.process_inputs`), where it costs that one request rather than the
+engine; the model runner restates the check where the packing happens, for
+anything that reached it another way. The alternative is not a smaller error: the
+overflow lands in the physical block index, so the kernel reads a different block,
+de-rotates by a wrapped position, and answers the request wrongly with nothing
+raised anywhere.
 
 It is rebuilt in full when the batch composition changes (additions, removals, or
 attention-backend reordering — detected by comparing the `req_ids` tuple, plus a
@@ -368,6 +554,10 @@ out of every score by `q_mask`.
 * **KV cache groups** must all use the scheduler's block size — the rotation
   metadata is per block at one block size. Each group gets its own packed block
   table; a group on a different block size is refused.
+* **Rotation offset ≤ 65535 per request**, the packed block table's 16-bit
+  `q_offset` field (§4.4) — that is `total padding + every document's length but
+  the last + 1`, so it bounds the documents *ahead of* the last one, not document
+  size. Refused at admission, not clamped.
 * **Prompt shape**: documents are always merged **in front of** the prompt, in the
   given order. A preamble that must precede the documents has to be the first
   element of `document_seqs`.

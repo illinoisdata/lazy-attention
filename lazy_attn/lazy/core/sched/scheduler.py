@@ -400,17 +400,68 @@ class LazyScheduler(Scheduler):
                 # The role:
                 # - General new request attends all documents
                 # - Lock all documents by increasing ref cnt
-                if request.has_documents:
+                #
+                # Only on the request's *first* trip through here. A preempted
+                # request comes back through the waiting queue with its prompt
+                # already merged and its document block hashes already in
+                # req_to_block_hashes, so `get_computed_blocks` above has
+                # covered the documents on its own; redoing any of this would
+                # count them twice. It re-merged the prompt too, which is what
+                # made `num_computed_tokens` exceed `num_tokens` and killed the
+                # step on `assert num_new_tokens > 0` below. The is_doc_ready
+                # gate further up still runs every time, so documents evicted
+                # while the request was preempted are respawned before it is
+                # scheduled again.
+                drop_first_cached_block = (IS_MEPIC
+                                           and MEPIC_FIRST_BLOCK_RECOMPUTE)
+                # Called once: it is what decides whether this is the request's
+                # first pass, and calling it again would report "already
+                # merged" and skip the whole block.
+                just_merged = (request.has_documents
+                               and request.merge_documents())
+                if (request.has_documents and not just_merged
+                        and drop_first_cached_block):
+                    # The switch is applied by the per-document lookup below,
+                    # which only a request's *first* pass through here reaches.
+                    # Two things bring a request back for a second pass, and
+                    # neither is rare under memory pressure: preemption, and a
+                    # merge whose scheduling attempt then failed (allocate_slots
+                    # returning None, or encoder scheduling zeroing
+                    # num_new_tokens). Either way the documents now come from
+                    # the ordinary prefix-cache hit with their first blocks
+                    # included, so the switch does not apply to this request.
+                    # Said out loud rather than silently, because it changes
+                    # what an ablation run measures.
+                    #
+                    # Not worked around by dropping the prefix hit: that would
+                    # prefill the merged [doc0, doc1, ..., query] sequence, and
+                    # position-independent K only removes RoPE from keys -- the
+                    # hidden states behind them would still attend across
+                    # document boundaries, which is exactly the encoding this
+                    # design does not use. Those blocks are then cached under
+                    # the canonical per-document hashes and handed to every
+                    # later request. A wrong ablation is better than a poisoned
+                    # cache; correcting it properly means re-running the
+                    # affected documents as standalone document requests.
+                    logger.warning(
+                        "MEPIC_FIRST_BLOCK_RECOMPUTE does not apply to request "
+                        "%s: %s, so its documents come from the ordinary "
+                        "prefix-cache hit, first blocks included. Give the "
+                        "engine enough KV cache that neither happens if the "
+                        "ablation has to cover every request.",
+                        request.request_id,
+                        "it was preempted and resumed"
+                        if request.status == RequestStatus.PREEMPTED else
+                        "it merged its documents on an earlier scheduling "
+                        "attempt that then could not allocate blocks")
+
+                if just_merged:
                     # Case 2 -> Case 1.2
-                    request.merge_documents()
                     lazy_doc_merges += 1
                     logger.debug(f"Request {request.request_id} merges "
                                  f"documents, total prompt len "
                                  f"{request.num_prompt_tokens}")
 
-                    drop_first_cached_block = (
-                        IS_MEPIC and MEPIC_FIRST_BLOCK_RECOMPUTE
-                    )
                     computed_blocks_docs, num_computed_tokens_docs = \
                         self.kv_cache_manager.get_computed_blocks_docs(
                             request,
@@ -445,8 +496,27 @@ class LazyScheduler(Scheduler):
                                  f"request {request.request_id} has "
                                  f"{num_computed_tokens} computed tokens.")
 
-                    # Get metadata for lazy attention
-                    (req_to_q_offset[request.request_id], 
+                    # Update corresponding data in kv_cache_manager
+                    # TODO(haocheng): optimize it
+                    pre = self.kv_cache_manager.req_to_block_hashes_docs[request.request_id]
+                    self.kv_cache_manager.req_to_block_hashes[request.request_id] = \
+                        list(chain.from_iterable(pre)) + \
+                        self.kv_cache_manager.req_to_block_hashes[request.request_id]
+
+                if request.has_documents:
+                    # Regenerated on every attempt, not only the one that
+                    # merged. Scheduling can fail *after* the merge --
+                    # allocate_slots() returning None, or encoder scheduling
+                    # zeroing num_new_tokens -- and the request then stays in
+                    # the waiting queue with `documents_merged` already set.
+                    # These dictionaries live for one schedule() call, so on
+                    # the retry the request would go out as NewRequestData with
+                    # q_offset=None, the runner would leave its buffer row
+                    # zeroed, and every block would read sentinel 0 ("keep the
+                    # current rotation") -- Q never de-rotated, answer silently
+                    # wrong. It is a pure function of the document lengths, so
+                    # recomputing it is cheap and cannot drift.
+                    (req_to_q_offset[request.request_id],
                      req_to_q_mask[request.request_id]) = \
                         metadata_for_variant(request, self.block_size)
                     lazy_metadata_requests += 1
@@ -455,13 +525,6 @@ class LazyScheduler(Scheduler):
                     logger.debug(f"Request {request.request_id} has "
                                  f"query offset {req_to_q_offset[request.request_id]} "
                                  f"and query mask {req_to_q_mask[request.request_id]}")
-
-                    # Update corresponding data in kv_cache_manager
-                    # TODO(haocheng): optimize it
-                    pre = self.kv_cache_manager.req_to_block_hashes_docs[request.request_id]
-                    self.kv_cache_manager.req_to_block_hashes[request.request_id] = \
-                        list(chain.from_iterable(pre)) + \
-                        self.kv_cache_manager.req_to_block_hashes[request.request_id]
 
                 # Number of tokens to be scheduled.
                 # We use `request.num_tokens` instead of
