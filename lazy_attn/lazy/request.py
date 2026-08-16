@@ -123,18 +123,38 @@ class LazyRequest:
         self.document_lens = document_lens
         self.document_lens_padded = document_lens_padded
         self.document_seq_hash = document_seq_hash
-        self.num_computed_tokens_docs = ([0 for _ in document_lens] 
+        self.num_computed_tokens_docs = ([0 for _ in document_lens]
                                          if document_lens is not None else None)
-            
-    def merge_documents(self):
-        """Merge the document token ids into the prompt token ids."""
+        # Set by merge_documents(). A request can be scheduled out of the
+        # waiting queue more than once -- preemption puts it back -- so the
+        # merge has to know whether it already happened.
+        self.documents_merged = False
+
+    def merge_documents(self) -> bool:
+        """Prepend the document token ids to the prompt. Idempotent.
+
+        Returns True if this call did the merge, False if it was already done.
+
+        Idempotence is not cosmetic. A preempted request re-enters the waiting
+        queue and is scheduled again, so without the guard the documents were
+        prepended a second time -- the prompt grew by another full copy of
+        them, `num_computed_tokens` then exceeded `num_tokens`, and the
+        scheduler died on `assert num_new_tokens > 0`.
+        """
         from itertools import chain
         assert self.has_documents
-        self.prompt_token_ids = (list(chain.from_iterable(self.documents_token_ids_padded)) + 
+        if self.documents_merged:
+            return False
+        self.prompt_token_ids = (list(chain.from_iterable(self.documents_token_ids_padded)) +
                                  self.prompt_token_ids)
         self.num_prompt_tokens = len(self.prompt_token_ids)
-        self._all_token_ids = self.prompt_token_ids.copy()
+        # Tokens generated so far are kept. Rebuilding _all_token_ids from the
+        # prompt alone discarded them, which is only invisible while this runs
+        # exactly once, before the request has generated anything.
+        self._all_token_ids = self.prompt_token_ids + self._output_token_ids
         self.all_token_ids = ConstantList(self._all_token_ids)
+        self.documents_merged = True
+        return True
 
     @classmethod
     def from_engine_core_request(cls, request: EngineCoreRequest) -> "LazyRequest":

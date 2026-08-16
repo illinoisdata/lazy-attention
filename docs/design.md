@@ -126,6 +126,15 @@ prefix happens to be fully cached. The per-document hits are prepended, in
 document order, to the request's computed-block list, and their block hashes are
 prepended to `req_to_block_hashes` so subsequent caching lines up.
 
+This happens **once per request**, and `merge_documents()` enforces that itself.
+Being scheduled out of the waiting queue is not a once-per-request event:
+preemption puts a running request back on that queue, and it arrives with its
+prompt already merged and its document hashes already in `req_to_block_hashes`,
+so the ordinary `get_computed_blocks` covers the documents on its own. Redoing
+any of it would count those tokens twice. The `is_doc_ready` gate does still run
+on every pass, so documents evicted while a request was preempted are respawned
+before it is scheduled again.
+
 ### 3.3 Why one lookup per document is the whole trick
 
 `get_computed_blocks_docs` runs `find_longest_cache_hit` **per document**, not

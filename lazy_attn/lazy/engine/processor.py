@@ -88,6 +88,20 @@ def _validate_document_request(
     documents as ready. But those blocks were computed by the base model, while
     the parent's query and decoding run with the adapter, mixing incompatible
     layer states into one attention. Nothing errors; the answer is just wrong.
+
+    Prompt logprobs: upstream turns prefix caching OFF for these requests
+    (`LazyKVCacheManager.get_computed_blocks` returns an empty hit) precisely so
+    every prompt token is recomputed and produces logits. The document path
+    defeats that on the first pass -- `get_computed_blocks_docs` matches the
+    document blocks anyway, so the document tokens are never recomputed and
+    their logprobs are simply absent. On any LATER pass it stops being a missing
+    feature and becomes corruption: the documents are merged into the prompt
+    only once, so a request that resumes after preemption (or retries after its
+    first merged attempt could not allocate blocks) gets an empty hit from both
+    paths and prefills the merged `[doc0, doc1, ..., query]` sequence as one
+    stream. Each document then attends to the ones before it, and those
+    context-dependent blocks are written back under the canonical per-document
+    hashes -- poisoning the cache for every other request that shares them.
     """
     if not isinstance(params, SamplingParams):
         raise ValueError(
@@ -100,6 +114,15 @@ def _validate_document_request(
             "is computed by the base model, so reusing it under an adapter "
             "would silently mix base and adapter states. Send the documents "
             "inline in the prompt, or drop the LoRA request.")
+    if params.prompt_logprobs is not None:
+        raise ValueError(
+            "LazyAttention does not support documents with prompt_logprobs: "
+            "document tokens are served from cached blocks rather than "
+            "recomputed, so their logprobs would be missing, and a request "
+            "that is rescheduled after preemption would recompute the merged "
+            "prompt and write cross-document KV under the per-document cache "
+            "hashes. Send the documents inline in the prompt, or drop "
+            "prompt_logprobs.")
 
 
 def _validate_rotation_offsets(document_lens: list[int],
