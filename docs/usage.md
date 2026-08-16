@@ -179,7 +179,7 @@ Booleans accept `1/true/yes/on`.
 | `NO_LAZY` | clear the per-request lazy flag in the attention wrapper. **A negative control, not a baseline** — see below |
 | `LAZY_FORCE_SPLIT_DECODE` | use the lazy-only decode kernel when the whole batch is lazy |
 | `LAZY_DECODE_IGNORE_Q_MASK` | drop the document padding mask (measurement only — changes results) |
-| `LAZY_DECODE_COMPUTE_COS_SIN` | compute cos/sin in-kernel instead of loading `cos_sin_cache` |
+| `LAZY_DECODE_COMPUTE_COS_SIN` | compute cos/sin in-kernel instead of loading `cos_sin_cache`. Off by default; usually a **slowdown** — see below |
 | `MEPIC_FIRST_BLOCK_RECOMPUTE` | recompute each document's first block instead of reusing it (`mepic` only) |
 | `MEPIC_FORCE_FP32_ROTARY` | do the in-kernel rotation in fp32 |
 
@@ -194,6 +194,33 @@ runs; each becomes a Triton constexpr, so a new value compiles a new kernel.
 > and for confirming a regression comes from the rotation path. For a real
 > baseline, send the same documents inline in the prompt with no `document_seqs`
 > (which is what `scripts/validate_lazy.py` and the `baseline` benchmark SUT do).
+
+> **`LAZY_DECODE_COMPUTE_COS_SIN` is not a free win.** Measured on an RTX 5070 Ti,
+> computing cos/sin in-kernel lost every conclusive case of the default sweep
+> (75 of 144 separated; median 1.13×, worst 1.23×) because it spills registers.
+> That sweep covers both decode kernels and both RoPE types, and neither changes
+> the answer. Where compute wins depends on the attention shape, not on model
+> size — 70B behaves like 8B:
+>
+> | attention shape | when compute wins |
+> |---|---|
+> | `head_size=64` (e.g. Llama-3.2-1B) | never measured; 1.03–1.23× slower |
+> | `head_size=128`, GQA (8B, 70B, 405B) | ≥128 concurrent sequences, by 7–11% |
+> | `head_size=256` | ~1%, mostly inconclusive |
+> | MQA (one KV head) | ~7–9% on the mixed kernel at every batch size — but a wash or a 12–22% *loss* on the lazy-only kernel |
+>
+> The pattern is whether the *load* path is already register-bound: at
+> `head_size=64` it fits in 128 registers and there is no occupancy left to buy.
+> The MQA row is the reminder that the pattern is not a law — the same shape
+> flips sign between the two decode kernels.
+>
+> **That kernel win did not show up end to end**, though: on a `head_size=128`
+> model at 256 concurrent requests, two runs of the same configuration gave +2.5%
+> and −6.3%. So treat it as worth an A/B on your own deployment when you are
+> running large decode batches, not as a setting to turn on because the shape
+> matches. `python benchmarks/bench_rope_cos_sin.py` sweeps the kernel and
+> `--e2e` does the model-level comparison. Full analysis in
+> [design.md §4.3.1](./design.md#431-load-vs-compute-what-was-measured).
 
 | variable | logs |
 |---|---|
@@ -239,6 +266,11 @@ bash scripts/demo/record_race_gif.sh
 The main benchmark entrypoint is `benchmarks/benchmark_rag_serving.py`, driven by
 the thin shell layer in `scripts/benchmark/`; dataset and SUT aliases live in
 `scripts/benchmark/bench_consts.sh`. See [benchmarks/INTRO.md](../benchmarks/INTRO.md).
+
+For kernel-level questions there is also
+[`benchmarks/bench_rope_cos_sin.py`](../benchmarks/bench_rope_cos_sin.py), which
+A/Bs the decode kernel's two ways of getting cos/sin (`--e2e` for a model-level
+run instead of the kernel sweep).
 
 Note that the benchmark harness selects the lazy SUT with
 `VLLM_USE_LAZY_ATTENTION=1`, which is a **benchmark-side** switch: it tells

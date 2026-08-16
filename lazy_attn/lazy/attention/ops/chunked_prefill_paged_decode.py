@@ -144,8 +144,10 @@ def chunked_prefill_paged_decode(
         profile_decode = lazy_decode_wrapper_profile_enabled()
         force_split_decode = lazy_force_split_decode_enabled()
         ignore_q_mask = lazy_decode_ignore_q_mask_enabled()
-        # Default: LOAD cos/sin from cos_sin_cache (validated faster on this
-        # occupancy-bound decode kernel).
+        # Default: LOAD cos/sin from cos_sin_cache. Computing them in-kernel
+        # spills registers, and measured slower everywhere except large-batch
+        # decode on head_size=128 -- see docs/design.md 4.3 and
+        # benchmarks/bench_rope_cos_sin.py.
         compute_cos_sin = lazy_decode_compute_cos_sin_enabled()
         rope_kw = rope_meta if rope_meta is not None else dict(
             ROPE_TYPE=0, BASE=10000.0, SCALING_FACTOR=1.0, LOW_FACTOR=1.0,

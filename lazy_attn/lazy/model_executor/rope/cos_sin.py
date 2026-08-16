@@ -22,46 +22,47 @@ ROPE_LLAMA3: int = 1
 
 
 @triton.jit
-def default_cos_sin(position, HEAD_SIZE: tl.constexpr, BASE: tl.constexpr):
-    """Plain RoPE (no scaling). cos/sin: [HEAD_SIZE] (NeoX duplicated)."""
+def rope_freqs(
+    ROPE_TYPE: tl.constexpr,
+    HEAD_SIZE: tl.constexpr,
+    BASE: tl.constexpr,
+    SCALING_FACTOR: tl.constexpr,
+    LOW_FACTOR: tl.constexpr,
+    HIGH_FACTOR: tl.constexpr,
+    ORIG_MAX_POSITION: tl.constexpr,
+    PI_VALUE: tl.constexpr,
+):
+    """The position-*independent* half of the RoPE formula: [HEAD_SIZE] freqs.
+
+    Split out of `rope_cos_sin` so a caller inside a loop can evaluate the
+    expensive part -- `pow`, and the Llama-3 smoothing on top of it -- once,
+    and keep only `cos/sin(position * freqs)` in the loop body.
+    """
     half: tl.constexpr = HEAD_SIZE // 2
     inv_freqs = 1.0 / libdevice.pow(
         BASE, 2 * (tl.arange(0, HEAD_SIZE) % half) / HEAD_SIZE)
-    theta = position * inv_freqs
-    return libdevice.cos(theta), libdevice.sin(theta)
+    if ROPE_TYPE == 1:  # ROPE_LLAMA3
+        low_freq_wavelen: tl.constexpr = ORIG_MAX_POSITION / LOW_FACTOR
+        high_freq_wavelen: tl.constexpr = ORIG_MAX_POSITION / HIGH_FACTOR
+        wave_len = 2 * PI_VALUE / inv_freqs
+        smooth = (ORIG_MAX_POSITION / wave_len - LOW_FACTOR) / (
+            HIGH_FACTOR - LOW_FACTOR)
+        return tl.where(
+            wave_len < high_freq_wavelen,
+            inv_freqs,
+            tl.where(
+                wave_len > low_freq_wavelen,
+                inv_freqs / SCALING_FACTOR,
+                (1 - smooth) * inv_freqs / SCALING_FACTOR + smooth * inv_freqs,
+            ),
+        )
+    return inv_freqs
 
 
 @triton.jit
-def llama3_cos_sin(
-    position,
-    HEAD_SIZE: tl.constexpr,
-    ORIG_MAX_POSITION: tl.constexpr,
-    LOW_FACTOR: tl.constexpr,
-    HIGH_FACTOR: tl.constexpr,
-    SCALING_FACTOR: tl.constexpr,
-    PI_VALUE: tl.constexpr,
-    BASE: tl.constexpr,
-):
-    """Llama-3 scaled RoPE cos/sin. cos/sin: [HEAD_SIZE] (NeoX duplicated)."""
-    low_freq_wavelen: tl.constexpr = ORIG_MAX_POSITION / LOW_FACTOR
-    high_freq_wavelen: tl.constexpr = ORIG_MAX_POSITION / HIGH_FACTOR
-    half: tl.constexpr = HEAD_SIZE // 2
-
-    inv_freqs = 1.0 / libdevice.pow(
-        BASE, 2 * (tl.arange(0, HEAD_SIZE) % half) / HEAD_SIZE)
-    wave_len = 2 * PI_VALUE / inv_freqs
-    smooth = (ORIG_MAX_POSITION / wave_len - LOW_FACTOR) / (
-        HIGH_FACTOR - LOW_FACTOR)
-    new_freqs = tl.where(
-        wave_len < high_freq_wavelen,
-        inv_freqs,
-        tl.where(
-            wave_len > low_freq_wavelen,
-            inv_freqs / SCALING_FACTOR,
-            (1 - smooth) * inv_freqs / SCALING_FACTOR + smooth * inv_freqs,
-        ),
-    )
-    theta = position * new_freqs
+def rope_cos_sin_from_freqs(position, freqs):
+    """cos/sin for one position, given precomputed `rope_freqs` output."""
+    theta = position * freqs
     return libdevice.cos(theta), libdevice.sin(theta)
 
 
@@ -77,17 +78,17 @@ def rope_cos_sin(
     ORIG_MAX_POSITION: tl.constexpr,
     PI_VALUE: tl.constexpr,
 ):
-    """Dispatch to the model's cos/sin device function by ROPE_TYPE.
+    """cos/sin for one position, for callers outside a loop.
 
-    ROPE_TYPE values match the module constants (ROPE_DEFAULT=0, ROPE_LLAMA3=1);
-    triton @jit can't read Python globals, so the literals are used directly.
+    Equivalent to `rope_cos_sin_from_freqs(position, rope_freqs(...))`. Inside a
+    loop, call the two halves separately so the frequency table is built once --
+    that is what the decode kernels do (see the register measurements in
+    docs/design.md 4.3).
     """
-    if ROPE_TYPE == 1:  # ROPE_LLAMA3
-        return llama3_cos_sin(position, HEAD_SIZE, ORIG_MAX_POSITION,
-                              LOW_FACTOR, HIGH_FACTOR, SCALING_FACTOR,
-                              PI_VALUE, BASE)
-    else:  # ROPE_DEFAULT
-        return default_cos_sin(position, HEAD_SIZE, BASE)
+    return rope_cos_sin_from_freqs(
+        position,
+        rope_freqs(ROPE_TYPE, HEAD_SIZE, BASE, SCALING_FACTOR, LOW_FACTOR,
+                   HIGH_FACTOR, ORIG_MAX_POSITION, PI_VALUE))
 
 
 def rope_meta_from_layer(rotary_emb) -> dict:
